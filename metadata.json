@@ -1,0 +1,4 @@
+{
+  "name": "Farm Plot Visualizer",
+  "description": "A satellite map visualization tool for agricultural plots using Leaflet and React."
+}

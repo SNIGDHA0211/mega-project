@@ -1,0 +1,41 @@
+/* Main CSS file for Farm Plot Visualizer */
+
+/* Reset and base styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* Ensure map container takes full height */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  background-color: #202020;
+}
+
+/* Additional utility classes if needed */
+.fade-in {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
