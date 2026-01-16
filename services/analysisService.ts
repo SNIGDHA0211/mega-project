@@ -4,7 +4,7 @@ import { Coordinate } from '../types';
 const isDevelopment = typeof window !== 'undefined' && 
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-const BASE_URL_8011 = 'http://192.168.42.56:8011';
+const BASE_URL = 'https://web-production-72a7.up.railway.app'; // Railway API endpoint
 
 // Fetch list of talukas and their plots
 export interface TalukaListResponse {
@@ -26,7 +26,9 @@ export interface DistrictsResponse {
 // Fetch districts with full data (including geometry)
 export const fetchDistricts = async (): Promise<DistrictItem[]> => {
   try {
-    const response = await fetch(`${BASE_URL_8011}/districts`, {
+    const url = `${BASE_URL}/districts`;
+    console.log('Fetching districts from:', url);
+    const response = await fetch(url, {
       method: 'GET',
       headers: {
         'accept': 'application/json'
@@ -50,7 +52,7 @@ export const fetchDistricts = async (): Promise<DistrictItem[]> => {
     }
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/districts`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/districts`);
     }
     throw error;
   }
@@ -72,7 +74,7 @@ export interface SubdistrictsResponse {
 
 export const fetchSubdistricts = async (district: string): Promise<SubdistrictItem[]> => {
   try {
-    const response = await fetch(`${BASE_URL_8011}/subdistricts?district=${encodeURIComponent(district)}`, {
+    const response = await fetch(`${BASE_URL}/subdistricts?district=${encodeURIComponent(district)}`, {
       method: 'GET',
       headers: {
         'accept': 'application/json'
@@ -93,7 +95,7 @@ export const fetchSubdistricts = async (district: string): Promise<SubdistrictIt
     }));
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/subdistricts`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/subdistricts`);
     }
     throw error;
   }
@@ -117,7 +119,7 @@ export interface VillagesResponse {
 
 export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]> => {
   try {
-    const response = await fetch(`${BASE_URL_8011}/villages?subdistrict=${encodeURIComponent(subdistrict)}`, {
+    const response = await fetch(`${BASE_URL}/villages?subdistrict=${encodeURIComponent(subdistrict)}`, {
       method: 'GET',
       headers: {
         'accept': 'application/json'
@@ -140,7 +142,7 @@ export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]>
     }));
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/villages`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/villages`);
     }
     throw error;
   }
@@ -198,7 +200,7 @@ export const fetchGrowthAnalysis1 = async (
 ): Promise<GrowthAnalysisResponse> => {
   try {
     // Build URL with available parameters
-    let url = `${BASE_URL_8011}/analyze_Growth1?district=${encodeURIComponent(district)}`;
+    let url = `${BASE_URL}/analyze_Growth1?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -222,7 +224,7 @@ export const fetchGrowthAnalysis1 = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/analyze_Growth1`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/analyze_Growth1`);
     }
     throw error;
   }
@@ -235,7 +237,7 @@ export const fetchWaterUptakeAnalysis = async (
   village?: string
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL_8011}/wateruptake?district=${encodeURIComponent(district)}`;
+    let url = `${BASE_URL}/wateruptake?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -259,7 +261,7 @@ export const fetchWaterUptakeAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/wateruptake`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptake`);
     }
     throw error;
   }
@@ -272,7 +274,7 @@ export const fetchSoilMoistureAnalysis = async (
   village?: string
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL_8011}/SoilMoisture?district=${encodeURIComponent(district)}`;
+    let url = `${BASE_URL}/SoilMoisture?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -296,7 +298,7 @@ export const fetchSoilMoistureAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/SoilMoisture`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/SoilMoisture`);
     }
     throw error;
   }
@@ -310,7 +312,7 @@ export const fetchPestDetectionAnalysis = async (
   coordinates?: number[][]
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL_8011}/pest-detection4?district=${encodeURIComponent(district)}`;
+    let url = `${BASE_URL}/pest-detection4?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -341,7 +343,7 @@ export const fetchPestDetectionAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/pest-detection4`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/pest-detection4`);
     }
     throw error;
   }
@@ -396,7 +398,7 @@ export const fetchGrowthAnalysis = async (
   plotNo: number | string
 ): Promise<AnalysisResponse> => {
   try {
-    const url = `${BASE_URL_8011}/analyze_Growth?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/analyze_Growth?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -450,7 +452,7 @@ export const fetchWaterUptake = async (
   plotNo: number | string
 ): Promise<WaterUptakeResponse> => {
   try {
-    const url = `${BASE_URL_8011}/wateruptake?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/wateruptake?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -502,7 +504,7 @@ export const fetchSoilMoisture = async (
   plotNo: number | string
 ): Promise<SoilMoistureResponse> => {
   try {
-    const url = `${BASE_URL_8011}/SoilMoisture?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/SoilMoisture?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -554,7 +556,7 @@ export const fetchPestDetection = async (
   plotNo: number | string
 ): Promise<PestDetectionResponse> => {
   try {
-    const url = `${BASE_URL_8011}/pest-detection?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/pest-detection?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -595,7 +597,7 @@ export interface LoadTalukaResponse {
 
 export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaResponse> => {
   try {
-    const url = `${BASE_URL_8011}/load-taluka?taluka_name=${encodeURIComponent(talukaName)}`;
+    const url = `${BASE_URL}/load-taluka?taluka_name=${encodeURIComponent(talukaName)}`;
     console.log('Loading taluka plots from:', url);
     
     const response = await fetch(url, {
@@ -673,7 +675,7 @@ export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaRes
     }
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/load-taluka`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/load-taluka`);
     }
     throw error;
   }
@@ -705,7 +707,7 @@ export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: s
   try {
     const url = isDevelopment
       ? `/api/get-geojson/${encodeURIComponent(talukaName)}`
-      : `http://192.168.41.80:8000/get-geojson/${encodeURIComponent(talukaName)}`;
+      : `https://web-production-72a7.up.railway.app/get-geojson/${encodeURIComponent(talukaName)}`;
     console.log('Fetching taluka plots from:', url);
     
     const response = await fetch(url, {
@@ -749,7 +751,7 @@ export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: s
     if (error instanceof TypeError && error.message.includes('fetch')) {
       const url = isDevelopment
         ? `/api/get-geojson/${talukaName}`
-        : `http://192.168.41.80:8000/get-geojson/${talukaName}`;
+        : `https://web-production-72a7.up.railway.app/get-geojson/${talukaName}`;
       throw new Error(`Network error: Unable to connect to ${url}. Check CORS settings and network connectivity.`);
     }
     throw error;
@@ -801,7 +803,7 @@ export const fetchNDWIDetection = async (
     }
     
     // Build URL with available parameters (same as other analysis endpoints)
-    let url = `${BASE_URL_8011}/NDWIDetection1?district=${encodeURIComponent(district.trim())}`;
+    let url = `${BASE_URL}/NDWIDetection1?district=${encodeURIComponent(district.trim())}`;
     if (subdistrict && subdistrict.trim() !== '') {
       url += `&subdistrict=${encodeURIComponent(subdistrict.trim())}`;
     }
@@ -849,7 +851,7 @@ export const fetchNDWIDetection = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/NDWIDetection1`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/NDWIDetection1`);
     }
     throw error;
   }
@@ -906,7 +908,7 @@ export const fetchForestCanopy = async (
   district: string
 ): Promise<ProcessedForestResponse> => {
   try {
-    const url = `${BASE_URL_8011}/CanopyHeightAgeStructureclasswise?district=${encodeURIComponent(district)}`;
+    const url = `${BASE_URL}/CanopyHeightAgeStructureclasswise?district=${encodeURIComponent(district)}`;
     
     const response = await fetch(url, {
       method: 'POST',
@@ -933,7 +935,7 @@ export const fetchForestCanopy = async (
     };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/CanopyHeightAgeStructureclasswise`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/CanopyHeightAgeStructureclasswise`);
     }
     throw error;
   }
@@ -964,7 +966,7 @@ export const fetchNDVISugarcaneDetection = async (
   district: string
 ): Promise<ProcessedNDVISugarcaneResponse> => {
   try {
-    const url = `${BASE_URL_8011}/ndvi-sugarcane-detection?district=${encodeURIComponent(district)}`;
+    const url = `${BASE_URL}/ndvi-sugarcane-detection?district=${encodeURIComponent(district)}`;
     
     const response = await fetch(url, {
       method: 'POST',
@@ -992,7 +994,7 @@ export const fetchNDVISugarcaneDetection = async (
     };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/ndvi-sugarcane-detection`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/ndvi-sugarcane-detection`);
     }
     throw error;
   }
@@ -1033,7 +1035,7 @@ export const fetchLandSurfaceTemperature = async (
   endDate: string = '2025-12-23'
 ): Promise<ProcessedLandSurfaceTemperatureResponse> => {
   try {
-    const url = `${BASE_URL_8011}/land-surface-temperature?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+    const url = `${BASE_URL}/land-surface-temperature?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
     
     const response = await fetch(url, {
       method: 'POST',
@@ -1064,7 +1066,7 @@ export const fetchLandSurfaceTemperature = async (
     };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/land-surface-temperature`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/land-surface-temperature`);
     }
     throw error;
   }
@@ -1107,7 +1109,7 @@ export const fetchMethane = async (
   endDate: string = '2025-12-23'
 ): Promise<ProcessedMethaneResponse> => {
   try {
-    let url = `${BASE_URL_8011}/methane-concentration?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+    let url = `${BASE_URL}/methane-concentration?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -1142,7 +1144,7 @@ export const fetchMethane = async (
     };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL_8011}/methane-concentration`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/methane-concentration`);
     }
     throw error;
   }

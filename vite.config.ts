@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
     return {
       server: {
         port: 3000,
-        host: '192.168.41.120', // Bind to specific IP address
+        host: '0.0.0.0', // Bind to all network interfaces (accessible from localhost and network)
         proxy: {
           '/api': {
             target: 'http://192.168.41.80:8000',
