@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Large GeoJSON files
+**/temp_boundaries.geojson
+components/temp_boundaries.geojson
+public/temp_boundaries.geojson
