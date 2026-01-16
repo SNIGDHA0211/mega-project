@@ -4,7 +4,7 @@ import { Coordinate } from '../types';
 const isDevelopment = typeof window !== 'undefined' && 
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-const BASE_URL = 'https://web-production-72a7.up.railway.app'; // Railway API endpoint
+const BASE_URL = 'https://web-production-72a7.up.railway.app'; 
 
 // Fetch list of talukas and their plots
 export interface TalukaListResponse {
