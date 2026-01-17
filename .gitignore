@@ -29,6 +29,7 @@ components/temp_boundaries.geojson
 public/temp_boundaries.geojson
 
 # Very large GeoJSON files (exceed GitHub limits)
-# palus1.geojson - removed from ignore (50.38 MB - within GitHub limit with warning)
-public/palus1.geojson
+# palus1.geojson - kept in repository (50.38 MB - within GitHub limit with warning)
+# public/palus1.geojson - kept in repository (needed for hosting)
+# Only ignore files that exceed limits or are not needed:
 public/palusvillage.geojson
