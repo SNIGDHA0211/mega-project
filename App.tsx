@@ -1237,15 +1237,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Total Plots Count */}
-          {selectedDistrict && totalPlotsCount > 0 && (
-            <div className="p-4 bg-gray-700 rounded-lg">
-              <div className="text-xs text-gray-400 mb-1">Total Plots</div>
-              <div className="text-lg font-bold text-green-400">
-                {totalPlotsCount}
-              </div>
-            </div>
-          )}
+          
 
 
 
