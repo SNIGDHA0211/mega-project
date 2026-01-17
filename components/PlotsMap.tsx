@@ -10,6 +10,27 @@ interface WaterSource {
   water_pixel_percentage: number;
 }
 
+interface ETData {
+  date: string;
+  hour: number;
+  latitude: number;
+  longitude: number;
+  ET_current_hour_mm: number;
+}
+
+interface WeatherData {
+  location: string;
+  region: string;
+  country: string;
+  date: string;
+  hour: number;
+  temperature_c: number;
+  humidity: number;
+  wind_kph: number;
+  precip_mm: number;
+  condition: string;
+}
+
 interface PlotsMapProps {
   plots: Plot[];
   selectedPlotId: string | null;
@@ -20,6 +41,9 @@ interface PlotsMapProps {
   showTileLayers?: boolean;
   waterSources?: WaterSource[];
   onSelectWaterSource?: (id: string, data: WaterSource) => void;
+  etData?: ETData | null;
+  weatherData?: WeatherData | null;
+  etWeatherLoading?: boolean;
 }
 
 // Helper component to fit bounds when plots change
@@ -58,7 +82,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   allPlotsTileUrls = {},
   showTileLayers = true,
   waterSources = [],
-  onSelectWaterSource
+  onSelectWaterSource,
+  etData = null,
+  weatherData = null,
+  etWeatherLoading = false
 }) => {
   // Default center (Nashik/Maharashtra area based on coordinates provided in prompt)
   const defaultCenter: LeafletCoordinate = [20.0130, 73.6620];
@@ -203,7 +230,54 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                   // Regular Plot Popup
                   <>
                     <span className="block font-bold text-gray-700 uppercase mb-1">Plot ID</span>
-                    <span className="text-emerald-600 font-semibold">{plot.id}</span>
+                    <span className="text-emerald-600 font-semibold mb-2">{plot.id}</span>
+                    
+                    {/* ET and Weather Data - Show when plot is selected and data is loaded */}
+                    {selectedPlotId === plot.id && (etData || weatherData) && (
+                      <div className="mt-3 pt-3 border-t border-gray-300 space-y-2 text-left">
+                        {etWeatherLoading && (
+                          <div className="text-xs text-gray-500">Loading ET/Weather data...</div>
+                        )}
+                        
+                        {/* ET Data */}
+                        {etData && (
+                          <div className="space-y-1">
+                            <span className="block text-xs font-semibold text-gray-700 uppercase mb-1">ET (Evapotranspiration)</span>
+                            <div className="text-xs space-y-0.5">
+                              <div>
+                                <span className="text-gray-600">ET Current Hour: </span>
+                                <span className="text-green-600 font-semibold">{etData.ET_current_hour_mm.toFixed(2)} mm</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Weather Data */}
+                        {weatherData && (
+                          <div className="space-y-1 mt-2 pt-2 border-t border-gray-200">
+                            <span className="block text-xs font-semibold text-gray-700 uppercase mb-1">Weather</span>
+                            <div className="text-xs space-y-0.5">
+                              <div>
+                                <span className="text-gray-600">Temperature: </span>
+                                <span className="text-orange-600 font-semibold">{weatherData.temperature_c}°C</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Humidity: </span>
+                                <span className="text-blue-600 font-semibold">{weatherData.humidity}%</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Wind Speed: </span>
+                                <span className="text-purple-600 font-semibold">{weatherData.wind_kph} km/h</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Precipitation: </span>
+                                <span className="text-cyan-600 font-semibold">{weatherData.precip_mm} mm</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </div>

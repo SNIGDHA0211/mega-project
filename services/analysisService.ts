@@ -1149,3 +1149,80 @@ export const fetchMethane = async (
     throw error;
   }
 };
+
+// ET (Evapotranspiration) Response
+export interface ETResponse {
+  date: string;
+  hour: number;
+  latitude: number;
+  longitude: number;
+  ET_current_hour_mm: number;
+}
+
+// Fetch ET data for a plot
+export const fetchET = async (lat: number, lon: number): Promise<ETResponse> => {
+  try {
+    const url = `${BASE_URL}/compute-et?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
+    console.log('Fetching ET data from:', url);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const data: ETResponse = await response.json();
+    return data;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/compute-et`);
+    }
+    throw error;
+  }
+};
+
+// Weather Response
+export interface WeatherResponse {
+  location: string;
+  region: string;
+  country: string;
+  date: string;
+  hour: number;
+  temperature_c: number;
+  humidity: number;
+  wind_kph: number;
+  precip_mm: number;
+  condition: string;
+}
+
+// Fetch Weather data for a plot
+export const fetchWeather = async (lat: number, lon: number): Promise<WeatherResponse> => {
+  try {
+    const url = `${BASE_URL}/current-weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
+    console.log('Fetching Weather data from:', url);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const data: WeatherResponse = await response.json();
+    return data;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/current-weather`);
+    }
+    throw error;
+  }
+};

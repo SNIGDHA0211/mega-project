@@ -15,8 +15,12 @@ import {
   fetchLandSurfaceTemperature,
   fetchMethane,
   fetchForestCanopy,
+  fetchET,
+  fetchWeather,
   GrowthAnalysisResponse,
-  NDWIDetectionResponse
+  NDWIDetectionResponse,
+  ETResponse,
+  WeatherResponse
 } from './services/analysisService';
 import { Coordinate } from './types';
 import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff } from 'lucide-react';
@@ -97,6 +101,15 @@ const App: React.FC = () => {
   const [methaneTileUrl, setMethaneTileUrl] = useState<string | null>(null);
   const [methaneLoading, setMethaneLoading] = useState<boolean>(false);
   const [methaneEnabled, setMethaneEnabled] = useState<boolean>(false);
+  
+  // State for GeoJSON plots from palus1.geojson
+  const [geojsonPlots, setGeojsonPlots] = useState<Array<{id: string; field_id?: string; area_ha: string; boundary: Coordinate[]}>>([]);
+  const [geojsonLoading, setGeojsonLoading] = useState<boolean>(false);
+  
+  // State for ET and Weather data
+  const [etData, setEtData] = useState<ETResponse | null>(null);
+  const [weatherData, setWeatherData] = useState<WeatherResponse | null>(null);
+  const [etWeatherLoading, setEtWeatherLoading] = useState<boolean>(false);
 
   // State for pixel summaries (single plot)
   const [growthData, setGrowthData] = useState<any>(null);
@@ -209,12 +222,61 @@ const App: React.FC = () => {
         try {
           setLoading(true);
           setError(null);
-          const data = await fetchVillages(selectedSubdistrict);
-          if (Array.isArray(data)) {
-            setVillages(data);
+          
+          // If subdistrict is "Palus", load villages from GeoJSON file
+          if (selectedSubdistrict === 'Palus') {
+            console.log('Loading villages from palus1.geojson for subdistrict: Palus');
+            const response = await fetch('/palus1.geojson');
+            if (!response.ok) {
+              throw new Error('Failed to load GeoJSON file');
+            }
+            
+            // Read response as text first (handles large files better)
+            const responseText = await response.text();
+            if (!responseText || responseText.length === 0) {
+              throw new Error('Empty response from GeoJSON file');
+            }
+            
+            // Parse JSON from text
+            let geojsonData: any;
+            try {
+              geojsonData = JSON.parse(responseText.trim());
+            } catch (parseError) {
+              console.error('JSON parse error:', parseError);
+              throw new Error(`Failed to parse GeoJSON: ${parseError instanceof Error ? parseError.message : 'Unknown parse error'}`);
+            }
+            
+            // Validate structure
+            if (!geojsonData || !geojsonData.features || !Array.isArray(geojsonData.features)) {
+              throw new Error('Invalid GeoJSON format: missing features array');
+            }
+            
+            // Extract unique village names from features
+            const villageNamesSet = new Set<string>();
+            geojsonData.features.forEach((feature: any) => {
+              if (feature.properties && feature.properties.village_name) {
+                villageNamesSet.add(feature.properties.village_name);
+              }
+            });
+            
+            // Convert to array of village objects (matching the expected format)
+            const villagesFromGeoJSON = Array.from(villageNamesSet)
+              .sort()
+              .map(villageName => ({
+                village: villageName
+              }));
+            
+            console.log(`✅ Loaded ${villagesFromGeoJSON.length} unique villages from GeoJSON file`);
+            setVillages(villagesFromGeoJSON);
           } else {
-            console.warn('Unexpected villages response format:', data);
-            setVillages([]);
+            // For other subdistricts, use API
+            const data = await fetchVillages(selectedSubdistrict);
+            if (Array.isArray(data)) {
+              setVillages(data);
+            } else {
+              console.warn('Unexpected villages response format:', data);
+              setVillages([]);
+            }
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
@@ -582,7 +644,11 @@ const App: React.FC = () => {
       setAllPlotsTileUrls({});
       setAvailablePlots([]);
       setTotalPlotsCount(0);
+      // Clear GeoJSON plots when village changes
+      setGeojsonPlots([]);
     } else if (!selectedVillage) {
+      // Clear GeoJSON plots when village is cleared
+      setGeojsonPlots([]);
       // If village is cleared, show subdistrict boundary again
       if (selectedSubdistrict) {
         const subdistrictData = subdistricts.find(s => s.subdistrict === selectedSubdistrict);
@@ -1002,12 +1068,14 @@ const App: React.FC = () => {
     setMethaneTileUrl(null);
   }, [selectedDistrict, selectedSubdistrict]);
 
-  // Use all plots from taluka, or selected plot if analysis data is loaded
-  const plots = allPlots.length > 0 ? allPlots : (plotBoundary.length > 0 ? [{
-    id: selectedPlotId || '',
-    area_ha: String(areaHa || 0),
-    boundary: plotBoundary
-  }] : []);
+  // Use all plots from taluka, or selected plot if analysis data is loaded, or GeoJSON plots if loaded
+  const plots = geojsonPlots.length > 0 
+    ? geojsonPlots 
+    : (allPlots.length > 0 ? allPlots : (plotBoundary.length > 0 ? [{
+        id: selectedPlotId || '',
+        area_ha: String(areaHa || 0),
+        boundary: plotBoundary
+      }] : []));
 
   // Pixel data for legend - use aggregated data for all plots if available, otherwise use single plot data
   let currentPixelData: any = null;
@@ -1382,6 +1450,148 @@ const App: React.FC = () => {
                 <span className="text-xs font-semibold text-gray-300 uppercase leading-tight">Concentration</span>
               </div>
             </div>
+
+            {/* Boundary Button - Only visible when subdistrict is "Palus" and village is selected */}
+            {selectedSubdistrict === 'Palus' && selectedVillage && (
+              <button
+                onClick={async () => {
+                  if (geojsonLoading) return;
+                  
+                  try {
+                    setGeojsonLoading(true);
+                    setError(null);
+                    
+                    // Load GeoJSON file - read as text first for large files
+                    console.log('Loading GeoJSON file for village:', selectedVillage);
+                    const response = await fetch('/palus1.geojson');
+                    if (!response.ok) {
+                      throw new Error(`Failed to load GeoJSON file: ${response.status} ${response.statusText}`);
+                    }
+                    
+                    // Read response as text first (handles large files better)
+                    const responseText = await response.text();
+                    console.log('GeoJSON file loaded, size:', responseText.length, 'characters');
+                    
+                    // Check if response is empty
+                    if (!responseText || responseText.length === 0) {
+                      throw new Error('Empty response from GeoJSON file');
+                    }
+                    
+                    // Parse JSON from text - handle potentially incomplete files
+                    let geojsonData: any;
+                    let trimmed = responseText.trim();
+                    
+                    try {
+                      // Try parsing as-is first
+                      geojsonData = JSON.parse(trimmed);
+                    } catch (parseError) {
+                      console.warn('Initial JSON parse failed, attempting to fix common issues...');
+                      
+                      // Try to fix common issues: remove trailing comma and close structure
+                      let fixedText = trimmed;
+                      
+                      // Remove trailing comma before closing brackets/braces
+                      fixedText = fixedText.replace(/,\s*$/, ''); // Remove trailing comma
+                      fixedText = fixedText.replace(/,\s*\}/g, '}'); // Remove comma before }
+                      fixedText = fixedText.replace(/,\s*\]/g, ']'); // Remove comma before ]
+                      
+                      // If it doesn't end with }], try to close it
+                      if (!fixedText.endsWith('}')) {
+                        // Try to close the features array and the FeatureCollection
+                        if (fixedText.endsWith(',')) {
+                          fixedText = fixedText.slice(0, -1); // Remove last comma
+                        }
+                        if (!fixedText.endsWith(']')) {
+                          fixedText += ']'; // Close features array
+                        }
+                        if (!fixedText.endsWith('}')) {
+                          fixedText += '}'; // Close FeatureCollection
+                        }
+                      }
+                      
+                      try {
+                        geojsonData = JSON.parse(fixedText);
+                        console.log('Successfully parsed after fixing trailing issues');
+                      } catch (secondParseError) {
+                        console.error('JSON parse error (after fix attempt):', secondParseError);
+                        const previewStart = trimmed.substring(0, 500);
+                        const previewEnd = trimmed.length > 500 ? trimmed.substring(trimmed.length - 500) : '';
+                        console.error('Response preview (first 500 chars):', previewStart);
+                        console.error('Response preview (last 500 chars):', previewEnd);
+                        console.error('Response length:', trimmed.length);
+                        console.error('Response starts with:', trimmed.substring(0, 20));
+                        console.error('Response ends with:', trimmed.substring(Math.max(0, trimmed.length - 20)));
+                        
+                        if (parseError instanceof SyntaxError) {
+                          throw new Error(`JSON parse error: ${parseError.message}. The GeoJSON file appears to be incomplete or corrupted. Please check the file integrity.`);
+                        }
+                        throw new Error(`Failed to parse JSON: ${parseError instanceof Error ? parseError.message : 'Unknown parse error'}`);
+                      }
+                    }
+                    
+                    // Validate structure
+                    if (!geojsonData || !geojsonData.features || !Array.isArray(geojsonData.features)) {
+                      throw new Error('Invalid GeoJSON format: missing features array');
+                    }
+                    
+                    console.log(`Total features in GeoJSON: ${geojsonData.features.length}`);
+                    
+                    // Filter features by village_name matching selectedVillage
+                    const filteredFeatures = geojsonData.features.filter((feature: any) => 
+                      feature.properties && feature.properties.village_name === selectedVillage
+                    );
+                    
+                    console.log(`Filtered features for village "${selectedVillage}": ${filteredFeatures.length}`);
+                    
+                    // Parse features into plots format
+                    const parsedPlots = filteredFeatures.map((feature: any) => {
+                      if (!feature.geometry || !feature.geometry.coordinates) {
+                        console.warn('Feature missing geometry:', feature);
+                        return null;
+                      }
+                      const coords = feature.geometry.coordinates[0] || [];
+                      const boundary: Coordinate[] = coords.map((coord: number[]) => [coord[0], coord[1]]);
+                      return {
+                        id: String(feature.properties?.field_id || feature.properties?.id || ''),
+                        field_id: feature.properties?.field_id ? String(feature.properties.field_id) : undefined,
+                        area_ha: String(feature.properties?.area_ha || 0),
+                        boundary: boundary
+                      };
+                    }).filter((plot: any): plot is {id: string; field_id?: string; area_ha: string; boundary: Coordinate[]} => 
+                      plot !== null && plot.boundary && plot.boundary.length > 0
+                    );
+                    
+                    setGeojsonPlots(parsedPlots);
+                    console.log(`✅ Loaded ${parsedPlots.length} plots for village: ${selectedVillage}`);
+                  } catch (err) {
+                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                    console.error('Error loading GeoJSON:', err);
+                    setError(`Failed to load plots: ${errorMessage}`);
+                    setGeojsonPlots([]);
+                  } finally {
+                    setGeojsonLoading(false);
+                  }
+                }}
+                className={`px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-2 ${
+                  geojsonLoading
+                    ? 'opacity-50 cursor-not-allowed bg-gray-700 border-gray-600'
+                    : geojsonPlots.length > 0
+                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
+                }`}
+                disabled={geojsonLoading}
+                title={geojsonLoading ? 'Loading plots...' : 'Load village boundaries from GeoJSON'}
+              >
+                {geojsonLoading ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <span>Boundary</span>
+                )}
+              </button>
+            )}
           </div>
 
           {/* Legend Circles - Always display when tab is selected */}
@@ -1430,7 +1640,63 @@ const App: React.FC = () => {
             <PlotsMap
               plots={plots}
               selectedPlotId={selectedPlotId}
-              onSelectPlot={(id) => setSelectedPlotId(id)}
+              onSelectPlot={async (id) => {
+                setSelectedPlotId(id);
+                
+                // Find the plot to get coordinates
+                const selectedPlot = plots.find(p => p.id === id);
+                if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
+                  console.warn('Plot not found or has no boundary:', id);
+                  return;
+                }
+                
+                // Calculate center lat/long from boundary coordinates
+                // Boundary coordinates are [lng, lat] format
+                let sumLng = 0;
+                let sumLat = 0;
+                selectedPlot.boundary.forEach((coord: Coordinate) => {
+                  sumLng += coord[0]; // longitude
+                  sumLat += coord[1]; // latitude
+                });
+                const centerLng = sumLng / selectedPlot.boundary.length;
+                const centerLat = sumLat / selectedPlot.boundary.length;
+                
+                console.log(`Selected plot ${id}, center coordinates: Lat=${centerLat}, Lng=${centerLng}`);
+                console.log(`Plot field_id:`, (selectedPlot as any).field_id);
+                
+                // Fetch ET and Weather data
+                // Note: ET API uses lat=longitude, lon=latitude (reversed)
+                // Weather API uses lat=latitude, lon=longitude (correct)
+                try {
+                  setEtWeatherLoading(true);
+                  setError(null);
+                  
+                  // Fetch both ET and Weather in parallel
+                  // ET API expects: lat=longitude, lon=latitude (backwards)
+                  // Weather API expects: lat=latitude, lon=longitude (correct)
+                  const [etResponse, weatherResponse] = await Promise.all([
+                    fetchET(centerLng, centerLat), // ET: lat=longitude, lon=latitude
+                    fetchWeather(centerLat, centerLng) // Weather: lat=latitude, lon=longitude
+                  ]);
+                  
+                  setEtData(etResponse);
+                  setWeatherData(weatherResponse);
+                  
+                  console.log('ET Data:', etResponse);
+                  console.log('Weather Data:', weatherResponse);
+                } catch (err) {
+                  const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                  console.error('Error loading ET/Weather data:', err);
+                  setError(`Failed to load ET/Weather: ${errorMessage}`);
+                  setEtData(null);
+                  setWeatherData(null);
+                } finally {
+                  setEtWeatherLoading(false);
+                }
+              }}
+              etData={etData}
+              weatherData={weatherData}
+              etWeatherLoading={etWeatherLoading}
               tileUrl={forestTileUrl || methaneTileUrl || lstTileUrl || cropTileUrl || tileUrl}
               plotBounds={plotBounds}
               allPlotsTileUrls={allPlotsTileUrls}
