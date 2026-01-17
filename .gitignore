@@ -27,3 +27,8 @@ dist-ssr
 **/temp_boundaries.geojson
 components/temp_boundaries.geojson
 public/temp_boundaries.geojson
+
+# Very large GeoJSON files (exceed GitHub limits)
+palus1.geojson
+public/palus1.geojson
+public/palusvillage.geojson
