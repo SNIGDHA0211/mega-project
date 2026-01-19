@@ -111,6 +111,13 @@ const App: React.FC = () => {
   const [weatherData, setWeatherData] = useState<WeatherResponse | null>(null);
   const [etWeatherLoading, setEtWeatherLoading] = useState<boolean>(false);
 
+  // State for total area (district/subdistrict/village)
+  const [totalAreaHectares, setTotalAreaHectares] = useState<number | null>(null);
+  const [totalAreaLoading, setTotalAreaLoading] = useState<boolean>(false);
+  
+  // State for selected plot area (from GeoJSON)
+  const [selectedPlotArea, setSelectedPlotArea] = useState<number | null>(null);
+
   // State for pixel summaries (single plot)
   const [growthData, setGrowthData] = useState<any>(null);
   const [waterData, setWaterData] = useState<any>(null);
@@ -703,6 +710,102 @@ const App: React.FC = () => {
     }
   }, [selectedVillage, villages, selectedSubdistrict, subdistricts]);
 
+  // Fetch total area when district/subdistrict/village changes
+  useEffect(() => {
+    if (selectedDistrict) {
+      const fetchTotalArea = async () => {
+        try {
+          setTotalAreaLoading(true);
+          setError(null);
+          
+          const response = await fetchGrowthAnalysis1(
+            selectedDistrict,
+            selectedSubdistrict || undefined,
+            selectedVillage || undefined
+          );
+          
+          // Log the full response to debug
+          console.log('📊 Total Area API Response:', response);
+          console.log('📊 Response keys:', Object.keys(response));
+          console.log('📊 area_hectares:', response.area_hectares);
+          console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
+          console.log('📊 area:', (response as any).area);
+          console.log('📊 total_area:', (response as any).total_area);
+          
+          // Check for area_hectares in various possible locations
+          let areaValue: number | null = null;
+          
+          // Check root level with different possible field names
+          if (response.area_hectares !== undefined && response.area_hectares !== null) {
+            areaValue = response.area_hectares;
+            console.log('✅ Found area_hectares at root:', areaValue);
+          } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
+            areaValue = (response as any).total_area_hectares;
+            console.log('✅ Found total_area_hectares at root:', areaValue);
+          } else if ((response as any).area !== undefined && (response as any).area !== null) {
+            areaValue = (response as any).area;
+            console.log('✅ Found area at root:', areaValue);
+          } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
+            areaValue = (response as any).total_area;
+            console.log('✅ Found total_area at root:', areaValue);
+          }
+          // Check in pixel_summary
+          else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
+            areaValue = (response.pixel_summary as any).area_hectares;
+            console.log('✅ Found area_hectares in pixel_summary:', areaValue);
+          }
+          // If not in root, check if it's calculated from plots
+          else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
+            let totalArea = 0;
+            response.plots.forEach((plot: any) => {
+              // Check for area_acres and convert to hectares, or area_hectares directly
+              if (plot.properties?.area_acres) {
+                totalArea += plot.properties.area_acres / 2.47105; // Convert acres to hectares
+              } else if (plot.area_acres) {
+                totalArea += plot.area_acres / 2.47105;
+              } else if (plot.properties?.area_hectares) {
+                totalArea += plot.properties.area_hectares;
+              } else if (plot.area_hectares) {
+                totalArea += plot.area_hectares;
+              }
+            });
+            if (totalArea > 0) {
+              areaValue = totalArea;
+              console.log('✅ Calculated area from plots:', areaValue);
+            }
+          }
+          
+          if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
+            setTotalAreaHectares(areaValue);
+            console.log('✅ Setting total area to:', areaValue);
+          } else {
+            console.warn('⚠️ No valid area found in response');
+            setTotalAreaHectares(null);
+          }
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+          console.error('❌ Error loading total area:', err);
+          // Don't set error here as it might interfere with other operations
+          setTotalAreaHectares(null);
+        } finally {
+          setTotalAreaLoading(false);
+        }
+      };
+
+      fetchTotalArea();
+    } else {
+      setTotalAreaHectares(null);
+      setSelectedPlotArea(null); // Clear plot area when location changes
+    }
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage]);
+  
+  // Clear selected plot area when geojson plots are cleared or location changes
+  useEffect(() => {
+    if (geojsonPlots.length === 0) {
+      setSelectedPlotArea(null);
+    }
+  }, [geojsonPlots]);
+
   // Fetch analysis data only when a tab is clicked (not when district is selected)
   // Fetches data for the active tab (Growth, Water Uptake, Soil Moisture, or Pest)
   useEffect(() => {
@@ -1237,9 +1340,30 @@ const App: React.FC = () => {
             </div>
           )}
 
-          
-
-
+          {/* Total Area Card */}
+          {selectedDistrict && (
+            <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
+              </div>
+              {selectedPlotArea !== null ? (
+                // Show selected plot area (from GeoJSON)
+                <div className="text-lg font-bold text-green-400">
+                  {selectedPlotArea.toFixed(2)} ha
+                </div>
+              ) : totalAreaLoading ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="animate-spin text-green-400" size={20} />
+                </div>
+              ) : totalAreaHectares !== null && totalAreaHectares !== undefined ? (
+                <div className="text-lg font-bold text-green-400">
+                  {totalAreaHectares.toFixed(2)} ha
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">No area data available</div>
+              )}
+            </div>
+          )}
 
           {/* Area Display */}
           {areaHa !== null && areaHa !== undefined && typeof areaHa === 'number' && (
@@ -1640,6 +1764,20 @@ const App: React.FC = () => {
                 if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
                   console.warn('Plot not found or has no boundary:', id);
                   return;
+                }
+                
+                // Extract area_ha from GeoJSON plot if it's from palus1.geojson
+                if (geojsonPlots.length > 0 && selectedPlot.area_ha) {
+                  const plotArea = parseFloat(selectedPlot.area_ha);
+                  if (!isNaN(plotArea) && plotArea > 0) {
+                    setSelectedPlotArea(plotArea);
+                    console.log(`✅ Selected plot ${id} area: ${plotArea} ha`);
+                  } else {
+                    setSelectedPlotArea(null);
+                  }
+                } else {
+                  // Clear plot area if not from GeoJSON
+                  setSelectedPlotArea(null);
                 }
                 
                 // Calculate center lat/long from boundary coordinates

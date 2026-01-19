@@ -191,6 +191,8 @@ export interface GrowthAnalysisResponse {
   village?: string;
   plots: GrowthPlotData[];
   pixel_summary?: GrowthPixelSummary;
+  area_hectares?: number;
+  [key: string]: any; // Allow additional properties
 }
 
 export const fetchGrowthAnalysis1 = async (
