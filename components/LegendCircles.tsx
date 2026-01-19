@@ -48,10 +48,11 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
       break;
     case 'pest':
       items = [
-        { label: 'Chewing', value: data?.baseline_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'Sucking', value: data?.fungi_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'fungi', value: data?.sucking_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'SoilBorn', value: data?.soilborn_pixel_percentage || 0, color: '#f97316' }, // Orange
+        { label: 'Chewing', value: data?.chewing_pixel_percentage || 0, color: '#f97316' }, // Orange
+        { label: 'Fungi', value: data?.fungi_pixel_percentage || 0, color: '#f97316' }, // Orange
+        { label: 'Sucking', value: data?.sucking_pixel_percentage || 0, color: '#f97316' }, // Orange
+        { label: 'Wilt', value: data?.wilt_pixel_percentage || 0, color: '#f97316' }, // Orange
+        { label: 'SoilBorn', value: data?.soilborne_pixel_percentage || data?.soilborn_pixel_percentage || 0, color: '#f97316' }, // Orange
       ];
       break;
     case 'waterSource':
