@@ -87,6 +87,7 @@ const App: React.FC = () => {
     water_pixel_percentage: number;
   }>>([]);
   const [selectedWaterSource, setSelectedWaterSource] = useState<string | null>(null);
+  const [waterAreaHectares, setWaterAreaHectares] = useState<number | null>(null);
 
   // State for crops
   const [selectedCrop, setSelectedCrop] = useState<string>('');
@@ -806,7 +807,7 @@ const App: React.FC = () => {
     }
   }, [geojsonPlots]);
 
-  // Fetch analysis data only when a tab is clicked (not when district is selected)
+  // Fetch analysis data when tab is clicked OR when location (district/subdistrict/village) changes
   // Fetches data for the active tab (Growth, Water Uptake, Soil Moisture, or Pest)
   useEffect(() => {
     if (selectedDistrict && activeTab) {
@@ -814,6 +815,12 @@ const App: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
+        // Clear old data when location changes to prevent showing stale data
+        setAllPlots([]);
+        setAvailablePlots([]);
+        setTotalPlotsCount(0);
+        setAllPlotsTileUrls({});
+        setWaterAreaHectares(null); // Clear water area when location changes
 
          // Fetch data based on active tab
            let response: GrowthAnalysisResponse | NDWIDetectionResponse;
@@ -1086,13 +1093,26 @@ const App: React.FC = () => {
           }
 
           // Store pixel summary based on active tab
-          if (response.pixel_summary) {
+          // For waterSource, also include area_summary data (water_area_percentage)
+          if (activeTab === 'waterSource') {
+            const ndwiResponse = response as NDWIDetectionResponse;
+            const waterSourceData = {
+              ...(response.pixel_summary || {}),
+              ...(ndwiResponse.area_summary || {}), // Include area_summary (water_area_percentage, water_area_hectare, etc.)
+            };
+            console.log('🌊 Water Source - Merged data for LegendCircles:', waterSourceData);
+            console.log('🌊 Water Source - water_area_percentage:', waterSourceData.water_area_percentage);
+            setAllPlotsAnalysisData(prev => ({
+              ...prev,
+              waterSource: waterSourceData,
+            }));
+          } else if (response.pixel_summary) {
             setAllPlotsAnalysisData(prev => ({
               growth: activeTab === 'growth' ? response.pixel_summary : (prev?.growth || null),
               water: activeTab === 'water' ? response.pixel_summary : (prev?.water || null),
               soil: activeTab === 'soil' ? response.pixel_summary : (prev?.soil || null),
               pest: activeTab === 'pest' ? response.pixel_summary : (prev?.pest || null),
-              waterSource: activeTab === 'waterSource' ? response.pixel_summary : (prev?.waterSource || null),
+              waterSource: prev?.waterSource || null, // Keep existing waterSource data
             }));
           } else {
             setAllPlotsAnalysisData(prev => ({
@@ -1104,6 +1124,72 @@ const App: React.FC = () => {
             }));
           }
           
+          // Extract water_area_hectare for waterSource tab
+          if (activeTab === 'waterSource') {
+            const ndwiResponse = response as NDWIDetectionResponse;
+            const responseAny = response as any;
+            
+            // Log full response for debugging
+            console.log('🌊 Water Source - Full API Response:', JSON.stringify(response, null, 2));
+            console.log('🌊 Water Source - Response keys:', Object.keys(responseAny));
+            console.log('🌊 Water Source - area_summary:', responseAny.area_summary);
+            
+            // Try multiple possible field names and locations
+            let waterArea: number | null = null;
+            
+            // FIRST: Check in area_summary (this is the correct location based on API response)
+            if (ndwiResponse.area_summary?.water_area_hectare !== undefined && ndwiResponse.area_summary.water_area_hectare !== null) {
+              waterArea = ndwiResponse.area_summary.water_area_hectare;
+              console.log('✅ Found water_area_hectare in area_summary:', waterArea);
+            } else if (responseAny.area_summary?.water_area_hectares !== undefined && responseAny.area_summary.water_area_hectares !== null) {
+              waterArea = responseAny.area_summary.water_area_hectares;
+              console.log('✅ Found water_area_hectares in area_summary:', waterArea);
+            }
+            // SECOND: Check root level with different possible field names
+            else if (ndwiResponse.water_area_hectare !== undefined && ndwiResponse.water_area_hectare !== null) {
+              waterArea = ndwiResponse.water_area_hectare;
+              console.log('✅ Found water_area_hectare at root:', waterArea);
+            } else if (responseAny.water_area_hectares !== undefined && responseAny.water_area_hectares !== null) {
+              waterArea = responseAny.water_area_hectares;
+              console.log('✅ Found water_area_hectares at root:', waterArea);
+            } else if (responseAny.water_area_hectare !== undefined && responseAny.water_area_hectare !== null) {
+              waterArea = responseAny.water_area_hectare;
+              console.log('✅ Found water_area_hectare (any) at root:', waterArea);
+            } else if (responseAny.total_water_area_hectare !== undefined && responseAny.total_water_area_hectare !== null) {
+              waterArea = responseAny.total_water_area_hectare;
+              console.log('✅ Found total_water_area_hectare at root:', waterArea);
+            } else if (responseAny.total_water_area_hectares !== undefined && responseAny.total_water_area_hectares !== null) {
+              waterArea = responseAny.total_water_area_hectares;
+              console.log('✅ Found total_water_area_hectares at root:', waterArea);
+            }
+            
+            // THIRD: Check in pixel_summary if available
+            if (waterArea === null && response.pixel_summary) {
+              const pixelSummary = response.pixel_summary as any;
+              if (pixelSummary.water_area_hectare !== undefined && pixelSummary.water_area_hectare !== null) {
+                waterArea = pixelSummary.water_area_hectare;
+                console.log('✅ Found water_area_hectare in pixel_summary:', waterArea);
+              } else if (pixelSummary.water_area_hectares !== undefined && pixelSummary.water_area_hectares !== null) {
+                waterArea = pixelSummary.water_area_hectares;
+                console.log('✅ Found water_area_hectares in pixel_summary:', waterArea);
+              }
+            }
+            
+            // Set the value or log warning
+            if (waterArea !== null && !isNaN(waterArea) && waterArea >= 0) {
+              setWaterAreaHectares(waterArea);
+              console.log('✅ Setting water area hectares to:', waterArea);
+            } else {
+              console.warn('⚠️ No valid water_area_hectare found in response');
+              console.warn('⚠️ Response structure:', response);
+              console.warn('⚠️ area_summary:', responseAny.area_summary);
+              setWaterAreaHectares(null);
+            }
+          } else {
+            // Clear water area when switching away from waterSource tab
+            setWaterAreaHectares(null);
+          }
+          
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
           console.error(`Error loading ${activeTab} analysis:`, err);
@@ -1113,6 +1199,10 @@ const App: React.FC = () => {
           setTotalPlotsCount(0);
           setAllPlotsTileUrls({});
           setAllPlotsAnalysisData(null);
+          // Clear water area on error if it was waterSource tab
+          if (activeTab === 'waterSource') {
+            setWaterAreaHectares(null);
+          }
       } finally {
         setLoading(false);
       }
@@ -1127,7 +1217,14 @@ const App: React.FC = () => {
       setAllPlotsTileUrls({});
       setAllPlotsAnalysisData(null);
     }
-  }, [activeTab]); // Fetch ONLY when active tab changes, NOT when location changes
+  }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage]); // Fetch when tab OR location changes
+
+  // Clear water area when switching away from waterSource tab
+  useEffect(() => {
+    if (activeTab !== 'waterSource') {
+      setWaterAreaHectares(null);
+    }
+  }, [activeTab]);
 
   // Fetch sugarcane data when crop is selected
   useEffect(() => {
@@ -1361,6 +1458,26 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 <div className="text-sm text-gray-500">No area data available</div>
+              )}
+            </div>
+          )}
+
+          {/* Total Water Area Card - Show when waterSource tab is active */}
+          {activeTab === 'waterSource' && selectedDistrict && (
+            <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                Total Water Area
+              </div>
+              {loading && activeTab === 'waterSource' ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="animate-spin text-green-400" size={20} />
+                </div>
+              ) : waterAreaHectares !== null && waterAreaHectares !== undefined && !isNaN(waterAreaHectares) ? (
+                <div className="text-lg font-bold text-green-400">
+                  {waterAreaHectares.toFixed(2)} ha
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">No water area data available</div>
               )}
             </div>
           )}

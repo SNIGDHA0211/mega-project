@@ -790,6 +790,12 @@ export interface NDWIDetectionResponse {
   pixel_summary?: {
     water_pixel_percentage?: number;
   };
+  water_area_hectare?: number; // Total water area in hectares (root level, if available)
+  area_summary?: {
+    total_area_hectare?: number;
+    water_area_hectare?: number;
+    water_area_percentage?: number;
+  };
 }
 
 // Fetch NDWI Detection data - same signature as other analysis functions
@@ -849,7 +855,10 @@ export const fetchNDWIDetection = async (
     }
 
     const data: NDWIDetectionResponse = await response.json();
-    console.log('NDWI Detection Response:', data);
+    console.log('🌊 NDWI Detection Response:', JSON.stringify(data, null, 2));
+    console.log('🌊 NDWI Detection - Response keys:', Object.keys(data));
+    console.log('🌊 NDWI Detection - water_area_hectare:', (data as any).water_area_hectare);
+    console.log('🌊 NDWI Detection - water_area_hectares:', (data as any).water_area_hectares);
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {

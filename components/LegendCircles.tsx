@@ -57,8 +57,14 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
       break;
     case 'waterSource':
       // For water source, show overall water percentage in blue
+      // Check for water_area_percentage first (from area_summary), then fall back to water_pixel_percentage
+      const waterPercentage = data?.water_area_percentage ?? data?.water_pixel_percentage ?? 0;
+      console.log('🌊 LegendCircles - waterSource data:', data);
+      console.log('🌊 LegendCircles - water_area_percentage:', data?.water_area_percentage);
+      console.log('🌊 LegendCircles - water_pixel_percentage:', data?.water_pixel_percentage);
+      console.log('🌊 LegendCircles - final waterPercentage:', waterPercentage);
       items = [
-        { label: 'Water %', value: data?.water_pixel_percentage || 0, color: '#3b82f6' }, // Blue
+        { label: 'Water %', value: waterPercentage, color: '#3b82f6' }, // Blue
       ];
       break;
     case 'forest':
@@ -94,7 +100,10 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
             }`}
             style={{ backgroundColor: item.color }}
           >
-            {Math.round(item.value)}
+            {type === 'waterSource' && item.value < 1 
+              ? item.value.toFixed(2) // Show 2 decimal places for small percentages (0.46)
+              : Math.round(item.value) // Round for other types
+            }
           </div>
           <span className="text-[10px] md:text-xs text-gray-300 whitespace-nowrap">{item.label}</span>
         </div>
