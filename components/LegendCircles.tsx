@@ -32,7 +32,8 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
       items = [
         { label: 'Deficient', value: data?.deficient_pixel_percentage || 0, color: '#f97316' }, // Orange
         { label: 'Less', value: data?.less_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'Adequate', value: data?.adequate_pixel_percentage || 0, color: '#f97316' }, // Orange
+        // API may use 'adequat_pixel_percentage' (missing 'e')
+        { label: 'Adequate', value: data?.adequate_pixel_percentage || data?.adequat_pixel_percentage || 0, color: '#f97316' }, // Orange
         { label: 'Excellent', value: data?.excellent_pixel_percentage || 0, color: '#f97316' }, // Orange
         { label: 'Excess', value: data?.excess_pixel_percentage || 0, color: '#f97316' }, // Orange
       ];
@@ -100,9 +101,9 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
             }`}
             style={{ backgroundColor: item.color }}
           >
-            {type === 'waterSource' && item.value < 1 
-              ? item.value.toFixed(2) // Show 2 decimal places for small percentages (0.46)
-              : Math.round(item.value) // Round for other types
+            {item.value > 0 && item.value < 1
+              ? item.value.toFixed(2) // Show 2 decimal places for small percentages (e.g. 0.02)
+              : Math.round(item.value) // Round other values
             }
           </div>
           <span className="text-[10px] md:text-xs text-gray-300 whitespace-nowrap">{item.label}</span>

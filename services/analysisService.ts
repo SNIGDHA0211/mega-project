@@ -202,7 +202,7 @@ export const fetchGrowthAnalysis1 = async (
 ): Promise<GrowthAnalysisResponse> => {
   try {
     // Build URL with available parameters
-    let url = `${BASE_URL}/analyze_Growth1?district=${encodeURIComponent(district)}`;
+    let url = `${BASE_URL}/analyze_Growthclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -226,7 +226,7 @@ export const fetchGrowthAnalysis1 = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/analyze_Growth1`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/analyze_Growthclasswise`);
     }
     throw error;
   }
@@ -239,7 +239,8 @@ export const fetchWaterUptakeAnalysis = async (
   village?: string
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL}/wateruptake?district=${encodeURIComponent(district)}`;
+    // Correct endpoint name (double "ss"): /wateruptakeclassswise?district=...
+    let url = `${BASE_URL}/wateruptakeclassswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -263,7 +264,7 @@ export const fetchWaterUptakeAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptake`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptakeclassswise`);
     }
     throw error;
   }
@@ -276,7 +277,8 @@ export const fetchSoilMoistureAnalysis = async (
   village?: string
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL}/SoilMoisture?district=${encodeURIComponent(district)}`;
+    // Match Growth-style endpoint: /SoilMoistureclasswise?district=...
+    let url = `${BASE_URL}/SoilMoistureclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -300,13 +302,13 @@ export const fetchSoilMoistureAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/SoilMoisture`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/SoilMoistureclasswise`);
     }
     throw error;
   }
 };
 
-// Fetch Pest Detection Analysis
+// Fetch Pest Detection Analysis (district/subdistrict/village)
 export const fetchPestDetectionAnalysis = async (
   district: string,
   subdistrict?: string,
@@ -314,7 +316,8 @@ export const fetchPestDetectionAnalysis = async (
   coordinates?: number[][]
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    let url = `${BASE_URL}/pest-detection4?district=${encodeURIComponent(district)}`;
+    // Endpoint: /pest-detectionclasswise?district=...&subdistrict=...&village=...
+    let url = `${BASE_URL}/pest-detectionclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -322,7 +325,7 @@ export const fetchPestDetectionAnalysis = async (
       url += `&village=${encodeURIComponent(village)}`;
     }
     
-    // If coordinates are provided (drawn plot), add them to the request
+    // If coordinates are provided (drawn plot), add them to the request body
     let body = '';
     if (coordinates && coordinates.length > 0) {
       body = JSON.stringify({ coordinates });
@@ -345,7 +348,7 @@ export const fetchPestDetectionAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/pest-detection4`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/pest-detectionclasswise`);
     }
     throw error;
   }
@@ -400,7 +403,7 @@ export const fetchGrowthAnalysis = async (
   plotNo: number | string
 ): Promise<AnalysisResponse> => {
   try {
-    const url = `${BASE_URL}/analyze_Growth?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/analyze_Growthclasswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -454,7 +457,9 @@ export const fetchWaterUptake = async (
   plotNo: number | string
 ): Promise<WaterUptakeResponse> => {
   try {
-    const url = `${BASE_URL}/wateruptake?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    // Correct endpoint name (double "ss") and query format:
+    // /wateruptakeclassswise?taluka_name=...&plot_no=...
+    const url = `${BASE_URL}/wateruptakeclassswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -506,7 +511,8 @@ export const fetchSoilMoisture = async (
   plotNo: number | string
 ): Promise<SoilMoistureResponse> => {
   try {
-    const url = `${BASE_URL}/SoilMoisture?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    // Fix query-string format: /SoilMoistureclasswise?taluka_name=...&plot_no=...
+    const url = `${BASE_URL}/SoilMoistureclasswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -558,7 +564,7 @@ export const fetchPestDetection = async (
   plotNo: number | string
 ): Promise<PestDetectionResponse> => {
   try {
-    const url = `${BASE_URL}/pest-detection?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    const url = `${BASE_URL}/pest-detectionclasswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {

@@ -1092,7 +1092,7 @@ const App: React.FC = () => {
             setAllPlotsTileUrls({});
           }
 
-          // Store pixel summary based on active tab
+          // Store pixel/area summaries based on active tab
           // For waterSource, also include area_summary data (water_area_percentage)
           if (activeTab === 'waterSource') {
             const ndwiResponse = response as NDWIDetectionResponse;
@@ -1105,6 +1105,39 @@ const App: React.FC = () => {
             setAllPlotsAnalysisData(prev => ({
               ...prev,
               waterSource: waterSourceData,
+            }));
+          } else if (activeTab === 'pest') {
+            // Pest district/subdistrict/village API uses percentage_summary and area_summary_hectare
+            const pestResponse: any = response;
+            const pct = pestResponse.percentage_summary || {};
+            const area = pestResponse.area_summary_hectare || {};
+
+            const pestSummary = {
+              // Percentages mapped to LegendCircles expected keys
+              healthy_pixel_percentage: pct.healthy_pct ?? 0,
+              chewing_pixel_percentage: pct.chewing_pct ?? 0,
+              fungi_pixel_percentage: pct.fungi_pct ?? 0,
+              sucking_pixel_percentage: pct.sucking_pct ?? 0,
+              wilt_pixel_percentage: pct.wilt_pct ?? 0,
+              soilborne_pixel_percentage: pct.soilborne_pct ?? 0,
+
+              // Areas mapped to Area card expected keys
+              healthy_area_hectare: area.healthy_area_ha ?? 0,
+              chewing_area_hectare: area.chewing_area_ha ?? 0,
+              fungi_area_hectare: area.fungi_area_ha ?? 0,
+              sucking_area_hectare: area.sucking_area_ha ?? 0,
+              wilt_area_hectare: area.wilt_area_ha ?? 0,
+              soilborn_area_hectare: area.soilborne_area_ha ?? 0,
+              soilborne_area_hectare: area.soilborne_area_ha ?? 0,
+              total_area_hectare: area.total_area_ha ?? 0,
+            };
+
+            setAllPlotsAnalysisData(prev => ({
+              growth: prev?.growth || null,
+              water: prev?.water || null,
+              soil: prev?.soil || null,
+              pest: pestSummary,
+              waterSource: prev?.waterSource || null,
             }));
           } else if (response.pixel_summary) {
             setAllPlotsAnalysisData(prev => ({
@@ -1293,6 +1326,46 @@ const App: React.FC = () => {
     currentPixelData = forestData; // Forest data for legend circles
   }
 
+  // Area cards data for sidebar (in hectares) based on current tab and pixel summary
+  const areaCards: { label: string; value: number }[] = [];
+  const ps: any = currentPixelData || {};
+
+  if (activeTab === 'growth') {
+    areaCards.push(
+      { label: 'Weak', value: Number(ps.weak_area_hectares || 0) },
+      { label: 'Stress', value: Number(ps.stress_area_hectares || 0) },
+      { label: 'Moderate', value: Number(ps.moderate_area_hectares || 0) },
+      { label: 'Healthy', value: Number(ps.healthy_area_hectares || 0) },
+    );
+  } else if (activeTab === 'water') {
+    // Water Uptake classwise: *_area_hectare (note: 'adequat_*' spelling from API)
+    areaCards.push(
+      { label: 'Deficient', value: Number(ps.deficient_area_hectare || 0) },
+      { label: 'Less', value: Number(ps.less_area_hectare || 0) },
+      { label: 'Adequate', value: Number(ps.adequat_area_hectare || 0) },
+      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0) },
+      { label: 'Excess', value: Number(ps.excess_area_hectare || 0) },
+    );
+  } else if (activeTab === 'soil') {
+    // Soil Moisture classwise: match legend labels (Less, Adequate, Excellent, Excess, Shallow Water)
+    areaCards.push(
+      { label: 'Less', value: Number(ps.less_area_hectare || 0) },
+      { label: 'Adequate', value: Number(ps.adequate_area_hectare || 0) },
+      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0) },
+      { label: 'Excess', value: Number(ps.excess_area_hectare || 0) },
+      { label: 'Shallow Water', value: Number(ps.shallow_water_area_hectare || 0) },
+    );
+  } else if (activeTab === 'pest') {
+    // Pest detection classwise: assume *_area_hectare keys aligned with legend labels
+    areaCards.push(
+      { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0) },
+      { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0) },
+      { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0) },
+      { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0) },
+      { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0) },
+    );
+  }
+
   // Handle login
   const handleLogin = (user: string) => {
     setCurrentUser(user);
@@ -1479,6 +1552,32 @@ const App: React.FC = () => {
               ) : (
                 <div className="text-sm text-gray-500">No water area data available</div>
               )}
+            </div>
+          )}
+
+          {/* Area cards for current analysis tab (Growth, Water Uptake, Soil Moisture, Pest) */}
+          {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                Area
+              </div>
+              {areaCards.map((item, idx) => (
+                <div
+                  key={`${item.label}-${idx}`}
+                  className="p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-3 h-3 rounded-full"
+                      style={{ backgroundColor: '#f97316' }}
+                    />
+                    <span className="text-sm text-gray-200">{item.label}</span>
+                  </div>
+                  <span className="text-sm font-semibold text-green-400">
+                    {item.value.toFixed(2)} ha
+                  </span>
+                </div>
+              ))}
             </div>
           )}
 
