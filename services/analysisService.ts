@@ -239,8 +239,8 @@ export const fetchWaterUptakeAnalysis = async (
   village?: string
 ): Promise<GrowthAnalysisResponse> => {
   try {
-    // Correct endpoint name (double "ss"): /wateruptakeclassswise?district=...
-    let url = `${BASE_URL}/wateruptakeclassswise?district=${encodeURIComponent(district)}`;
+    // Endpoint: /wateruptakeclasswise?district=... (matches API response "classwise")
+    let url = `${BASE_URL}/wateruptakeclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
     }
@@ -264,7 +264,7 @@ export const fetchWaterUptakeAnalysis = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptakeclassswise`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptakeclasswise`);
     }
     throw error;
   }
@@ -353,6 +353,26 @@ export const fetchPestDetectionAnalysis = async (
     throw error;
   }
 };
+
+// Pest detection classwise hierarchy response (plot-level / district-level)
+export interface PestHierarchyChild {
+  tile_url: string;
+  area_ha: number;
+  pct_of_parent: number;
+}
+
+export interface PestHierarchyNode {
+  tile_url: string | null;
+  total_area_ha: number;
+  percentage: number;
+  children: Record<string, PestHierarchyChild>;
+}
+
+export interface PestHierarchyResponse {
+  plot?: string;
+  total_area_ha: number;
+  hierarchy: Record<string, PestHierarchyNode>;
+}
 
 // Analysis response types
 export interface PixelSummary {
@@ -458,8 +478,8 @@ export const fetchWaterUptake = async (
 ): Promise<WaterUptakeResponse> => {
   try {
     // Correct endpoint name (double "ss") and query format:
-    // /wateruptakeclassswise?taluka_name=...&plot_no=...
-    const url = `${BASE_URL}/wateruptakeclassswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
+    // /wateruptakeclasswise?taluka_name=...&plot_no=...
+    const url = `${BASE_URL}/wateruptakeclasswise?taluka_name=${encodeURIComponent(talukaName)}&plot_no=${plotNo}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {

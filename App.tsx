@@ -20,7 +20,9 @@ import {
   GrowthAnalysisResponse,
   NDWIDetectionResponse,
   ETResponse,
-  WeatherResponse
+  WeatherResponse,
+  PestHierarchyResponse,
+  PestHierarchyChild
 } from './services/analysisService';
 import { Coordinate } from './types';
 import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff } from 'lucide-react';
@@ -135,6 +137,12 @@ const App: React.FC = () => {
   const [selectedForestAgeClass, setSelectedForestAgeClass] = useState<string | null>(null);
   const [forestTileUrl, setForestTileUrl] = useState<string | null>(null);
   const [forestAreaHa, setForestAreaHa] = useState<number | null>(null);
+
+  // State for pest hierarchy (classwise endpoint): legend circles + children + tile on map
+  const [pestHierarchy, setPestHierarchy] = useState<PestHierarchyResponse | null>(null);
+  const [pestTileUrl, setPestTileUrl] = useState<string | null>(null);
+  const [selectedPestCategory, setSelectedPestCategory] = useState<string | null>(null);
+  const [showPestChildren, setShowPestChildren] = useState<boolean>(false);
 
   // State for all plots analysis data
   const [allPlotsAnalysisData, setAllPlotsAnalysisData] = useState<{
@@ -821,6 +829,18 @@ const App: React.FC = () => {
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
         setWaterAreaHectares(null); // Clear water area when location changes
+        if (activeTab !== 'pest') {
+          setPestHierarchy(null);
+          setPestTileUrl(null);
+          setSelectedPestCategory(null);
+          setShowPestChildren(false);
+        }
+        if (activeTab !== 'pest') {
+          setPestHierarchy(null);
+          setPestTileUrl(null);
+          setSelectedPestCategory(null);
+          setShowPestChildren(false);
+        }
 
          // Fetch data based on active tab
            let response: GrowthAnalysisResponse | NDWIDetectionResponse;
@@ -1107,45 +1127,70 @@ const App: React.FC = () => {
               waterSource: waterSourceData,
             }));
           } else if (activeTab === 'pest') {
-            // Pest district/subdistrict/village API uses percentage_summary and area_summary_hectare
             const pestResponse: any = response;
-            const pct = pestResponse.percentage_summary || {};
-            const area = pestResponse.area_summary_hectare || {};
-
-            const pestSummary = {
-              // Percentages mapped to LegendCircles expected keys
-              healthy_pixel_percentage: pct.healthy_pct ?? 0,
-              chewing_pixel_percentage: pct.chewing_pct ?? 0,
-              fungi_pixel_percentage: pct.fungi_pct ?? 0,
-              sucking_pixel_percentage: pct.sucking_pct ?? 0,
-              wilt_pixel_percentage: pct.wilt_pct ?? 0,
-              soilborne_pixel_percentage: pct.soilborne_pct ?? 0,
-
-              // Areas mapped to Area card expected keys
-              healthy_area_hectare: area.healthy_area_ha ?? 0,
-              chewing_area_hectare: area.chewing_area_ha ?? 0,
-              fungi_area_hectare: area.fungi_area_ha ?? 0,
-              sucking_area_hectare: area.sucking_area_ha ?? 0,
-              wilt_area_hectare: area.wilt_area_ha ?? 0,
-              soilborn_area_hectare: area.soilborne_area_ha ?? 0,
-              soilborne_area_hectare: area.soilborne_area_ha ?? 0,
-              total_area_hectare: area.total_area_ha ?? 0,
-            };
-
+            // New format: hierarchy with tile_url, total_area_ha, percentage, children per category
+            if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+              setPestHierarchy(pestResponse as PestHierarchyResponse);
+              const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
+              const pestSummary = {
+                healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+                chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+                fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+                sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+                wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+                soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+                healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+                chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+                fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+                sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+                wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+                soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                total_area_hectare: pestResponse.total_area_ha ?? 0,
+              };
+              setAllPlotsAnalysisData(prev => ({
+                ...prev,
+                pest: pestSummary,
+              }));
+            } else {
+              // Legacy: percentage_summary and area_summary_hectare
+              const pct = pestResponse.percentage_summary || {};
+              const area = pestResponse.area_summary_hectare || {};
+              setPestHierarchy(null);
+              const pestSummary = {
+                healthy_pixel_percentage: pct.healthy_pct ?? 0,
+                chewing_pixel_percentage: pct.chewing_pct ?? 0,
+                fungi_pixel_percentage: pct.fungi_pct ?? 0,
+                sucking_pixel_percentage: pct.sucking_pct ?? 0,
+                wilt_pixel_percentage: pct.wilt_pct ?? 0,
+                soilborne_pixel_percentage: pct.soilborne_pct ?? 0,
+                healthy_area_hectare: area.healthy_area_ha ?? 0,
+                chewing_area_hectare: area.chewing_area_ha ?? 0,
+                fungi_area_hectare: area.fungi_area_ha ?? 0,
+                sucking_area_hectare: area.sucking_area_ha ?? 0,
+                wilt_area_hectare: area.wilt_area_ha ?? 0,
+                soilborn_area_hectare: area.soilborne_area_ha ?? 0,
+                soilborne_area_hectare: area.soilborne_area_ha ?? 0,
+                total_area_hectare: area.total_area_ha ?? 0,
+              };
+              setAllPlotsAnalysisData(prev => ({
+                ...prev,
+                pest: pestSummary,
+              }));
+            }
+          } else if (response.pixel_summary || (response as any).classwise) {
+            const responseAny = response as any;
+            const classwise = responseAny.classwise;
+            const tabData = (response.pixel_summary || {}) as any;
+            if ((activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil') && classwise && Array.isArray(classwise) && classwise.length > 0) {
+              tabData.classwise = classwise;
+            }
             setAllPlotsAnalysisData(prev => ({
-              growth: prev?.growth || null,
-              water: prev?.water || null,
-              soil: prev?.soil || null,
-              pest: pestSummary,
+              growth: activeTab === 'growth' ? tabData : (prev?.growth || null),
+              water: activeTab === 'water' ? tabData : (prev?.water || null),
+              soil: activeTab === 'soil' ? tabData : (prev?.soil || null),
+              pest: activeTab === 'pest' ? (response.pixel_summary || {}) : (prev?.pest || null),
               waterSource: prev?.waterSource || null,
-            }));
-          } else if (response.pixel_summary) {
-            setAllPlotsAnalysisData(prev => ({
-              growth: activeTab === 'growth' ? response.pixel_summary : (prev?.growth || null),
-              water: activeTab === 'water' ? response.pixel_summary : (prev?.water || null),
-              soil: activeTab === 'soil' ? response.pixel_summary : (prev?.soil || null),
-              pest: activeTab === 'pest' ? response.pixel_summary : (prev?.pest || null),
-              waterSource: prev?.waterSource || null, // Keep existing waterSource data
             }));
           } else {
             setAllPlotsAnalysisData(prev => ({
@@ -1326,44 +1371,85 @@ const App: React.FC = () => {
     currentPixelData = forestData; // Forest data for legend circles
   }
 
-  // Area cards data for sidebar (in hectares) based on current tab and pixel summary
-  const areaCards: { label: string; value: number }[] = [];
+  // Pest category colors for sidebar (same as map legend)
+  const PEST_CARD_COLORS: Record<string, string> = {
+    healthy: '#22c55e',
+    chewing: '#f97316',
+    fungi: '#a855f7',
+    sucking: '#ef4444',
+    wilt: '#92400e',
+    soilborne: '#6b7280',
+  };
+  // Area cards data for sidebar: ha + percentage; for pest optionally tileUrl + pestKey for click-to-show on map + children panel
+  const areaCards: { label: string; value: number; percentage?: number; color?: string; tileUrl?: string | null; pestKey?: string }[] = [];
   const ps: any = currentPixelData || {};
 
-  if (activeTab === 'growth') {
+  // Format percentage for display (small values show 2 decimals)
+  const formatPct = (p: number) =>
+    p > 0 && p < 1 ? p.toFixed(2) : String(Math.round(p));
+
+  // Format class_name for display: "shallow_water" -> "Shallow Water"
+  const formatClassLabel = (name: string) =>
+    (name || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  // Build from classwise array when API returns it (analyze_Growthclasswise, wateruptakeclasswise, SoilMoistureclasswise)
+  const classwise = ps.classwise;
+  if ((activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil') && classwise && Array.isArray(classwise) && classwise.length > 0) {
+    classwise.forEach((c: any) => {
+      areaCards.push({
+        label: formatClassLabel(c.class_name || ''),
+        value: Number(c.area_hectares ?? 0),
+        percentage: Number(c.percentage ?? 0),
+        color: c.color || '#f97316',
+      });
+    });
+  } else if (activeTab === 'growth') {
     areaCards.push(
-      { label: 'Weak', value: Number(ps.weak_area_hectares || 0) },
-      { label: 'Stress', value: Number(ps.stress_area_hectares || 0) },
-      { label: 'Moderate', value: Number(ps.moderate_area_hectares || 0) },
-      { label: 'Healthy', value: Number(ps.healthy_area_hectares || 0) },
+      { label: 'Weak', value: Number(ps.weak_area_hectares || 0), percentage: Number(ps.weak_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Stress', value: Number(ps.stress_area_hectares || 0), percentage: Number(ps.stress_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Moderate', value: Number(ps.moderate_area_hectares || 0), percentage: Number(ps.moderate_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Healthy', value: Number(ps.healthy_area_hectares || 0), percentage: Number(ps.healthy_pixel_percentage ?? 0), color: '#f97316' },
     );
   } else if (activeTab === 'water') {
-    // Water Uptake classwise: *_area_hectare (note: 'adequat_*' spelling from API)
     areaCards.push(
-      { label: 'Deficient', value: Number(ps.deficient_area_hectare || 0) },
-      { label: 'Less', value: Number(ps.less_area_hectare || 0) },
-      { label: 'Adequate', value: Number(ps.adequat_area_hectare || 0) },
-      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0) },
-      { label: 'Excess', value: Number(ps.excess_area_hectare || 0) },
+      { label: 'Deficient', value: Number(ps.deficient_area_hectare || 0), percentage: Number(ps.deficient_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Less', value: Number(ps.less_area_hectare || 0), percentage: Number(ps.less_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Adequate', value: Number(ps.adequat_area_hectare || 0), percentage: Number(ps.adequate_pixel_percentage ?? ps.adequat_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0), percentage: Number(ps.excellent_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Excess', value: Number(ps.excess_area_hectare || 0), percentage: Number(ps.excess_pixel_percentage ?? 0), color: '#f97316' },
     );
   } else if (activeTab === 'soil') {
-    // Soil Moisture classwise: match legend labels (Less, Adequate, Excellent, Excess, Shallow Water)
     areaCards.push(
-      { label: 'Less', value: Number(ps.less_area_hectare || 0) },
-      { label: 'Adequate', value: Number(ps.adequate_area_hectare || 0) },
-      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0) },
-      { label: 'Excess', value: Number(ps.excess_area_hectare || 0) },
-      { label: 'Shallow Water', value: Number(ps.shallow_water_area_hectare || 0) },
+      { label: 'Less', value: Number(ps.less_area_hectare || 0), percentage: Number(ps.less_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Adequate', value: Number(ps.adequate_area_hectare || 0), percentage: Number(ps.adequate_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0), percentage: Number(ps.excellent_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Excess', value: Number(ps.excess_area_hectare || 0), percentage: Number(ps.excess_pixel_percentage ?? 0), color: '#f97316' },
+      { label: 'Shallow Water', value: Number(ps.shallow_water_area_hectare || 0), percentage: Number(ps.shallow_water_pixel_percentage ?? 0), color: '#f97316' },
     );
   } else if (activeTab === 'pest') {
-    // Pest detection classwise: assume *_area_hectare keys aligned with legend labels
-    areaCards.push(
-      { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0) },
-      { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0) },
-      { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0) },
-      { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0) },
-      { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0) },
-    );
+    if (pestHierarchy?.hierarchy) {
+      const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+      order.forEach(k => {
+        const node = pestHierarchy.hierarchy[k];
+        if (node == null) return;
+        areaCards.push({
+          label: formatClassLabel(k),
+          value: Number(node.total_area_ha ?? 0),
+          percentage: Number(node.percentage ?? 0),
+          color: PEST_CARD_COLORS[k] ?? '#f97316',
+          tileUrl: node.tile_url ?? undefined,
+          pestKey: k,
+        });
+      });
+    } else {
+      areaCards.push(
+        { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0), percentage: Number(ps.chewing_pixel_percentage ?? 0), color: PEST_CARD_COLORS.chewing, pestKey: 'chewing' },
+        { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0), percentage: Number(ps.fungi_pixel_percentage ?? 0), color: PEST_CARD_COLORS.fungi, pestKey: 'fungi' },
+        { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0), percentage: Number(ps.sucking_pixel_percentage ?? 0), color: PEST_CARD_COLORS.sucking, pestKey: 'sucking' },
+        { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0), percentage: Number(ps.wilt_pixel_percentage ?? 0), color: PEST_CARD_COLORS.wilt, pestKey: 'wilt' },
+        { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0), percentage: Number(ps.soilborne_pixel_percentage ?? ps.soilborn_pixel_percentage ?? 0), color: PEST_CARD_COLORS.soilborne, pestKey: 'soilborne' },
+      );
+    }
   }
 
   // Handle login
@@ -1555,7 +1641,48 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Area cards for current analysis tab (Growth, Water Uptake, Soil Moisture, Pest) */}
+          {/* Percentage cards (class_name, color, percentage); for pest, click loads tile on map */}
+          {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                Percentage
+              </div>
+              {areaCards.map((item, idx) => (
+                <div
+                  key={`pct-${item.label}-${idx}`}
+                  role={activeTab === 'pest' && item.tileUrl != null ? 'button' : undefined}
+                  tabIndex={activeTab === 'pest' && item.tileUrl != null ? 0 : undefined}
+                  onClick={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? () => {
+                    if (item.tileUrl != null) {
+                      setPestTileUrl(item.tileUrl!);
+                      setAllPlotsTileUrls(prev => ({ ...prev, pest: item.tileUrl! }));
+                      setShowTileLayers(true);
+                    }
+                    if (item.pestKey != null) {
+                      setSelectedPestCategory(item.pestKey);
+                      const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+                      setShowPestChildren(!!children && Object.keys(children).length > 0);
+                    }
+                  } : undefined}
+                  onKeyDown={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? (e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); } : undefined}
+                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-3 h-3 rounded-full"
+                      style={{ backgroundColor: item.color || '#f97316' }}
+                    />
+                    <span className="text-sm text-gray-200">{item.label}</span>
+                  </div>
+                  <span className="text-sm font-semibold text-green-400">
+                    {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Area cards (class_name, color, area_hectares); for pest, click loads tile on map + shows children panel */}
           {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
             <div className="mt-3 space-y-2">
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -1563,13 +1690,28 @@ const App: React.FC = () => {
               </div>
               {areaCards.map((item, idx) => (
                 <div
-                  key={`${item.label}-${idx}`}
-                  className="p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between"
+                  key={`area-${item.label}-${idx}`}
+                  role={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'button' : undefined}
+                  tabIndex={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 0 : undefined}
+                  onClick={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? () => {
+                    if (item.tileUrl != null) {
+                      setPestTileUrl(item.tileUrl!);
+                      setAllPlotsTileUrls(prev => ({ ...prev, pest: item.tileUrl! }));
+                      setShowTileLayers(true);
+                    }
+                    if (item.pestKey != null) {
+                      setSelectedPestCategory(item.pestKey);
+                      const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+                      setShowPestChildren(!!children && Object.keys(children).length > 0);
+                    }
+                  } : undefined}
+                  onKeyDown={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? (e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); } : undefined}
+                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
                 >
                   <div className="flex items-center gap-2">
                     <span
                       className="inline-block w-3 h-3 rounded-full"
-                      style={{ backgroundColor: '#f97316' }}
+                      style={{ backgroundColor: item.color || '#f97316' }}
                     />
                     <span className="text-sm text-gray-200">{item.label}</span>
                   </div>
@@ -1926,10 +2068,10 @@ const App: React.FC = () => {
             )}
           </div>
 
-          {/* Legend Circles - Always display when tab is selected */}
-          {activeTab && (
-            <LegendCircles 
-              type={activeTab} 
+          {/* Legend circles only for waterSource and forest; pest uses sidebar cards with click-to-show on map */}
+          {activeTab && (activeTab === 'waterSource' || activeTab === 'forest') && (
+            <LegendCircles
+              type={activeTab}
               data={currentPixelData}
               onForestAgeClassClick={(ageClass, tileUrl, areaHa) => {
                 setSelectedForestAgeClass(ageClass);
@@ -1944,6 +2086,43 @@ const App: React.FC = () => {
 
         {/* Map */}
         <div className="flex-1 relative">
+          {/* Pest children panel: on map bottom when a sidebar percentage/area card with children is clicked */}
+          {activeTab === 'pest' && showPestChildren && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
+            <div className="absolute bottom-4 left-4 right-4 md:left-4 md:right-auto md:max-w-sm z-[1000] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-300 uppercase">
+                  Children — {selectedPestCategory.replace(/_/g, ' ')}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowPestChildren(false)}
+                  className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                >
+                  Hide
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {Object.entries(pestHierarchy.hierarchy[selectedPestCategory].children).map(([childKey, child]: [string, PestHierarchyChild]) => (
+                  <button
+                    key={childKey}
+                    type="button"
+                    onClick={() => {
+                      if (child.tile_url) {
+                        setPestTileUrl(child.tile_url);
+                        setAllPlotsTileUrls(prev => ({ ...prev, pest: child.tile_url }));
+                        setShowTileLayers(true);
+                      }
+                    }}
+                    className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
+                  >
+                    <div className="text-sm font-medium text-gray-200 capitalize">{childKey.replace(/_/g, ' ')}</div>
+                    <div className="text-xs text-gray-400 mt-0.5">{child.pct_of_parent.toFixed(1)}% · {child.area_ha.toFixed(2)} ha</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Controls - Right Side */}
           <div className="absolute top-20 md:top-24 right-4 z-[1000] flex flex-col gap-2">
             {/* Tile Layer Toggle Button */}
@@ -2043,7 +2222,7 @@ const App: React.FC = () => {
               etData={etData}
               weatherData={weatherData}
               etWeatherLoading={etWeatherLoading}
-              tileUrl={forestTileUrl || methaneTileUrl || lstTileUrl || cropTileUrl || tileUrl}
+              tileUrl={pestTileUrl || forestTileUrl || methaneTileUrl || lstTileUrl || cropTileUrl || tileUrl}
               plotBounds={plotBounds}
               allPlotsTileUrls={allPlotsTileUrls}
               showTileLayers={showTileLayers}
@@ -2059,11 +2238,12 @@ const App: React.FC = () => {
                 );
               }}
             />
-          )}        </div>
+          )}
+        </div>
       </main>
     </div>
   );
 };
 
+export { App };
 export default App;
-

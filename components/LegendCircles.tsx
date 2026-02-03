@@ -2,21 +2,38 @@ import React from 'react';
 
 export type AnalysisType = 'growth' | 'water' | 'soil' | 'pest' | 'waterSource' | 'forest';
 
+const PEST_COLORS: Record<string, string> = {
+  healthy: '#22c55e',
+  chewing: '#f97316',
+  fungi: '#a855f7',
+  sucking: '#ef4444',
+  wilt: '#92400e',
+  soilborne: '#6b7280',
+};
+
+function formatPestLabel(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 interface LegendItem {
   label: string;
   value: number;
   color: string;
-  ageClass?: string; // For forest age classes
+  ageClass?: string;
+  pestKey?: string;
+  tileUrl?: string | null;
+  totalAreaHa?: number;
+  children?: Record<string, { tile_url: string; area_ha: number; pct_of_parent: number }>;
 }
 
 interface LegendCirclesProps {
   type: AnalysisType;
-  data: any; // Pixel summary data or forest age classes
-  onForestAgeClassClick?: (ageClass: string, tileUrl: string, areaHa: number) => void; // For forest age class clicks
+  data: any;
+  onForestAgeClassClick?: (ageClass: string, tileUrl: string, areaHa: number) => void;
+  onPestCategoryClick?: (key: string, tileUrl: string | null, totalAreaHa: number, percentage: number, children: Record<string, { tile_url: string; area_ha: number; pct_of_parent: number }>) => void;
 }
 
-const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeClassClick }) => {
-  // Always display legend circles, even without data (show 0 values)
+const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeClassClick, onPestCategoryClick }) => {
   let items: LegendItem[] = [];
 
   switch (type) {
@@ -48,13 +65,29 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
       ];
       break;
     case 'pest':
-      items = [
-        { label: 'Chewing', value: data?.chewing_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'Fungi', value: data?.fungi_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'Sucking', value: data?.sucking_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'Wilt', value: data?.wilt_pixel_percentage || 0, color: '#f97316' }, // Orange
-        { label: 'SoilBorn', value: data?.soilborne_pixel_percentage || data?.soilborn_pixel_percentage || 0, color: '#f97316' }, // Orange
-      ];
+      // Hierarchy format: data is { healthy: { tile_url, total_area_ha, percentage, children }, ... }
+      if (data && typeof data === 'object' && (data.healthy || data.chewing || data.fungi || data.sucking || data.wilt || data.soilborne)) {
+        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+        items = order
+          .filter(k => data[k] != null)
+          .map(k => ({
+            label: formatPestLabel(k),
+            value: data[k].percentage ?? 0,
+            color: PEST_COLORS[k] ?? '#f97316',
+            pestKey: k,
+            tileUrl: data[k].tile_url ?? null,
+            totalAreaHa: data[k].total_area_ha ?? 0,
+            children: data[k].children ?? {},
+          }));
+      } else {
+        items = [
+          { label: 'Chewing', value: data?.chewing_pixel_percentage || 0, color: '#f97316' },
+          { label: 'Fungi', value: data?.fungi_pixel_percentage || 0, color: '#f97316' },
+          { label: 'Sucking', value: data?.sucking_pixel_percentage || 0, color: '#f97316' },
+          { label: 'Wilt', value: data?.wilt_pixel_percentage || 0, color: '#f97316' },
+          { label: 'SoilBorn', value: data?.soilborne_pixel_percentage || data?.soilborn_pixel_percentage || 0, color: '#f97316' },
+        ];
+      }
       break;
     case 'waterSource':
       // For water source, show overall water percentage in blue
@@ -87,7 +120,6 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
         <div key={index} className="flex flex-col items-center gap-1 flex-shrink-0">
           <div
             onClick={() => {
-              // Handle forest age class click
               if (type === 'forest' && item.ageClass && data && data[item.ageClass] && onForestAgeClassClick) {
                 onForestAgeClassClick(
                   item.ageClass,
@@ -95,9 +127,18 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
                   data[item.ageClass].area_hectares
                 );
               }
+              if (type === 'pest' && item.pestKey != null && item.tileUrl !== undefined && onPestCategoryClick) {
+                onPestCategoryClick(
+                  item.pestKey,
+                  item.tileUrl,
+                  item.totalAreaHa ?? 0,
+                  item.value,
+                  item.children ?? {}
+                );
+              }
             }}
             className={`w-8 h-8 md:w-12 md:h-12 rounded-full flex items-center justify-center text-white font-bold text-xs md:text-sm shadow-lg ${
-              type === 'forest' && item.ageClass ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''
+              (type === 'forest' && item.ageClass) || (type === 'pest' && item.pestKey != null) ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''
             }`}
             style={{ backgroundColor: item.color }}
           >
