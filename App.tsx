@@ -17,10 +17,12 @@ import {
   fetchForestCanopy,
   fetchET,
   fetchWeather,
+  fetchWeatherDaily,
   GrowthAnalysisResponse,
   NDWIDetectionResponse,
   ETResponse,
   WeatherResponse,
+  WeatherDailyResponse,
   PestHierarchyResponse,
   PestHierarchyChild
 } from './services/analysisService';
@@ -113,6 +115,12 @@ const App: React.FC = () => {
   const [etData, setEtData] = useState<ETResponse | null>(null);
   const [weatherData, setWeatherData] = useState<WeatherResponse | null>(null);
   const [etWeatherLoading, setEtWeatherLoading] = useState<boolean>(false);
+
+  // State for Daily Weather (district/subdistrict/village)
+  const [weatherDailyData, setWeatherDailyData] = useState<WeatherDailyResponse | null>(null);
+  const [weatherDailyLoading, setWeatherDailyLoading] = useState<boolean>(false);
+  const [weatherDailyError, setWeatherDailyError] = useState<string | null>(null);
+  const [weatherChartHoverDay, setWeatherChartHoverDay] = useState<number | null>(null);
 
   // State for total area (district/subdistrict/village)
   const [totalAreaHectares, setTotalAreaHectares] = useState<number | null>(null);
@@ -1346,6 +1354,43 @@ const App: React.FC = () => {
     setMethaneTileUrl(null);
   }, [selectedDistrict, selectedSubdistrict]);
 
+  // Fetch Daily Weather for selected district/subdistrict/village
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!selectedDistrict) {
+        setWeatherDailyData(null);
+        setWeatherDailyError(null);
+        setWeatherDailyLoading(false);
+        return;
+      }
+      try {
+        setWeatherDailyLoading(true);
+        setWeatherDailyError(null);
+        const data = await fetchWeatherDaily(
+          selectedDistrict,
+          selectedSubdistrict || undefined,
+          selectedVillage || undefined
+        );
+        if (!cancelled) setWeatherDailyData(data);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Failed to load daily weather';
+        if (!cancelled) {
+          setWeatherDailyData(null);
+          setWeatherDailyError(msg);
+        }
+      } finally {
+        if (!cancelled) setWeatherDailyLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage]);
+
   // Use all plots from taluka, or selected plot if analysis data is loaded, or GeoJSON plots if loaded
   const plots = geojsonPlots.length > 0 
     ? geojsonPlots 
@@ -1401,6 +1446,7 @@ const App: React.FC = () => {
         value: Number(c.area_hectares ?? 0),
         percentage: Number(c.percentage ?? 0),
         color: c.color || '#f97316',
+        tileUrl: c.tile_url ?? undefined,
       });
     });
   } else if (activeTab === 'growth') {
@@ -1650,22 +1696,32 @@ const App: React.FC = () => {
               {areaCards.map((item, idx) => (
                 <div
                   key={`pct-${item.label}-${idx}`}
-                  role={activeTab === 'pest' && item.tileUrl != null ? 'button' : undefined}
-                  tabIndex={activeTab === 'pest' && item.tileUrl != null ? 0 : undefined}
-                  onClick={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? () => {
-                    if (item.tileUrl != null) {
-                      setPestTileUrl(item.tileUrl!);
-                      setAllPlotsTileUrls(prev => ({ ...prev, pest: item.tileUrl! }));
+                  role={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'button' : undefined}
+                  tabIndex={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 0 : undefined}
+                  onClick={() => {
+                    if (activeTab === 'pest') {
+                      if (item.tileUrl != null) {
+                        setPestTileUrl(item.tileUrl!);
+                        setAllPlotsTileUrls({ pest: item.tileUrl! });
+                        setShowTileLayers(true);
+                      }
+                      if (item.pestKey != null) {
+                        setSelectedPestCategory(item.pestKey);
+                        const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+                        setShowPestChildren(!!children && Object.keys(children).length > 0);
+                      }
+                    } else if (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) {
+                      setAllPlotsTileUrls({ [activeTab]: item.tileUrl! });
                       setShowTileLayers(true);
                     }
-                    if (item.pestKey != null) {
-                      setSelectedPestCategory(item.pestKey);
-                      const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                      setShowPestChildren(!!children && Object.keys(children).length > 0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      if ((activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null))
+                        e.currentTarget.click();
                     }
-                  } : undefined}
-                  onKeyDown={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? (e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); } : undefined}
-                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                  }}
+                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
                 >
                   <div className="flex items-center gap-2">
                     <span
@@ -1682,7 +1738,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Area cards (class_name, color, area_hectares); for pest, click loads tile on map + shows children panel */}
+          {/* Area cards (class_name, color, area_hectares); for growth/water/soil/pest, click loads only this tile on map (pest also shows children panel) */}
           {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
             <div className="mt-3 space-y-2">
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -1691,22 +1747,32 @@ const App: React.FC = () => {
               {areaCards.map((item, idx) => (
                 <div
                   key={`area-${item.label}-${idx}`}
-                  role={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'button' : undefined}
-                  tabIndex={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 0 : undefined}
-                  onClick={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? () => {
-                    if (item.tileUrl != null) {
-                      setPestTileUrl(item.tileUrl!);
-                      setAllPlotsTileUrls(prev => ({ ...prev, pest: item.tileUrl! }));
+                  role={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'button' : undefined}
+                  tabIndex={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 0 : undefined}
+                  onClick={() => {
+                    if (activeTab === 'pest') {
+                      if (item.tileUrl != null) {
+                        setPestTileUrl(item.tileUrl!);
+                        setAllPlotsTileUrls({ pest: item.tileUrl! });
+                        setShowTileLayers(true);
+                      }
+                      if (item.pestKey != null) {
+                        setSelectedPestCategory(item.pestKey);
+                        const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+                        setShowPestChildren(!!children && Object.keys(children).length > 0);
+                      }
+                    } else if (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) {
+                      setAllPlotsTileUrls({ [activeTab]: item.tileUrl! });
                       setShowTileLayers(true);
                     }
-                    if (item.pestKey != null) {
-                      setSelectedPestCategory(item.pestKey);
-                      const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                      setShowPestChildren(!!children && Object.keys(children).length > 0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      if ((activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null))
+                        e.currentTarget.click();
                     }
-                  } : undefined}
-                  onKeyDown={activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? (e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); } : undefined}
-                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                  }}
+                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
                 >
                   <div className="flex items-center gap-2">
                     <span
@@ -2091,7 +2157,7 @@ const App: React.FC = () => {
             <div className="absolute bottom-4 left-4 right-4 md:left-4 md:right-auto md:max-w-sm z-[1000] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-gray-300 uppercase">
-                  Children — {selectedPestCategory.replace(/_/g, ' ')}
+                  {selectedPestCategory.replace(/_/g, ' ')}
                 </span>
                 <button
                   type="button"
@@ -2141,6 +2207,136 @@ const App: React.FC = () => {
               {showTileLayers ? <Eye size={18} /> : <EyeOff size={18} />}
               <span>{showTileLayers ? 'Hide' : 'Show'}</span>
             </button>
+          </div>
+
+          {/* Daily weather line chart (bottom-right) */}
+          <div className="absolute bottom-4 right-4 z-[1000] w-[320px] max-w-[calc(100vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Daily Weather</div>
+                <div className="text-sm text-gray-100">
+                  {weatherDailyData?.name || selectedVillage || selectedSubdistrict || selectedDistrict || '—'}
+                  {weatherDailyData?.level ? (
+                    <span className="text-xs text-gray-400"> · {String(weatherDailyData.level)}</span>
+                  ) : null}
+                </div>
+              </div>
+              {weatherDailyLoading ? (
+                <div className="text-xs text-gray-400">Loading…</div>
+              ) : weatherDailyError ? (
+                <div className="text-xs text-red-300">Failed</div>
+              ) : null}
+            </div>
+
+            {weatherDailyError ? (
+              <div className="mt-2 text-xs text-red-300">{weatherDailyError}</div>
+            ) : weatherDailyData?.daily?.length ? (
+              (() => {
+                const days = weatherDailyData.daily.slice(0, 7);
+                const tempMax = days.map(d => Number(d.temp_max ?? 0));
+                const rainfall = days.map(d => Number(d.rainfall ?? 0));
+                const windMax = days.map(d => Number(d.wind_max ?? 0));
+
+                const W = 300;
+                const H = 120;
+                const P = 18;
+                const xStep = days.length > 1 ? (W - P * 2) / (days.length - 1) : 0;
+
+                const scale = (arr: number[]) => {
+                  const lo = Math.min(...arr);
+                  const hi = Math.max(...arr);
+                  return (v: number) => {
+                    if (hi === lo) return H / 2;
+                    return H - P - ((v - lo) / (hi - lo)) * (H - P * 2);
+                  };
+                };
+                const yTemp = scale(tempMax);
+                const yRain = scale(rainfall);
+                const yWind = scale(windMax);
+
+                const pts = (arr: number[], yScale: (v: number) => number) =>
+                  arr.map((v, i) => `${P + i * xStep},${yScale(v)}`).join(' ');
+                const fmtDay = (s: string) => {
+                  const parts = (s || '').split('-');
+                  return parts.length === 3 ? parts[2] : s;
+                };
+
+                return (
+                  <div
+                    className="mt-2 relative"
+                    onMouseLeave={() => setWeatherChartHoverDay(null)}
+                  >
+                    {weatherChartHoverDay !== null && days[weatherChartHoverDay] && (
+                      <div
+                        className="absolute z-10 px-2.5 py-2 rounded-lg bg-gray-900 border border-gray-600 shadow-lg text-xs text-left whitespace-nowrap"
+                        style={{
+                          left: P + weatherChartHoverDay * xStep - 50,
+                          bottom: H + 24,
+                        }}
+                      >
+                        <div className="font-semibold text-gray-200 mb-1">{days[weatherChartHoverDay].date}</div>
+                        <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> °C</div>
+                        <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[weatherChartHoverDay].rainfall}</span></div>
+                        <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[weatherChartHoverDay].wind_max}</span></div>
+                      </div>
+                    )}
+                    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
+                      <line x1={P} y1={P} x2={P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+                      <line x1={P} y1={H - P} x2={W - P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+
+                      <polyline points={pts(tempMax, yTemp)} fill="none" stroke="#f97316" strokeWidth="2" />
+                      <polyline points={pts(rainfall, yRain)} fill="none" stroke="#3b82f6" strokeWidth="2" />
+                      <polyline points={pts(windMax, yWind)} fill="none" stroke="#10b981" strokeWidth="2" />
+
+                      {tempMax.map((v, i) => (
+                        <circle key={`tm-${i}`} cx={P + i * xStep} cy={yTemp(v)} r="2.5" fill="#f97316" />
+                      ))}
+                      {rainfall.map((v, i) => (
+                        <circle key={`rf-${i}`} cx={P + i * xStep} cy={yRain(v)} r="2.5" fill="#3b82f6" />
+                      ))}
+                      {windMax.map((v, i) => (
+                        <circle key={`wm-${i}`} cx={P + i * xStep} cy={yWind(v)} r="2.5" fill="#10b981" />
+                      ))}
+
+                      {days.map((_, i) => (
+                        <rect
+                          key={`hover-${i}`}
+                          x={Math.max(0, P + (i - 0.5) * xStep)}
+                          y={0}
+                          width={xStep}
+                          height={H}
+                          fill="transparent"
+                          onMouseEnter={() => setWeatherChartHoverDay(i)}
+                        />
+                      ))}
+                    </svg>
+
+                    <div className="flex justify-between text-[10px] text-gray-400 px-[18px]">
+                      {days.map((d, i) => (
+                        <span key={`d-${i}`} className="whitespace-nowrap">{fmtDay(d.date)}</span>
+                      ))}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-gray-300">
+                      <div className="flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#f97316]" />
+                        <span>Temp max (°C)</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#3b82f6]" />
+                        <span>Rainfall</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#10b981]" />
+                        <span>Wind max</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="mt-2 text-xs text-gray-400">No daily data</div>
+            )}
           </div>
 
           {loading && plots.length === 0 ? (

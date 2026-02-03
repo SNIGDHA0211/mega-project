@@ -1263,3 +1263,72 @@ export const fetchWeather = async (lat: number, lon: number): Promise<WeatherRes
     throw error;
   }
 };
+
+// Weather (daily) response: district/subdistrict/village
+export interface WeatherDailyItem {
+  date: string; // YYYY-MM-DD
+  temp_max: number;
+  temp_min: number;
+  rainfall: number;
+  wind_max: number;
+}
+
+export interface WeatherDailyResponse {
+  level: 'district' | 'subdistrict' | 'village' | string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  daily: WeatherDailyItem[];
+}
+
+// Fetch Daily Weather (district/subdistrict/village)
+// In development we use Vite proxy (/railway -> Railway backend) to avoid CORS. In production we call BASE_URL directly.
+export const fetchWeatherDaily = async (
+  district: string,
+  subdistrict?: string,
+  village?: string
+): Promise<WeatherDailyResponse> => {
+  const query = `district=${encodeURIComponent(district)}${subdistrict ? `&subdistrict=${encodeURIComponent(subdistrict)}` : ''}${village ? `&village=${encodeURIComponent(village)}` : ''}`;
+
+  const tryUrl = (pathPrefix: string) => `${BASE_URL}${pathPrefix}/weather/daily?${query}`;
+  const proxyUrl = typeof window !== 'undefined' ? `${window.location.origin}/railway/weather/daily?${query}` : '';
+
+  const urlsToTry: string[] = isDevelopment && proxyUrl
+    ? [proxyUrl, tryUrl(''), tryUrl('/api')]   // dev: try proxy first (avoids CORS)
+    : [tryUrl(''), tryUrl('/api')];
+
+  let lastError: Error | null = null;
+  for (const url of urlsToTry) {
+    try {
+      console.log('Weather daily request URL:', url);
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
+
+      if (!response.ok) {
+        lastError = new Error(`API Error: ${response.status} ${response.statusText}. Tried: ${url}`);
+        if (response.status === 404) continue;
+        throw lastError;
+      }
+      lastError = null;
+
+      const data: WeatherDailyResponse = await response.json();
+      return data;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) {
+        lastError = err;
+        continue;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'Failed to fetch' || err instanceof TypeError) {
+        lastError = new Error(`Cannot reach weather/daily API. Check: (1) Backend is running at ${BASE_URL}, (2) CORS allows your app origin, (3) Network/firewall. URL tried: ${url}`);
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new Error(`Weather daily API returned 404 for all paths. Backend must expose GET /weather/daily?district=... (or /api/weather/daily). Tried: ${urlsToTry.join(' ; ')}`);
+};

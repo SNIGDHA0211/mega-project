@@ -9,6 +9,12 @@ export default defineConfig(({ mode }) => {
         port: 3000,
         host: '0.0.0.0', // Bind to all network interfaces (accessible from localhost and network)
         proxy: {
+          '/railway': {
+            target: 'https://web-production-72a7.up.railway.app',
+            changeOrigin: true,
+            secure: true,
+            rewrite: (path) => path.replace(/^\/railway/, ''),
+          },
           '/api': {
             target: 'http://192.168.41.80:8000',
             changeOrigin: true,
