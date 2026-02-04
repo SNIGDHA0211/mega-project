@@ -121,6 +121,7 @@ const App: React.FC = () => {
   const [weatherDailyLoading, setWeatherDailyLoading] = useState<boolean>(false);
   const [weatherDailyError, setWeatherDailyError] = useState<string | null>(null);
   const [weatherChartHoverDay, setWeatherChartHoverDay] = useState<number | null>(null);
+  const [showWeatherDaily, setShowWeatherDaily] = useState<boolean>(true);
 
   // State for total area (district/subdistrict/village)
   const [totalAreaHectares, setTotalAreaHectares] = useState<number | null>(null);
@@ -1687,12 +1688,13 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Percentage cards (class_name, color, percentage); for pest, click loads tile on map */}
+          {/* Percentage / Area (ha) — grid 2 per row; click loads tile on map */}
           {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
-            <div className="mt-3 space-y-2">
-              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Percentage
+            <div className="mt-3">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                Percentage / Area (ha)
               </div>
+              <div className="grid grid-cols-2 gap-2">
               {areaCards.map((item, idx) => (
                 <div
                   key={`pct-${item.label}-${idx}`}
@@ -1721,71 +1723,26 @@ const App: React.FC = () => {
                         e.currentTarget.click();
                     }
                   }}
-                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                  className={`p-2 bg-gray-700 rounded-lg border border-gray-600 flex flex-col gap-1.5 ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <span
-                      className="inline-block w-3 h-3 rounded-full"
+                      className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
                       style={{ backgroundColor: item.color || '#f97316' }}
                     />
-                    <span className="text-sm text-gray-200">{item.label}</span>
+                    <span className="text-xs text-gray-200 truncate">{item.label}</span>
                   </div>
-                  <span className="text-sm font-semibold text-green-400">
-                    {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
-                  </span>
+                  <div className="flex flex-col gap-0.5 text-xs">
+                    <div className="text-gray-400">
+                      Percentage <span className="font-semibold text-green-400">{item.percentage != null ? formatPct(item.percentage) : '0'}%</span>
+                    </div>
+                    <div className="text-gray-400">
+                      Area <span className="font-semibold text-green-400">{item.value.toFixed(2)} ha</span>
+                    </div>
+                  </div>
                 </div>
               ))}
-            </div>
-          )}
-
-          {/* Area cards (class_name, color, area_hectares); for growth/water/soil/pest, click loads only this tile on map (pest also shows children panel) */}
-          {['growth', 'water', 'soil', 'pest'].includes(activeTab || '') && areaCards.length > 0 && (
-            <div className="mt-3 space-y-2">
-              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Area
               </div>
-              {areaCards.map((item, idx) => (
-                <div
-                  key={`area-${item.label}-${idx}`}
-                  role={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'button' : undefined}
-                  tabIndex={(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 0 : undefined}
-                  onClick={() => {
-                    if (activeTab === 'pest') {
-                      if (item.tileUrl != null) {
-                        setPestTileUrl(item.tileUrl!);
-                        setAllPlotsTileUrls({ pest: item.tileUrl! });
-                        setShowTileLayers(true);
-                      }
-                      if (item.pestKey != null) {
-                        setSelectedPestCategory(item.pestKey);
-                        const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                        setShowPestChildren(!!children && Object.keys(children).length > 0);
-                      }
-                    } else if (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) {
-                      setAllPlotsTileUrls({ [activeTab]: item.tileUrl! });
-                      setShowTileLayers(true);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      if ((activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null))
-                        e.currentTarget.click();
-                    }
-                  }}
-                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-between ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-block w-3 h-3 rounded-full"
-                      style={{ backgroundColor: item.color || '#f97316' }}
-                    />
-                    <span className="text-sm text-gray-200">{item.label}</span>
-                  </div>
-                  <span className="text-sm font-semibold text-green-400">
-                    {item.value.toFixed(2)} ha
-                  </span>
-                </div>
-              ))}
             </div>
           )}
 
@@ -2221,14 +2178,23 @@ const App: React.FC = () => {
                   ) : null}
                 </div>
               </div>
-              {weatherDailyLoading ? (
-                <div className="text-xs text-gray-400">Loading…</div>
-              ) : weatherDailyError ? (
-                <div className="text-xs text-red-300">Failed</div>
-              ) : null}
+              <div className="flex items-center gap-2">
+                {weatherDailyLoading ? (
+                  <div className="text-xs text-gray-400">Loading…</div>
+                ) : weatherDailyError ? (
+                  <div className="text-xs text-red-300">Failed</div>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setShowWeatherDaily(!showWeatherDaily)}
+                  className="text-[10px] px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-500"
+                >
+                  {showWeatherDaily ? 'Hide' : 'Show'}
+                </button>
+              </div>
             </div>
 
-            {weatherDailyError ? (
+            {showWeatherDaily && (weatherDailyError ? (
               <div className="mt-2 text-xs text-red-300">{weatherDailyError}</div>
             ) : weatherDailyData?.daily?.length ? (
               (() => {
@@ -2336,7 +2302,7 @@ const App: React.FC = () => {
               })()
             ) : (
               <div className="mt-2 text-xs text-gray-400">No daily data</div>
-            )}
+            ))}
           </div>
 
           {loading && plots.length === 0 ? (
