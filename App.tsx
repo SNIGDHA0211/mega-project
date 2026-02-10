@@ -131,6 +131,7 @@ const App: React.FC = () => {
   const [pestStoredLoading, setPestStoredLoading] = useState<boolean>(false);
   const [pestStoredError, setPestStoredError] = useState<string | null>(null);
   const [selectedPestYearMonth, setSelectedPestYearMonth] = useState<string | null>(null);
+  const [showPestSeries, setShowPestSeries] = useState<boolean>(true);
 
   // State for total area (district/subdistrict/village)
   const [totalAreaHectares, setTotalAreaHectares] = useState<number | null>(null);
@@ -2217,10 +2218,95 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Map */}
+          {/* Map */}
         <div className="flex-1 relative">
+          {/* Pest stored time series chart (area vs year_month) with its own hide/show */}
+          {activeTab === 'pest' && pestStoredSeries && pestStoredSeries.length > 0 && selectedPestCategory && showPestSeries && (
+            (() => {
+              const series = pestStoredSeries
+                .filter((item: PestStoredItem) => {
+                  const h = (item as any).response_data?.hierarchy || {};
+                  return h[selectedPestCategory];
+                })
+                .sort((a: PestStoredItem, b: PestStoredItem) => a.year_month.localeCompare(b.year_month));
+
+              if (!series.length) return null;
+
+              const labels = series.map(s => s.year_month);
+              const areaValues = series.map(s => {
+                const h = (s as any).response_data?.hierarchy?.[selectedPestCategory] || {};
+                return Number(h.total_area_ha ?? 0);
+              });
+
+              const W = 480;
+              const H = 140;
+              const P = 28;
+              const xStep = labels.length > 1 ? (W - P * 2) / (labels.length - 1) : 0;
+
+              const scale = (arr: number[]) => {
+                const lo = Math.min(...arr);
+                const hi = Math.max(...arr);
+                return (v: number) => {
+                  if (hi === lo) return H / 2;
+                  return H - P - ((v - lo) / (hi - lo)) * (H - P * 2);
+                };
+              };
+              const yArea = scale(areaValues);
+
+              const pts = (arr: number[]) =>
+                arr.map((v, i) => `${P + i * xStep},${yArea(v)}`).join(' ');
+
+              const fmtMonth = (ym: string) => {
+                const parts = ym.split('-');
+                if (parts.length !== 2) return ym;
+                const [y, m] = parts;
+                return `${m}-${y.slice(2)}`;
+              };
+
+            
+              
+              return (
+                <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[900] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-700 shadow-xl px-3 py-2 max-w-[calc(100vw-3rem)]">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                      {selectedPestCategory.replace(/_/g, ' ')} · Time Series
+                    </span>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-300">
+                      <div className="flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-orange-400" />
+                        <span>ha</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowPestSeries(false)}
+                        className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-500 text-[10px]"
+                      >
+                        Hide
+                      </button>
+                    </div>
+                  </div>
+                  <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
+                    <line x1={P} y1={P} x2={P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+                    <line x1={P} y1={H - P} x2={W - P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+
+                    <polyline points={pts(areaValues)} fill="none" stroke="#f97316" strokeWidth={2} />
+                    {areaValues.map((v, i) => (
+                      <circle key={`area-${i}`} cx={P + i * xStep} cy={yArea(v)} r={2.5} fill="#f97316" />
+                    ))}
+                  </svg>
+                  <div className="flex justify-between text-[10px] text-gray-400 px-[28px] mt-1">
+                    {labels.map((label, i) => (
+                      <span key={label + i} className="whitespace-nowrap">
+                        {fmtMonth(label)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()
+          )}
           {/* Pest children panel: on map, sized similar to Percentage / Area cards, positioned above year/month series */}
-          {activeTab === 'pest' && showPestChildren && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
+          {activeTab === 'pest' && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
             <div className="absolute bottom-28 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-gray-300 uppercase">
@@ -2228,31 +2314,43 @@ const App: React.FC = () => {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setShowPestChildren(false)}
+                  onClick={() => setShowPestChildren(prev => !prev)}
                   className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
                 >
-                  Hide
+                  {showPestChildren ? 'Hide' : 'Show'}
                 </button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {Object.entries(pestHierarchy.hierarchy[selectedPestCategory].children).map(([childKey, child]: [string, PestHierarchyChild]) => (
-                  <button
-                    key={childKey}
-                    type="button"
-                    onClick={() => {
-                      if (child.tile_url) {
-                        setPestTileUrl(child.tile_url);
-                        setAllPlotsTileUrls(prev => ({ ...prev, pest: child.tile_url }));
-                        setShowTileLayers(true);
-                      }
-                    }}
-                    className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
-                  >
-                    <div className="text-sm font-medium text-gray-200 capitalize">{childKey.replace(/_/g, ' ')}</div>
-                    <div className="text-xs text-gray-400 mt-0.5">{child.pct_of_parent.toFixed(1)}% · {child.area_ha.toFixed(2)} ha</div>
-                  </button>
-                ))}
-              </div>
+              {showPestChildren && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {Object.entries(pestHierarchy.hierarchy[selectedPestCategory].children).map(([childKey, child]: [string, PestHierarchyChild]) => (
+                    <button
+                      key={childKey}
+                      type="button"
+                      onClick={() => {
+                        if (child.tile_url) {
+                          setPestTileUrl(child.tile_url);
+                          setAllPlotsTileUrls(prev => ({ ...prev, pest: child.tile_url }));
+                          setShowTileLayers(true);
+                        }
+                      }}
+                      className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: PEST_CARD_COLORS[selectedPestCategory] ?? '#f97316' }}
+                        />
+                        <span className="text-sm font-medium text-gray-200 capitalize truncate">
+                          {childKey.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        {child.pct_of_parent.toFixed(1)}% · {child.area_ha.toFixed(2)} ha
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
