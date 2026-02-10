@@ -354,6 +354,44 @@ export const fetchPestDetectionAnalysis = async (
   }
 };
 
+// Stored Pest Detection (time series by year_month) - /api-stored/pest-detection
+export interface PestStoredItem {
+  year_month: string; // e.g. "2024-12"
+  [key: string]: any; // other fields from API (tile_url, area_ha, etc.)
+}
+
+export type PestStoredResponse = PestStoredItem[];
+
+export const fetchPestStoredSeries = async (
+  district: string,
+  subdistrict: string,
+  limit: number = 50
+): Promise<PestStoredResponse> => {
+  try {
+    const url = `${BASE_URL}/api-stored/pest-detection?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
+    console.log('Fetching stored pest series from:', url);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const data: PestStoredResponse = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/api-stored/pest-detection`);
+    }
+    throw error;
+  }
+};
+
 // Pest detection classwise hierarchy response (plot-level / district-level)
 export interface PestHierarchyChild {
   tile_url: string;

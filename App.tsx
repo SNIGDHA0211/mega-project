@@ -17,6 +17,7 @@ import {
   fetchForestCanopy,
   fetchET,
   fetchWeather,
+  fetchPestStoredSeries,
   fetchWeatherDaily,
   GrowthAnalysisResponse,
   NDWIDetectionResponse,
@@ -24,10 +25,12 @@ import {
   WeatherResponse,
   WeatherDailyResponse,
   PestHierarchyResponse,
-  PestHierarchyChild
+  PestHierarchyChild,
+  PestStoredResponse,
+  PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees } from 'lucide-react';
 import BlurText from './components/BlurText';
 import L from 'leaflet';
 
@@ -122,6 +125,12 @@ const App: React.FC = () => {
   const [weatherDailyError, setWeatherDailyError] = useState<string | null>(null);
   const [weatherChartHoverDay, setWeatherChartHoverDay] = useState<number | null>(null);
   const [showWeatherDaily, setShowWeatherDaily] = useState<boolean>(true);
+
+  // State for Pest stored time series (year_month tabs)
+  const [pestStoredSeries, setPestStoredSeries] = useState<PestStoredResponse | null>(null);
+  const [pestStoredLoading, setPestStoredLoading] = useState<boolean>(false);
+  const [pestStoredError, setPestStoredError] = useState<string | null>(null);
+  const [selectedPestYearMonth, setSelectedPestYearMonth] = useState<string | null>(null);
 
   // State for total area (district/subdistrict/village)
   const [totalAreaHectares, setTotalAreaHectares] = useState<number | null>(null);
@@ -1355,6 +1364,94 @@ const App: React.FC = () => {
     setMethaneTileUrl(null);
   }, [selectedDistrict, selectedSubdistrict]);
 
+  // Fetch Pest stored time series when Pest tab is active and district + subdistrict are selected
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (activeTab !== 'pest' || !selectedDistrict || !selectedSubdistrict) {
+        if (!cancelled) {
+          setPestStoredSeries(null);
+          setPestStoredError(null);
+          setPestStoredLoading(false);
+          setSelectedPestYearMonth(null);
+        }
+        return;
+      }
+      try {
+        setPestStoredLoading(true);
+        setPestStoredError(null);
+        const data = await fetchPestStoredSeries(selectedDistrict, selectedSubdistrict, 50);
+        if (!cancelled) {
+          setPestStoredSeries(data);
+          setSelectedPestYearMonth(data.length > 0 ? data[0].year_month : null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : 'Failed to load pest time series';
+          setPestStoredSeries(null);
+          setPestStoredError(msg);
+        }
+      } finally {
+        if (!cancelled) setPestStoredLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, selectedDistrict, selectedSubdistrict]);
+
+  // When a stored pest year_month is selected, update hierarchy, sidebar cards and map tile
+  useEffect(() => {
+    if (activeTab !== 'pest' || !pestStoredSeries || !selectedPestYearMonth) return;
+
+    const item = pestStoredSeries.find((it) => it.year_month === selectedPestYearMonth);
+    if (!item || !item.response_data) return;
+
+    const resp: any = item.response_data;
+    const hierarchy = resp.hierarchy || {};
+
+    // Update pest hierarchy so sidebar Percentage / Area uses stored data
+    setPestHierarchy({
+      plot: resp.plot || '',
+      total_area_ha: resp.total_area_ha ?? resp.total_area_ha ?? 0,
+      hierarchy,
+    } as PestHierarchyResponse);
+
+    // Build pest summary from hierarchy for sidebar cards (if needed elsewhere)
+    const pestSummary = {
+      healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+      chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+      fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+      sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+      wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+      soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+      healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+      chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+      fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+      sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+      wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+      soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+      soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+      total_area_hectare: resp.total_area_ha ?? 0,
+    };
+
+    setAllPlotsAnalysisData((prev) => ({
+      growth: prev?.growth || null,
+      water: prev?.water || null,
+      soil: prev?.soil || null,
+      pest: pestSummary,
+      waterSource: prev?.waterSource || null,
+    }));
+
+    // Update map tile_url for this month (overall pest tile)
+    if (resp.tile_url) {
+      setPestTileUrl(resp.tile_url);
+      setAllPlotsTileUrls({ pest: resp.tile_url });
+      setShowTileLayers(true);
+    }
+  }, [activeTab, pestStoredSeries, selectedPestYearMonth]);
+
   // Fetch Daily Weather for selected district/subdistrict/village
   useEffect(() => {
     let cancelled = false;
@@ -1724,22 +1821,22 @@ const App: React.FC = () => {
                         e.currentTarget.click();
                     }
                   }}
-                  className={`p-2 bg-gray-700 rounded-lg border border-gray-600 flex flex-col gap-1.5 ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                  className={`p-2 bg-gray-700 rounded-lg border border-gray-600 flex flex-col items-center text-center gap-1.5 ${(activeTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(activeTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 justify-center">
                     <span
                       className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
                       style={{ backgroundColor: item.color || '#f97316' }}
                     />
                     <span className="text-xs text-gray-200 truncate">{item.label}</span>
                   </div>
-                  <div className="flex flex-col gap-0.5 text-xs">
-                    <div className="text-gray-400">
-                      Percentage <span className="font-semibold text-green-400">{item.percentage != null ? formatPct(item.percentage) : '0'}%</span>
-                    </div>
-                    <div className="text-gray-400">
-                      Area <span className="font-semibold text-green-400">{item.value.toFixed(2)} ha</span>
-                    </div>
+                  <div className="flex flex-col gap-0.5 mt-1">
+                    <span className="font-semibold text-green-400 text-sm md:text-base">
+                      {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
+                    </span>
+                    <span className="font-semibold text-green-400 text-sm md:text-base">
+                      {item.value.toFixed(2)} ha
+                    </span>
                   </div>
                 </div>
               ))}
@@ -1797,50 +1894,68 @@ const App: React.FC = () => {
       <main className="flex-1 relative bg-gray-950 flex flex-col">
         {/* Top Navigation Tabs and Legend - Centered */}
         <div className="absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 w-auto px-2 md:px-0">
-          {/* Active Tab Buttons */}
+          {/* Active Tab Buttons - icons only */}
           <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto w-auto">
             <button
               onClick={() => setActiveTab('growth')}
-              className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Growth"
             >
-              Growth
+              <Sprout size={18} />
             </button>
             <button
               onClick={() => setActiveTab('water')}
-              className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Water Uptake"
             >
-              Water Uptake
+              <Droplets size={18} />
             </button>
             <button
               onClick={() => setActiveTab('soil')}
-              className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Soil Moisture"
             >
-              Soil Moisture
+              <Droplet size={18} />
             </button>
             <button
               onClick={() => {
                 setActiveTab('pest');
               }}
-              className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Pest"
             >
-              Pest
+              <Bug size={18} />
             </button>
-             <button
-               onClick={() => {
-                 setActiveTab('waterSource');
-               }}
-               className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
-             >
-               Water Source
-             </button>
-             <button
-               onClick={() => {
-                 setActiveTab('forest');
-               }}
-               className="px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap text-gray-300 hover:bg-gray-700"
-             >
-               Forest
-             </button>
+            <button
+              onClick={() => {
+                setActiveTab('waterSource');
+              }}
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Water Source"
+            >
+              <Waves size={18} />
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab('forest');
+              }}
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
+                activeTab === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+              title="Forest"
+            >
+              <Trees size={18} />
+            </button>
              
             {/* Crops Dropdown - Inline with tabs */}
             <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-600">
@@ -1894,12 +2009,9 @@ const App: React.FC = () => {
                   ? 'bg-green-600/20 border-green-500' 
                   : 'bg-gray-700 border-gray-600'
               }`}
+              title="Land Surface Temperature"
             >
-              <span className="text-base">🌡️</span>
-              <div className="flex flex-col">
-                <span className="text-xs font-semibold text-gray-300 uppercase leading-tight">Land Surface</span>
-                <span className="text-xs font-semibold text-gray-300 uppercase leading-tight">Temperature</span>
-              </div>
+              <span className="text-lg">🌡️</span>
             </div>
 
             {/* Methane Concentration Card - Inline */}
@@ -1941,12 +2053,9 @@ const App: React.FC = () => {
                   ? 'bg-blue-600/20 border-blue-500' 
                   : 'bg-gray-700 border-gray-600'
               }`}
+              title="Methane Concentration"
             >
-              <span className="text-base">💨</span>
-              <div className="flex flex-col">
-                <span className="text-xs font-semibold text-gray-300 uppercase leading-tight">Methane</span>
-                <span className="text-xs font-semibold text-gray-300 uppercase leading-tight">Concentration</span>
-              </div>
+              <span className="text-lg">💨</span>
             </div>
 
             {/* Boundary Button - Only visible when subdistrict is "Palus" and village is selected */}
@@ -2110,9 +2219,9 @@ const App: React.FC = () => {
 
         {/* Map */}
         <div className="flex-1 relative">
-          {/* Pest children panel: on map bottom when a sidebar percentage/area card with children is clicked */}
+          {/* Pest children panel: on map, sized similar to Percentage / Area cards, positioned above year/month series */}
           {activeTab === 'pest' && showPestChildren && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
-            <div className="absolute bottom-4 left-4 right-4 md:left-4 md:right-auto md:max-w-sm z-[1000] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
+            <div className="absolute bottom-28 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-gray-300 uppercase">
                   {selectedPestCategory.replace(/_/g, ' ')}
@@ -2155,7 +2264,7 @@ const App: React.FC = () => {
                 console.log('👁️ Toggling tile layers, current state:', showTileLayers);
                 setShowTileLayers(!showTileLayers);
               }}
-              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center ${
                 showTileLayers
                   ? 'bg-blue-600 text-white'
                   : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
@@ -2163,7 +2272,6 @@ const App: React.FC = () => {
               title={showTileLayers ? 'Hide tile layers' : 'Show tile layers'}
             >
               {showTileLayers ? <Eye size={18} /> : <EyeOff size={18} />}
-              <span>{showTileLayers ? 'Hide' : 'Show'}</span>
             </button>
           </div>
 
@@ -2401,6 +2509,40 @@ const App: React.FC = () => {
                 );
               }}
             />
+          )}
+
+          {/* Pest stored year-month series tabs (bottom-left when Pest tab active) */}
+          {activeTab === 'pest' && pestStoredSeries && pestStoredSeries.length > 0 && (
+            <div className="absolute bottom-4 left-4 z-[1000] max-w-[calc(100vw-6rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-3 py-2">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                  Year / Month Series
+                </div>
+                {pestStoredLoading && (
+                  <div className="text-[10px] text-gray-400">Loading…</div>
+                )}
+              </div>
+              {pestStoredError ? (
+                <div className="text-[10px] text-red-300">{pestStoredError}</div>
+              ) : (
+                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                  {pestStoredSeries.map((item: PestStoredItem, idx: number) => (
+                    <button
+                      key={`${item.year_month}-${idx}`}
+                      type="button"
+                      onClick={() => setSelectedPestYearMonth(item.year_month)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] border ${
+                        selectedPestYearMonth === item.year_month
+                          ? 'bg-emerald-500/80 border-emerald-400 text-black'
+                          : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
+                      }`}
+                    >
+                      {item.year_month}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
       </main>
