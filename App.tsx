@@ -30,7 +30,12 @@ import {
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart } from 'lucide-react';
+
+// Local Graph icon component (acts like GoGraph from react-icons/go)
+const GoGraph: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
+  <LineChart size={size} className={className} />
+);
 import BlurText from './components/BlurText';
 import L from 'leaflet';
 
@@ -124,7 +129,8 @@ const App: React.FC = () => {
   const [weatherDailyLoading, setWeatherDailyLoading] = useState<boolean>(false);
   const [weatherDailyError, setWeatherDailyError] = useState<string | null>(null);
   const [weatherChartHoverDay, setWeatherChartHoverDay] = useState<number | null>(null);
-  const [showWeatherDaily, setShowWeatherDaily] = useState<boolean>(true);
+  // Weather card is opened from the rain icon, so start hidden
+  const [showWeatherDaily, setShowWeatherDaily] = useState<boolean>(false);
 
   // State for Pest stored time series (year_month tabs)
   const [pestStoredSeries, setPestStoredSeries] = useState<PestStoredResponse | null>(null);
@@ -1888,6 +1894,7 @@ const App: React.FC = () => {
         }`}
         title={sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'}
       >
+        
         <Home size={18} className="md:w-5 md:h-5" />
       </button>
 
@@ -2014,6 +2021,32 @@ const App: React.FC = () => {
             >
               <span className="text-lg">🌡️</span>
             </div>
+
+            {/* Daily Weather Icon - Inline (rain icon) */}
+            <button
+              type="button"
+              onClick={() => setShowWeatherDaily(true)}
+              className="px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 bg-gray-700 border-gray-600 text-white flex items-center justify-center hover:bg-gray-600 transition-colors"
+              title="Daily Weather"
+            >
+              <span className="text-2xl">🌧️</span>
+            </button>
+
+            {/* Pest Time Series Graph Icon - only relevant on Pest tab */}
+            {activeTab === 'pest' && (
+              <button
+                type="button"
+                onClick={() => setShowPestSeries(prev => !prev)}
+                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 flex items-center justify-center transition-colors ${
+                  showPestSeries
+                    ? 'bg-rose-500/90 border-rose-400 text-black hover:bg-rose-400'
+                    : 'bg-gray-700 border-gray-600 text-white hover:bg-gray-600'
+                }`}
+                title={showPestSeries ? 'Hide pest time series' : 'Show pest time series'}
+              >
+                <GoGraph />
+              </button>
+            )}
 
             {/* Methane Concentration Card - Inline */}
             <div 
@@ -2373,7 +2406,8 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Daily weather line chart (bottom-right) */}
+          {/* Daily weather line chart (bottom-right) - opened via WiDayRain icon */}
+          {showWeatherDaily && (
           <div className="absolute bottom-4 right-4 z-[1000] w-[320px] max-w-[calc(100vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -2401,7 +2435,7 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {showWeatherDaily && (weatherDailyError ? (
+            {weatherDailyError ? (
               <div className="mt-2 text-xs text-red-300">{weatherDailyError}</div>
             ) : weatherDailyData?.daily?.length ? (
               (() => {
@@ -2509,8 +2543,9 @@ const App: React.FC = () => {
               })()
             ) : (
               <div className="mt-2 text-xs text-gray-400">No daily data</div>
-            ))}
+            )}
           </div>
+          )}
 
           {loading && plots.length === 0 ? (
             <div className="h-full w-full flex items-center justify-center bg-gray-900 text-green-500">

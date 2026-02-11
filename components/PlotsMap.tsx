@@ -22,26 +22,61 @@ interface PlotsMapProps {
   onSelectWaterSource?: (id: string, data: WaterSource) => void;
 }
 
-// Helper component to fit bounds when plots change
+// Helper component to fit bounds when plots change (only on initial load, not after user interaction)
 const MapBounds: React.FC<{ plots: Plot[]; plotBounds?: L.LatLngBounds | null }> = ({ plots, plotBounds }) => {
   const map = useMap();
+  const hasInitialized = React.useRef(false);
+  const userHasInteracted = React.useRef(false);
+  const lastPlotsHash = React.useRef<string>('');
+
+  // Track user interaction (zoom/pan) to prevent auto-fitting after manual zoom
+  useEffect(() => {
+    const handleZoom = () => {
+      userHasInteracted.current = true;
+    };
+    const handleMove = () => {
+      userHasInteracted.current = true;
+    };
+
+    map.on('zoomstart', handleZoom);
+    map.on('movestart', handleMove);
+
+    return () => {
+      map.off('zoomstart', handleZoom);
+      map.off('movestart', handleMove);
+    };
+  }, [map]);
 
   useEffect(() => {
-    // If plotBounds is provided, use it (for single plot with tile overlay)
-    if (plotBounds && plotBounds.isValid()) {
-      map.fitBounds(plotBounds, { padding: [50, 50] });
-    } else if (plots.length > 0) {
-      // Otherwise, calculate bounds from all plots
-      const bounds = L.latLngBounds([]);
-      plots.forEach(plot => {
-        plot.boundary.forEach(coord => {
-          // Input is [Lng, Lat], Leaflet needs [Lat, Lng]
-          bounds.extend([coord[1], coord[0]]);
+    // Create a hash of plot IDs to detect when plots actually change (not just re-render)
+    const plotsHash = plots.map(p => p.id).sort().join(',');
+    
+    // Only fit bounds if:
+    // 1. We haven't initialized yet AND user hasn't interacted, OR
+    // 2. The plots have actually changed (different IDs) AND user hasn't interacted
+    const shouldFitBounds = (!hasInitialized.current || plotsHash !== lastPlotsHash.current) && !userHasInteracted.current;
+    
+    if (shouldFitBounds) {
+      // If plotBounds is provided, use it (for single plot with tile overlay)
+      if (plotBounds && plotBounds.isValid()) {
+        map.fitBounds(plotBounds, { padding: [50, 50] });
+        hasInitialized.current = true;
+        lastPlotsHash.current = plotsHash;
+      } else if (plots.length > 0) {
+        // Otherwise, calculate bounds from all plots
+        const bounds = L.latLngBounds([]);
+        plots.forEach(plot => {
+          plot.boundary.forEach(coord => {
+            // Input is [Lng, Lat], Leaflet needs [Lat, Lng]
+            bounds.extend([coord[1], coord[0]]);
+          });
         });
-      });
-      
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50] });
+        
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, { padding: [50, 50] });
+          hasInitialized.current = true;
+          lastPlotsHash.current = plotsHash;
+        }
       }
     }
   }, [plots, plotBounds, map]);
