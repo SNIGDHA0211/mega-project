@@ -27,7 +27,6 @@ export interface DistrictsResponse {
 export const fetchDistricts = async (): Promise<DistrictItem[]> => {
   try {
     const url = `${BASE_URL}/districts`;
-    console.log('Fetching districts from:', url);
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -875,7 +874,7 @@ export const fetchNDWIDetection = async (
     }
     
     // Build URL with available parameters (same as other analysis endpoints)
-    let url = `${BASE_URL}/NDWIDetection1?district=${encodeURIComponent(district.trim())}`;
+    let url = `${BASE_URL}/NDWIDetection?district=${encodeURIComponent(district.trim())}`;
     if (subdistrict && subdistrict.trim() !== '') {
       url += `&subdistrict=${encodeURIComponent(subdistrict.trim())}`;
     }
@@ -926,7 +925,7 @@ export const fetchNDWIDetection = async (
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/NDWIDetection1`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/NDWIDetection`);
     }
     throw error;
   }
@@ -1238,8 +1237,6 @@ export interface ETResponse {
 export const fetchET = async (lat: number, lon: number): Promise<ETResponse> => {
   try {
     const url = `${BASE_URL}/compute-et?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
-    console.log('Fetching ET data from:', url);
-    
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -1279,8 +1276,6 @@ export interface WeatherResponse {
 export const fetchWeather = async (lat: number, lon: number): Promise<WeatherResponse> => {
   try {
     const url = `${BASE_URL}/current-weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
-    console.log('Fetching Weather data from:', url);
-    
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -1338,7 +1333,6 @@ export const fetchWeatherDaily = async (
   let lastError: Error | null = null;
   for (const url of urlsToTry) {
     try {
-      console.log('Weather daily request URL:', url);
       const response = await fetch(url, {
         method: 'GET',
         headers: { accept: 'application/json' },

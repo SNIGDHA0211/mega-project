@@ -98,15 +98,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   // Default center (Nashik/Maharashtra area based on coordinates provided in prompt)
   const defaultCenter: LeafletCoordinate = [20.0130, 73.6620];
   
-  // Debug logging
-  React.useEffect(() => {
-    console.log('🗺️ PlotsMap - showTileLayers:', showTileLayers);
-    console.log('🗺️ PlotsMap - allPlotsTileUrls count:', Object.keys(allPlotsTileUrls).length);
-    if (Object.keys(allPlotsTileUrls).length > 0) {
-      console.log('🗺️ PlotsMap - Sample tile URL:', Object.values(allPlotsTileUrls)[0]);
-    }
-  }, [showTileLayers, allPlotsTileUrls]);
-
   return (
     <MapContainer 
       center={defaultCenter} 
@@ -145,10 +136,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             
             // Verify URL format
             if (!url.includes('{z}') || !url.includes('{x}') || !url.includes('{y}')) {
+              // Keep a single warning for malformed URLs, but avoid noisy logs for normal tiles
               console.warn(`Tile URL missing required placeholders for plot ${plotId}:`, url);
             }
-            
-            console.log(`🗺️ Rendering tile layer for plot ${plotId}:`, url);
             return (
               <TileLayer
                 key={`tile-${plotId}`}
