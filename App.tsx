@@ -366,10 +366,17 @@ const App: React.FC = () => {
     return parts.length > 0 ? parts.join(', ') : 'No location selected';
   };
 
-  // Helper function to add wrapped text to PDF
-  const addWrappedText = (pdf: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number = 6): number => {
-    const lines = pdf.splitTextToSize(text, maxWidth);
+  // Helper function to add wrapped text to PDF - ensures full text display without truncation
+  const addWrappedText = (pdf: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number = 6, pageMargin: number = 10): number => {
+    // Use full content width minus small margin for better text wrapping
+    const textWidth = maxWidth - 2; // Small margin for better wrapping
+    const lines = pdf.splitTextToSize(text, textWidth);
     lines.forEach((line: string) => {
+      // Check if we need a new page before adding text
+      if (y > pdf.internal.pageSize.getHeight() - pageMargin - lineHeight) {
+        pdf.addPage();
+        y = pageMargin;
+      }
       pdf.text(line, x, y);
       y += lineHeight;
     });
@@ -400,15 +407,15 @@ const App: React.FC = () => {
       pdf.text('Nearlive Crop Monitoring', margin, yPos);
       yPos += 8;
       
-      // Add location info with text wrapping
+      // Add location info with text wrapping - ensure full text display
       pdf.setFontSize(12);
       pdf.setFont('helvetica', 'normal');
-      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6);
+      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6, margin);
       yPos += 2;
       
-      // Add pest info with text wrapping
+      // Add pest info with text wrapping - ensure full text display
       if (selectedPestCategory) {
-        yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6);
+        yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
         yPos += 2;
       }
       
@@ -421,14 +428,16 @@ const App: React.FC = () => {
       const pestImgData = pestCanvas.toDataURL('image/png');
       const pestImgHeight = (pestCanvas.height * contentWidth) / pestCanvas.width;
       
-      // Add pest graph
-      pdf.addImage(pestImgData, 'PNG', margin, yPos, contentWidth, pestImgHeight);
-      yPos += pestImgHeight + 10;
+      // Add pest graph - ensure it doesn't push content off page
+      const maxPestHeight = pageHeight - yPos - 30; // Leave 30mm for bottom margin and any text
+      const actualPestHeight = Math.min(pestImgHeight, maxPestHeight);
+      pdf.addImage(pestImgData, 'PNG', margin, yPos, contentWidth, actualPestHeight);
+      yPos += actualPestHeight + 10;
       
       // Add weather graph if available
       if (weatherElement && showWeatherDaily && weatherDailyData?.daily?.length) {
-        // Check if we need a new page
-        if (yPos > pageHeight - 80) {
+        // Check if we need a new page - leave more space for text
+        if (yPos > pageHeight - 100) {
           pdf.addPage();
           yPos = margin;
         }
@@ -448,8 +457,9 @@ const App: React.FC = () => {
         const weatherImgData = weatherCanvas.toDataURL('image/png');
         const weatherImgHeight = (weatherCanvas.height * contentWidth) / weatherCanvas.width;
         
-        // Add weather graph
-        pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, pageHeight - yPos - margin));
+        // Add weather graph - ensure it doesn't push content off page, leave space for text
+        const maxWeatherHeight = pageHeight - yPos - 30; // Leave 30mm for bottom margin and any text
+        pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, maxWeatherHeight));
       }
       
       pdf.save(`nearlive-crop-monitoring-${selectedPestCategory || 'data'}-${Date.now()}.pdf`);
@@ -543,18 +553,18 @@ const App: React.FC = () => {
       pdf.text('Nearlive Crop Monitoring', margin, yPos);
       yPos += 8;
       
-      // Add location info with text wrapping
+      // Add location info with text wrapping - ensure full text display
       pdf.setFontSize(12);
       pdf.setFont('helvetica', 'normal');
-      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6);
+      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6, margin);
       yPos += 2;
       
-      // Add pest info if available with text wrapping
+      // Add pest info if available with text wrapping - ensure full text display
       if (selectedPestCategory && graphElement) {
-        yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6);
+        yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
         yPos += 4;
         
-        // Capture and add pest graph
+        // Capture and add pest graph - ensure it doesn't push content off page
         const pestCanvas = await html2canvas(graphElement, { 
           scale: 2,
           backgroundColor: '#f3f4f6',
@@ -563,8 +573,10 @@ const App: React.FC = () => {
         const pestImgData = pestCanvas.toDataURL('image/png');
         const pestImgHeight = (pestCanvas.height * contentWidth) / pestCanvas.width;
         
-        pdf.addImage(pestImgData, 'PNG', margin, yPos, contentWidth, pestImgHeight);
-        yPos += pestImgHeight + 10;
+        const maxPestHeight = pageHeight - yPos - 30; // Leave 30mm for bottom margin and any text
+        const actualPestHeight = Math.min(pestImgHeight, maxPestHeight);
+        pdf.addImage(pestImgData, 'PNG', margin, yPos, contentWidth, actualPestHeight);
+        yPos += actualPestHeight + 10;
       }
       
       // Add weather section title
@@ -582,8 +594,8 @@ const App: React.FC = () => {
       const weatherImgData = weatherCanvas.toDataURL('image/png');
       const weatherImgHeight = (weatherCanvas.height * contentWidth) / weatherCanvas.width;
       
-      // Check if we need a new page
-      if (yPos + weatherImgHeight > pageHeight - margin) {
+      // Check if we need a new page - leave more space for text
+      if (yPos + weatherImgHeight > pageHeight - 100) {
         pdf.addPage();
         yPos = margin;
         pdf.setFontSize(14);
@@ -592,7 +604,9 @@ const App: React.FC = () => {
         yPos += 8;
       }
       
-      pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, pageHeight - yPos - margin));
+      // Add weather graph - ensure it doesn't push content off page, leave space for text
+      const maxWeatherHeight = pageHeight - yPos - 30; // Leave 30mm for bottom margin and any text
+      pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, maxWeatherHeight));
       
       pdf.save(`nearlive-crop-monitoring-weather-${Date.now()}.pdf`);
     } catch (error) {
