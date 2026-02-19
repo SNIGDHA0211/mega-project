@@ -31,7 +31,6 @@ import {
 } from './services/analysisService';
 import { Coordinate } from './types';
 import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
-import { HiOutlineLogout } from "react-icons/hi";
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
@@ -4599,7 +4598,7 @@ const App: React.FC = () => {
                 // className="w-full logout-btn px-1 py-0.5 rounded text-[10px] transition-colors flex items-center justify-center gap-0.5 bg-red-600/20 hover:bg-red-600/30 border border-red-700/50 hover:border-red-600 text-red-300 hover:text-red-200"
                 title="Logout"
               >
-                <HiOutlineLogout size={25} />
+                <LogOut size={25} />
                 {/* <span className="text-[10px]">Logout</span> */}
               </button>
             </div>
