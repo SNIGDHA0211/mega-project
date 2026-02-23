@@ -281,6 +281,14 @@ const App: React.FC = () => {
   const pestResizeAccumRef = useRef({ x: 0, y: 0 });
   const PEST_RESIZE_STEP = 18;
 
+  // Refs to ignore stray second click when user double-taps Land Surface or Methane (so the second tap doesn't open the other)
+  const lastLstDoubleClickRef = useRef(0);
+  const lastMethaneDoubleClickRef = useRef(0);
+  const LST_METHANE_DBLCLICK_MS = 400;
+  // If user double-clicks to close while fetch is in flight, don't re-apply the result (so Methane/LST stay closed)
+  const methaneClosedByUserRef = useRef(false);
+  const lstClosedByUserRef = useRef(false);
+
   // State for Pest stored time series for left and right sides (split screen mode)
   const [leftPestStoredSeries, setLeftPestStoredSeries] = useState<PestStoredResponse | null>(null);
   const [leftPestStoredLoading, setLeftPestStoredLoading] = useState<boolean>(false);
@@ -4772,16 +4780,24 @@ const App: React.FC = () => {
               <Trees size={18} />
             </button>
 
-            {/* Land Surface Temperature Card - Inline */}
+            {/* Land Surface Temperature Card - Inline; double-click when active to close (same as Pest/Water etc) */}
             <div 
               onClick={async () => {
+                if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                 if (lstLoading || loading || !selectedDistrict) return;
+                // Only one of Land Surface or Methane at a time: turn off Methane when opening Land Surface
+                setMethaneTileUrl(null);
+                setMethaneEnabled(false);
+                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                lstClosedByUserRef.current = false;
                 try {
                   setLstLoading(true);
                   setError(null);
                   
                   const response = await fetchLandSurfaceTemperature(selectedDistrict);
                   
+                  if (lstClosedByUserRef.current) return;
                   if (response.tile_url) {
                     setLstTileUrl(response.tile_url);
                     setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
@@ -4790,6 +4806,7 @@ const App: React.FC = () => {
                     throw new Error('No tile_url in response');
                   }
                 } catch (err) {
+                  if (lstClosedByUserRef.current) return;
                   const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                   setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                   setLstTileUrl(null);
@@ -4797,6 +4814,18 @@ const App: React.FC = () => {
                   setLstLoading(false);
                 }
               }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!lstTileUrl) return;
+                lstClosedByUserRef.current = true;
+                lastLstDoubleClickRef.current = Date.now();
+                setLstTileUrl(null);
+                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+              }}
+              role="button"
+              tabIndex={0}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                 selectedDistrict && !lstLoading && !loading
                   ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
@@ -4806,15 +4835,21 @@ const App: React.FC = () => {
                   ? 'bg-green-600/20 border-green-500' 
                   : 'bg-gray-700 border-gray-600'
               }`}
-              title="Land Surface Temperature"
+              title="Land Surface Temperature (double-click when active to close)"
             >
               <span className="text-lg">🌡️</span>
             </div>
 
-            {/* Methane Concentration Card - Inline */}
+            {/* Methane Concentration Card - Inline; double-click when active to close (same as Pest/Water etc) */}
             <div 
               onClick={async () => {
+                if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                 if (methaneLoading || loading || !selectedDistrict) return;
+                // Only one of Land Surface or Methane at a time: turn off Land Surface when opening Methane
+                setLstTileUrl(null);
+                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                methaneClosedByUserRef.current = false;
                 try {
                   setMethaneLoading(true);
                   setError(null);
@@ -4824,6 +4859,7 @@ const App: React.FC = () => {
                     selectedSubdistrict || undefined
                   );
                   
+                  if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
                   if (response.tile_url) {
                     setMethaneTileUrl(response.tile_url);
                     setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
@@ -4833,6 +4869,7 @@ const App: React.FC = () => {
                     throw new Error('No tile_url in response');
                   }
                 } catch (err) {
+                  if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
                   const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                   setError(`Failed to load Methane Concentration: ${errorMessage}`);
                   setMethaneTileUrl(null);
@@ -4841,6 +4878,19 @@ const App: React.FC = () => {
                   setMethaneLoading(false);
                 }
               }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!methaneTileUrl) return;
+                methaneClosedByUserRef.current = true;
+                lastMethaneDoubleClickRef.current = Date.now();
+                setMethaneTileUrl(null);
+                setMethaneEnabled(false);
+                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+              }}
+              role="button"
+              tabIndex={0}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                 methaneEnabled && !methaneLoading && !loading
                   ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
@@ -4850,7 +4900,7 @@ const App: React.FC = () => {
                   ? 'bg-blue-600/20 border-blue-500' 
                   : 'bg-gray-700 border-gray-600'
               }`}
-              title="Methane Concentration"
+              title="Methane Concentration (double-click when active to close)"
             >
               <span className="text-lg">💨</span>
             </div>
@@ -5087,16 +5137,23 @@ const App: React.FC = () => {
                 <Trees size={18} />
               </button>
 
-              {/* Land Surface Temperature Card - Inline */}
+              {/* Land Surface Temperature Card - Inline; double-click when active to close */}
               <div 
                 onClick={async () => {
+                  if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                   if (lstLoading || loading || !selectedDistrict) return;
+                  setMethaneTileUrl(null);
+                  setMethaneEnabled(false);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  lstClosedByUserRef.current = false;
                   try {
                     setLstLoading(true);
                     setError(null);
                     
                     const response = await fetchLandSurfaceTemperature(selectedDistrict);
                     
+                    if (lstClosedByUserRef.current) return;
                     if (response.tile_url) {
                       setLstTileUrl(response.tile_url);
                       setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
@@ -5105,6 +5162,7 @@ const App: React.FC = () => {
                       throw new Error('No tile_url in response');
                     }
                   } catch (err) {
+                    if (lstClosedByUserRef.current) return;
                     const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                     setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                     setLstTileUrl(null);
@@ -5112,6 +5170,18 @@ const App: React.FC = () => {
                     setLstLoading(false);
                   }
                 }}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!lstTileUrl) return;
+                  lstClosedByUserRef.current = true;
+                  lastLstDoubleClickRef.current = Date.now();
+                  setLstTileUrl(null);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                }}
+                role="button"
+                tabIndex={0}
                 className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                   selectedDistrict && !lstLoading && !loading
                     ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
@@ -5121,15 +5191,20 @@ const App: React.FC = () => {
                     ? 'bg-green-600/20 border-green-500' 
                     : 'bg-gray-700 border-gray-600'
                 }`}
-                title="Land Surface Temperature"
+                title="Land Surface Temperature (double-click when active to close)"
               >
                 <span className={splitScreenMode ? 'text-base' : 'text-lg'}>🌡️</span>
               </div>
 
-              {/* Methane Concentration Card - Inline */}
+              {/* Methane Concentration Card - Inline; double-click when active to close */}
               <div 
                 onClick={async () => {
+                  if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                   if (methaneLoading || loading || !selectedDistrict) return;
+                  setLstTileUrl(null);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  methaneClosedByUserRef.current = false;
                   try {
                     setMethaneLoading(true);
                     setError(null);
@@ -5139,6 +5214,7 @@ const App: React.FC = () => {
                       selectedSubdistrict || undefined
                     );
                     
+                    if (methaneClosedByUserRef.current) return;
                     if (response.tile_url) {
                       setMethaneTileUrl(response.tile_url);
                       setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
@@ -5148,6 +5224,7 @@ const App: React.FC = () => {
                       throw new Error('No tile_url in response');
                     }
                   } catch (err) {
+                    if (methaneClosedByUserRef.current) return;
                     const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                     setError(`Failed to load Methane Concentration: ${errorMessage}`);
                     setMethaneTileUrl(null);
@@ -5156,6 +5233,19 @@ const App: React.FC = () => {
                     setMethaneLoading(false);
                   }
                 }}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!methaneTileUrl) return;
+                  methaneClosedByUserRef.current = true;
+                  lastMethaneDoubleClickRef.current = Date.now();
+                  setMethaneTileUrl(null);
+                  setMethaneEnabled(false);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                }}
+                role="button"
+                tabIndex={0}
                 className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                   methaneEnabled && !methaneLoading && !loading
                     ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
@@ -5165,7 +5255,7 @@ const App: React.FC = () => {
                     ? 'bg-blue-600/20 border-blue-500' 
                     : 'bg-gray-700 border-gray-600'
                 }`}
-                title="Methane Concentration"
+                title="Methane Concentration (double-click when active to close)"
               >
                 <span className="text-base">💨</span>
               </div>
@@ -6384,17 +6474,24 @@ const App: React.FC = () => {
                   <Trees size={18} />
                 </button>
 
-                {/* Land Surface Temperature Card - Inline */}
+                {/* Land Surface Temperature Card - Inline; double-click when active to close */}
                 <div 
                   onClick={async () => {
+                    if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                     const currentDistrict = splitScreenMode ? rightSelectedDistrict : selectedDistrict;
                     if (lstLoading || loading || !currentDistrict) return;
+                    setMethaneTileUrl(null);
+                    setMethaneEnabled(false);
+                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                    lstClosedByUserRef.current = false;
                     try {
                       setLstLoading(true);
                       setError(null);
                       
                       const response = await fetchLandSurfaceTemperature(currentDistrict);
                       
+                      if (lstClosedByUserRef.current) return;
                       if (response.tile_url) {
                         setLstTileUrl(response.tile_url);
                         if (splitScreenMode) {
@@ -6408,6 +6505,7 @@ const App: React.FC = () => {
                         throw new Error('No tile_url in response');
                       }
                     } catch (err) {
+                      if (lstClosedByUserRef.current) return;
                       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                       setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                       setLstTileUrl(null);
@@ -6415,6 +6513,18 @@ const App: React.FC = () => {
                       setLstLoading(false);
                     }
                   }}
+                  onDoubleClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!lstTileUrl) return;
+                    lstClosedByUserRef.current = true;
+                    lastLstDoubleClickRef.current = Date.now();
+                    setLstTileUrl(null);
+                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                     (splitScreenMode ? rightSelectedDistrict : selectedDistrict) && !lstLoading && !loading
                       ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
@@ -6424,17 +6534,22 @@ const App: React.FC = () => {
                       ? 'bg-green-600/20 border-green-500' 
                       : 'bg-gray-700 border-gray-600'
                   }`}
-                  title="Land Surface Temperature"
+                  title="Land Surface Temperature (double-click when active to close)"
                 >
                   <span className="text-base">🌡️</span>
                 </div>
 
-                {/* Methane Concentration Card - Inline */}
+                {/* Methane Concentration Card - Inline; double-click when active to close */}
                 <div 
                   onClick={async () => {
+                    if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
                     const currentDistrict = splitScreenMode ? rightSelectedDistrict : selectedDistrict;
                     const currentSubdistrict = splitScreenMode ? rightSelectedSubdistrict : selectedSubdistrict;
                     if (methaneLoading || loading || !currentDistrict) return;
+                    setLstTileUrl(null);
+                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                    methaneClosedByUserRef.current = false;
                     try {
                       setMethaneLoading(true);
                       setError(null);
@@ -6444,6 +6559,7 @@ const App: React.FC = () => {
                         currentSubdistrict || undefined
                       );
                       
+                      if (methaneClosedByUserRef.current) return;
                       if (response.tile_url) {
                         setMethaneTileUrl(response.tile_url);
                         if (splitScreenMode) {
@@ -6458,6 +6574,7 @@ const App: React.FC = () => {
                         throw new Error('No tile_url in response');
                       }
                     } catch (err) {
+                      if (methaneClosedByUserRef.current) return;
                       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                       setError(`Failed to load Methane Concentration: ${errorMessage}`);
                       setMethaneTileUrl(null);
@@ -6466,6 +6583,19 @@ const App: React.FC = () => {
                       setMethaneLoading(false);
                     }
                   }}
+                  onDoubleClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!methaneTileUrl) return;
+                    methaneClosedByUserRef.current = true;
+                    lastMethaneDoubleClickRef.current = Date.now();
+                    setMethaneTileUrl(null);
+                    setMethaneEnabled(false);
+                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                     methaneEnabled && !methaneLoading && !loading
                       ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
@@ -6475,7 +6605,7 @@ const App: React.FC = () => {
                       ? 'bg-blue-600/20 border-blue-500' 
                       : 'bg-gray-700 border-gray-600'
                   }`}
-                  title="Methane Concentration"
+                  title="Methane Concentration (double-click when active to close)"
                 >
                   <span className="text-base">💨</span>
                 </div>
