@@ -103,6 +103,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
       center={defaultCenter} 
       zoom={16} 
       scrollWheelZoom={true}
+      zoomControl={false}
       className="h-full w-full z-0"
     >
       {/* Google Hybrid - Satellite view with labels (like Streamlit HYBRID) */}

@@ -31,6 +31,8 @@ import {
 } from './services/analysisService';
 import { Coordinate } from './types';
 import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
+import { HiOutlineLogout } from "react-icons/hi";
+import { IoResize } from "react-icons/io5";
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
@@ -204,6 +206,16 @@ const App: React.FC = () => {
 
   // State for sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
+  // State for sidebar expanded (full dropdowns + %/area) vs collapsed (icon-only); double-click toggles
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(false);
+  // Which icon card is shown next to left sidebar (click icon = show card beside it, not full sidebar)
+  type SidebarIconCard = 'none' | 'totalArea' | 'district' | 'subdistrict' | 'village' | 'percentage';
+  const [sidebarIconCard, setSidebarIconCard] = useState<SidebarIconCard>('none');
+  const [rightSidebarExpanded, setRightSidebarExpanded] = useState<boolean>(false);
+  // Flyout panel beside icon strip: click D/S/V/Total/% opens only that section to the side (no full sidebar)
+  type SidebarPanel = 'none' | 'district' | 'subdistrict' | 'village' | 'totalarea' | 'percentage';
+  const [leftSidebarPanel, setLeftSidebarPanel] = useState<SidebarPanel>('none');
+  const [rightSidebarPanel, setRightSidebarPanel] = useState<SidebarPanel>('none');
 
   // State for download menu
   const [showDownloadMenu, setShowDownloadMenu] = useState<boolean>(false);
@@ -263,7 +275,12 @@ const App: React.FC = () => {
   const [rightSelectedPestCategory, setRightSelectedPestCategory] = useState<string | null>(null);
   const [leftShowAllTimeSeries, setLeftShowAllTimeSeries] = useState<boolean>(false);
   const [rightShowAllTimeSeries, setRightShowAllTimeSeries] = useState<boolean>(false);
-  
+  // Refs for drag-to-resize pest card via arrow icon (no dropdown)
+  const pestResizeSourceRef = useRef<'left' | 'right' | null>(null);
+  const pestResizeStartRef = useRef({ x: 0, y: 0 });
+  const pestResizeAccumRef = useRef({ x: 0, y: 0 });
+  const PEST_RESIZE_STEP = 18;
+
   // State for Pest stored time series for left and right sides (split screen mode)
   const [leftPestStoredSeries, setLeftPestStoredSeries] = useState<PestStoredResponse | null>(null);
   const [leftPestStoredLoading, setLeftPestStoredLoading] = useState<boolean>(false);
@@ -2080,9 +2097,9 @@ const App: React.FC = () => {
     }
   }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage]); // Fetch when tab OR location changes
 
-  // Handle left district boundary display in split screen mode (even without tab)
+  // Handle left district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
-    if (splitScreenMode && leftSelectedDistrict && !leftActiveTab) {
+    if (splitScreenMode && leftSelectedDistrict && !leftSelectedSubdistrict && !leftSelectedVillage) {
       // Find the selected district data
       const districtData = districts.find(d => d.district === leftSelectedDistrict);
       
@@ -2157,15 +2174,14 @@ const App: React.FC = () => {
         // No geometry available
         setLeftAllPlots([]);
       }
-    } else if (splitScreenMode && !leftSelectedDistrict) {
-      setLeftAllPlots([]);
+    } else if (splitScreenMode && (!leftSelectedDistrict || leftSelectedSubdistrict || leftSelectedVillage)) {
+      if (!leftSelectedDistrict) setLeftAllPlots([]);
     }
-  }, [splitScreenMode, leftSelectedDistrict, leftActiveTab, districts]);
+  }, [splitScreenMode, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage, districts]);
 
-  // Handle right district boundary display in split screen mode (even without tab)
+  // Handle right district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
-    // Only display boundaries when no tab is active (when tab is active, analysis fetch preserves boundaries)
-    if (splitScreenMode && rightSelectedDistrict && !rightActiveTab && !rightSelectedSubdistrict && !rightSelectedVillage) {
+    if (splitScreenMode && rightSelectedDistrict && !rightSelectedSubdistrict && !rightSelectedVillage) {
       // Find the selected district data
       const districtData = districts.find(d => d.district === rightSelectedDistrict);
       
@@ -2242,10 +2258,10 @@ const App: React.FC = () => {
         console.warn('Right district has no geometry:', rightSelectedDistrict);
         setRightAllPlots([]);
       }
-    } else if (splitScreenMode && !rightSelectedDistrict && !rightActiveTab) {
-      setRightAllPlots([]);
+    } else if (splitScreenMode && (!rightSelectedDistrict || rightSelectedSubdistrict || rightSelectedVillage)) {
+      if (!rightSelectedDistrict) setRightAllPlots([]);
     }
-  }, [splitScreenMode, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, rightActiveTab, districts]);
+  }, [splitScreenMode, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, districts]);
 
   // Handle left subdistrict boundary display in split screen mode (even without tab)
   useEffect(() => {
@@ -4354,6 +4370,25 @@ const App: React.FC = () => {
 
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Crops Dropdown - before District, independent */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              Crops
+            </label>
+            <select
+              value={selectedCrop}
+              onChange={(e) => {
+                setSelectedCrop(e.target.value);
+                setSelectedVillage('');
+                if (splitScreenMode) setLeftSelectedVillage('');
+              }}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">-- Select Crop --</option>
+              <option value="sugarcane">Sugarcane</option>
+            </select>
+          </div>
+
           {/* District Dropdown */}
           <div>
             <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -4598,7 +4633,7 @@ const App: React.FC = () => {
                 // className="w-full logout-btn px-1 py-0.5 rounded text-[10px] transition-colors flex items-center justify-center gap-0.5 bg-red-600/20 hover:bg-red-600/30 border border-red-700/50 hover:border-red-600 text-red-300 hover:text-red-200"
                 title="Logout"
               >
-                <LogOut size={25} />
+                <HiOutlineLogout size={25} />
                 {/* <span className="text-[10px]">Logout</span> */}
               </button>
             </div>
@@ -4617,8 +4652,8 @@ const App: React.FC = () => {
         </button>
       )}
 
-      {/* Main Map Area - Shows two maps in split screen mode */}
-      <main className={`flex-1 relative bg-gray-950 ${splitScreenMode ? 'flex' : 'flex flex-col'}`}>
+      {/* Main Map Area - Shows two maps in split screen mode; scroll at 1440/1024 so map is viewable */}
+      <main className={`flex-1 min-h-0 relative bg-gray-950 overflow-y-auto ${splitScreenMode ? 'flex' : 'flex flex-col'}`}>
         {/* Download Button - Single icon with dropdown menu - Outside tabs with transparent background */}
         {!splitScreenMode && ((getActiveTab('left') === 'pest' && (splitScreenMode ? leftShowPestSeries : showPestSeries)) || ((splitScreenMode ? leftShowWeatherDaily : showWeatherDaily) && (splitScreenMode ? leftWeatherDailyData : weatherDailyData))) && (
           <div className="absolute top-12 md:top-4 right-4 md:right-4 z-[1000]">
@@ -4678,82 +4713,64 @@ const App: React.FC = () => {
           <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto w-auto">
             <button
               onClick={() => setActiveTabForSide('growth', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Growth"
+              title="Growth (double-click when active to close)"
             >
               <Sprout size={18} />
             </button>
             <button
               onClick={() => setActiveTabForSide('water', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Water Uptake"
+              title="Water Uptake (double-click when active to close)"
             >
               <Droplets size={18} />
             </button>
             <button
               onClick={() => setActiveTabForSide('soil', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Soil Moisture"
+              title="Soil Moisture (double-click when active to close)"
             >
               <Droplet size={18} />
             </button>
             <button
-              onClick={() => {
-                setActiveTabForSide('pest', 'left');
-              }}
+              onClick={() => setActiveTabForSide('pest', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Pest"
+              title="Pest (double-click when active to close)"
             >
               <Bug size={18} />
             </button>
             <button
-              onClick={() => {
-                setActiveTabForSide('waterSource', 'left');
-              }}
+              onClick={() => setActiveTabForSide('waterSource', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Water Source"
+              title="Water Source (double-click when active to close)"
             >
               <Waves size={18} />
             </button>
             <button
-              onClick={() => {
-                setActiveTabForSide('forest', 'left');
-              }}
+              onClick={() => setActiveTabForSide('forest', 'left')}
+              onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
               className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
                 getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
               }`}
-              title="Forest"
+              title="Forest (double-click when active to close)"
             >
               <Trees size={18} />
             </button>
-             
-            {/* Crops Dropdown - Inline with tabs */}
-            <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-600">
-              <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider whitespace-nowrap">
-                Crops:
-              </label>
-              <select
-                value={selectedCrop}
-                onChange={(e) => {
-                  setSelectedCrop(e.target.value);
-                  setSelectedVillage(''); // Clear village when crop is selected
-                }}
-                className="px-2 md:px-3 py-1.5 md:py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-green-500 whitespace-nowrap"
-              >
-                <option value="">-- Select Crop --</option>
-                <option value="sugarcane">Sugarcane</option>
-              </select>
-            </div>
 
             {/* Land Surface Temperature Card - Inline */}
             <div 
@@ -4780,7 +4797,7 @@ const App: React.FC = () => {
                   setLstLoading(false);
                 }
               }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                 selectedDistrict && !lstLoading && !loading
                   ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
                   : 'cursor-not-allowed opacity-50'
@@ -4824,7 +4841,7 @@ const App: React.FC = () => {
                   setMethaneLoading(false);
                 }
               }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                 methaneEnabled && !methaneLoading && !loading
                   ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
                   : 'cursor-pointer opacity-50'
@@ -5003,90 +5020,72 @@ const App: React.FC = () => {
         </div>
         )}
 
-          {/* Map Container - Can be split */}
-        <div className={`flex-1 relative ${splitScreenMode ? 'w-1/2 border-r border-gray-700' : ''}`}>
+          {/* Map Container - Can be split; min-height so map is viewable when scrolling at 1024/1440 */}
+        <div className={`flex-1 relative min-h-[min(420px,55vh)] ${splitScreenMode ? 'w-1/2 border-r border-gray-700' : ''}`}>
           {/* Top Navigation Tabs and Legend - Centered within this map container */}
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
             {/* Active Tab Buttons - icons only */}
             <div className={`flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto ${splitScreenMode ? 'max-w-full' : 'w-auto'}`}>
               <button
                 onClick={() => setActiveTabForSide('growth', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Growth"
+                title="Growth (double-click when active to close)"
               >
                 <Sprout size={18} />
               </button>
               <button
                 onClick={() => setActiveTabForSide('water', 'left')}
-                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
+                className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Uptake"
+                title="Water Uptake (double-click when active to close)"
               >
-                <Droplets size={18} />
+                <Droplets size={splitScreenMode ? 16 : 18} />
               </button>
               <button
                 onClick={() => setActiveTabForSide('soil', 'left')}
-                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
+                className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Soil Moisture"
+                title="Soil Moisture (double-click when active to close)"
               >
-                <Droplet size={18} />
+                <Droplet size={splitScreenMode ? 16 : 18} />
               </button>
               <button
-                onClick={() => {
-                  setActiveTabForSide('pest', 'left');
-                }}
-                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                onClick={() => setActiveTabForSide('pest', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
+                className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Pest"
+                title="Pest (double-click when active to close)"
               >
-                <Bug size={18} />
+                <Bug size={splitScreenMode ? 16 : 18} />
               </button>
               <button
-                onClick={() => {
-                  setActiveTabForSide('waterSource', 'left');
-                }}
+                onClick={() => setActiveTabForSide('waterSource', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Source"
+                title="Water Source (double-click when active to close)"
               >
                 <Waves size={18} />
               </button>
               <button
-                onClick={() => {
-                  setActiveTabForSide('forest', 'left');
-                }}
+                onClick={() => setActiveTabForSide('forest', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Forest"
+                title="Forest (double-click when active to close)"
               >
                 <Trees size={18} />
               </button>
-               
-              {/* Crops Dropdown - Inline with tabs */}
-              <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-600">
-                <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider whitespace-nowrap">
-                  Crops:
-                </label>
-                <select
-                  value={selectedCrop}
-                  onChange={(e) => {
-                    setSelectedCrop(e.target.value);
-                    setSelectedVillage(''); // Clear village when crop is selected
-                  }}
-                  className="px-2 md:px-3 py-1.5 md:py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-green-500 whitespace-nowrap"
-                >
-                  <option value="">-- Select Crop --</option>
-                  <option value="sugarcane">Sugarcane</option>
-                </select>
-              </div>
 
               {/* Land Surface Temperature Card - Inline */}
               <div 
@@ -5113,7 +5112,7 @@ const App: React.FC = () => {
                     setLstLoading(false);
                   }
                 }}
-                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+                className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                   selectedDistrict && !lstLoading && !loading
                     ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
                     : 'cursor-not-allowed opacity-50'
@@ -5124,7 +5123,7 @@ const App: React.FC = () => {
                 }`}
                 title="Land Surface Temperature"
               >
-                <span className="text-lg">🌡️</span>
+                <span className={splitScreenMode ? 'text-base' : 'text-lg'}>🌡️</span>
               </div>
 
               {/* Methane Concentration Card - Inline */}
@@ -5157,7 +5156,7 @@ const App: React.FC = () => {
                     setMethaneLoading(false);
                   }
                 }}
-                className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+                className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                   methaneEnabled && !methaneLoading && !loading
                     ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
                     : 'cursor-pointer opacity-50'
@@ -5168,7 +5167,7 @@ const App: React.FC = () => {
                 }`}
                 title="Methane Concentration"
               >
-                <span className="text-lg">💨</span>
+                <span className="text-base">💨</span>
               </div>
             </div>
           </div>
@@ -5382,29 +5381,44 @@ const App: React.FC = () => {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setPestGraphSize(prev => ({
-                            width: Math.max(splitScreenMode ? 300 : 400, prev.width - (splitScreenMode ? 50 : 100)),
-                            height: Math.max(splitScreenMode ? 150 : 200, prev.height - (splitScreenMode ? 25 : 50))
-                          }));
+                        className={`${splitScreenMode ? 'px-1.5 py-0.5' : 'px-2 py-1'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center cursor-grab active:cursor-grabbing select-none`}
+                        title="Drag to resize: drag up/right to increase, down/left to decrease"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          pestResizeSourceRef.current = 'left';
+                          pestResizeStartRef.current = { x: e.clientX, y: e.clientY };
+                          pestResizeAccumRef.current = { x: 0, y: 0 };
+                          const onMove = (e2: MouseEvent) => {
+                            if (pestResizeSourceRef.current !== 'left') return;
+                            const dx = e2.clientX - pestResizeStartRef.current.x;
+                            const dy = e2.clientY - pestResizeStartRef.current.y;
+                            pestResizeAccumRef.current = { x: pestResizeAccumRef.current.x + dx, y: pestResizeAccumRef.current.y + dy };
+                            pestResizeStartRef.current = { x: e2.clientX, y: e2.clientY };
+                            const { x: ax, y: ay } = pestResizeAccumRef.current;
+                            if (ay < -PEST_RESIZE_STEP || ax > PEST_RESIZE_STEP) {
+                              setPestGraphSize(prev => ({
+                                width: Math.min(splitScreenMode ? 600 : 1200, prev.width + (splitScreenMode ? 50 : 100)),
+                                height: Math.min(splitScreenMode ? 300 : 600, prev.height + (splitScreenMode ? 25 : 50))
+                              }));
+                              pestResizeAccumRef.current = { x: 0, y: 0 };
+                            } else if (ay > PEST_RESIZE_STEP || ax < -PEST_RESIZE_STEP) {
+                              setPestGraphSize(prev => ({
+                                width: Math.max(splitScreenMode ? 300 : 400, prev.width - (splitScreenMode ? 50 : 100)),
+                                height: Math.max(splitScreenMode ? 150 : 200, prev.height - (splitScreenMode ? 25 : 50))
+                              }));
+                              pestResizeAccumRef.current = { x: 0, y: 0 };
+                            }
+                          };
+                          const onUp = () => {
+                            window.removeEventListener('mousemove', onMove);
+                            window.removeEventListener('mouseup', onUp);
+                            pestResizeSourceRef.current = null;
+                          };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
                         }}
-                        className={`${splitScreenMode ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-xs'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center`}
-                        title="Decrease graph size"
                       >
-                        <ChevronDown size={splitScreenMode ? 12 : 14} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPestGraphSize(prev => ({
-                            width: Math.min(splitScreenMode ? 600 : 1200, prev.width + (splitScreenMode ? 50 : 100)),
-                            height: Math.min(splitScreenMode ? 300 : 600, prev.height + (splitScreenMode ? 25 : 50))
-                          }));
-                        }}
-                        className={`${splitScreenMode ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-xs'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center`}
-                        title="Increase graph size"
-                      >
-                        <ChevronUp size={splitScreenMode ? 12 : 14} />
+                        <IoResize size={splitScreenMode ? 12 : 14} />
                       </button>
                       <button
                         type="button"
@@ -5422,7 +5436,7 @@ const App: React.FC = () => {
                         }`}
                         title={currentShowAllTimeSeries ? 'Show only selected month' : 'Show all time series data'}
                       >
-                        {currentShowAllTimeSeries ? 'View Selected' : 'View All'}
+                        {currentShowAllTimeSeries ? 'Selected' : 'All'}
                       </button>
                       <button
                         type="button"
@@ -5433,9 +5447,10 @@ const App: React.FC = () => {
                             setShowPestSeries(false);
                           }
                         }}
-                        className={`${splitScreenMode ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-xs'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400`}
+                        className={`${splitScreenMode ? 'px-1.5 py-0.5' : 'px-2 py-1'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center`}
+                        title="Hide"
                       >
-                        Hide
+                        <Eye size={splitScreenMode ? 12 : 14} />
                       </button>
                     </div>
                   </div>
@@ -5583,20 +5598,20 @@ const App: React.FC = () => {
           {/* Pest children panel: on map, sized similar to Percentage / Area cards, positioned above year/month series */}
           {!splitScreenMode && activeTab === 'pest' && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
             <div className="absolute bottom-28 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-300 uppercase">
+              <div className="flex items-center justify-between mb-2 max-[1024px]:mb-1">
+                <span className="text-xs font-semibold text-gray-300 uppercase max-[1024px]:text-[10px]">
                   {selectedPestCategory.replace(/_/g, ' ')}
                 </span>
                 <button
                   type="button"
                   onClick={() => setShowPestChildren(prev => !prev)}
-                  className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                  className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 max-[1024px]:text-[10px] max-[1024px]:px-1.5 max-[1024px]:py-0.5"
                 >
                   {showPestChildren ? 'Hide' : 'Show'}
                 </button>
               </div>
               {showPestChildren && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-[1024px]:gap-1">
                   {Object.entries(pestHierarchy.hierarchy[selectedPestCategory].children).map(([childKey, child]: [string, PestHierarchyChild]) => (
                     <button
                       key={childKey}
@@ -5613,16 +5628,16 @@ const App: React.FC = () => {
                       }}
                       className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
                     >
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 max-[1024px]:gap-1">
                         <span
-                          className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 max-[1024px]:w-2 max-[1024px]:h-2"
                           style={{ backgroundColor: PEST_CARD_COLORS[selectedPestCategory] ?? '#f97316' }}
                         />
-                        <span className="text-sm font-medium text-gray-200 capitalize truncate">
+                        <span className="text-sm font-medium text-gray-200 capitalize truncate max-[1024px]:text-xs">
                           {childKey.replace(/_/g, ' ')}
                         </span>
                       </div>
-                      <div className="text-xs text-gray-400 mt-0.5">
+                      <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
                         {child.pct_of_parent.toFixed(1)}% · {child.area_ha.toFixed(2)} ha
                       </div>
                     </button>
@@ -5648,20 +5663,20 @@ const App: React.FC = () => {
                 className="absolute left-4 z-[1000] w-[320px] max-w-[calc(50vw-120px)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl"
                 style={{ bottom: '320px' }}
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-gray-300 uppercase">
+                <div className="flex items-center justify-between mb-2 max-[1024px]:mb-1">
+                  <span className="text-xs font-semibold text-gray-300 uppercase max-[1024px]:text-[10px]">
                     {leftSelectedPestCategory.replace(/_/g, ' ')}
                   </span>
                   <button
                     type="button"
                     onClick={() => setLeftShowPestChildren(prev => !prev)}
-                    className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                    className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 max-[1024px]:text-[10px] max-[1024px]:px-1.5 max-[1024px]:py-0.5"
                   >
                     {leftShowPestChildren ? 'Hide' : 'Show'}
                   </button>
                 </div>
                 {leftShowPestChildren && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-[1024px]:gap-1">
                     {Object.entries(children).map(([childKey, child]: [string, any]) => (
                       <button
                         key={childKey}
@@ -5675,18 +5690,18 @@ const App: React.FC = () => {
                             setLeftShowTileLayers(true);
                           }
                         }}
-                        className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
+                        className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors max-[1024px]:p-1.5"
                       >
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 max-[1024px]:gap-1">
                           <span
-                            className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                            className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 max-[1024px]:w-2 max-[1024px]:h-2"
                             style={{ backgroundColor: PEST_CARD_COLORS[leftSelectedPestCategory] ?? '#f97316' }}
                           />
-                          <span className="text-sm font-medium text-gray-200 capitalize truncate">
+                          <span className="text-sm font-medium text-gray-200 capitalize truncate max-[1024px]:text-xs">
                             {childKey.replace(/_/g, ' ')}
                           </span>
                         </div>
-                        <div className="text-xs text-gray-400 mt-0.5">
+                        <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
                           {child.pct_of_parent?.toFixed(1) ?? '0.0'}% · {child.area_ha?.toFixed(2) ?? '0.00'} ha
                         </div>
                       </button>
@@ -6304,86 +6319,70 @@ const App: React.FC = () => {
         {/* Second Map for Split Screen - Right Side */}
         {splitScreenMode && (
           <div className="w-1/2 relative flex-1">
-            {/* Top Navigation Tabs - Right Side */}
-            <div className="absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 w-full max-w-[calc(50vw-120px)]">
-              {/* Active Tab Buttons - icons only - 100% width in splitscreen */}
-              <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto w-full">
+            {/* Top Navigation Tabs - Right Side; content-sized like left panel to avoid extra empty space */}
+            <div className="absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 max-w-[calc(50vw-120px)]">
+              {/* Active Tab Buttons - icons only; content-sized, no full-width stretch */}
+              <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto overflow-y-hidden max-w-full tab-bar-scroll flex-nowrap">
                 <button
                   onClick={() => setActiveTabForSide('growth', 'right')}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                  onDoubleClick={() => { if (getActiveTab('right') === 'growth') setActiveTabForSide(null, 'right'); }}
+                  className={`px-1.5 py-1 min-w-[28px] rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                     getActiveTab('right') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Growth"
+                  title="Growth (double-click when active to close)"
                 >
-                  <Sprout size={18} />
+                  <Sprout size={16} />
                 </button>
                 <button
                   onClick={() => setActiveTabForSide('water', 'right')}
+                  onDoubleClick={() => { if (getActiveTab('right') === 'water') setActiveTabForSide(null, 'right'); }}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Water Uptake"
+                  title="Water Uptake (double-click when active to close)"
                 >
                   <Droplets size={18} />
                 </button>
                 <button
                   onClick={() => setActiveTabForSide('soil', 'right')}
+                  onDoubleClick={() => { if (getActiveTab('right') === 'soil') setActiveTabForSide(null, 'right'); }}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Soil Moisture"
+                  title="Soil Moisture (double-click when active to close)"
                 >
                   <Droplet size={18} />
                 </button>
                 <button
                   onClick={() => setActiveTabForSide('pest', 'right')}
+                  onDoubleClick={() => { if (getActiveTab('right') === 'pest') setActiveTabForSide(null, 'right'); }}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Pest"
+                  title="Pest (double-click when active to close)"
                 >
                   <Bug size={18} />
                 </button>
                 <button
                   onClick={() => setActiveTabForSide('waterSource', 'right')}
+                  onDoubleClick={() => { if (getActiveTab('right') === 'waterSource') setActiveTabForSide(null, 'right'); }}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Water Source"
+                  title="Water Source (double-click when active to close)"
                 >
                   <Waves size={18} />
                 </button>
                 <button
                   onClick={() => setActiveTabForSide('forest', 'right')}
+                  onDoubleClick={() => { if (getActiveTab('right') === 'forest') setActiveTabForSide(null, 'right'); }}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Forest"
+                  title="Forest (double-click when active to close)"
                 >
                   <Trees size={18} />
                 </button>
-                 
-                {/* Crops Dropdown - Inline with tabs */}
-                <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-600">
-                  <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider whitespace-nowrap">
-                    Crops:
-                  </label>
-                  <select
-                    value={selectedCrop}
-                    onChange={(e) => {
-                      setSelectedCrop(e.target.value);
-                      if (splitScreenMode) {
-                        setRightSelectedVillage('');
-                      } else {
-                        setSelectedVillage('');
-                      }
-                    }}
-                    className="px-2 md:px-3 py-1.5 md:py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-green-500 whitespace-nowrap"
-                  >
-                    <option value="">-- Select Crop --</option>
-                    <option value="sugarcane">Sugarcane</option>
-                  </select>
-                </div>
 
                 {/* Land Surface Temperature Card - Inline */}
                 <div 
@@ -6416,7 +6415,7 @@ const App: React.FC = () => {
                       setLstLoading(false);
                     }
                   }}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+                  className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                     (splitScreenMode ? rightSelectedDistrict : selectedDistrict) && !lstLoading && !loading
                       ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
                       : 'cursor-not-allowed opacity-50'
@@ -6427,7 +6426,7 @@ const App: React.FC = () => {
                   }`}
                   title="Land Surface Temperature"
                 >
-                  <span className="text-lg">🌡️</span>
+                  <span className="text-base">🌡️</span>
                 </div>
 
                 {/* Methane Concentration Card - Inline */}
@@ -6467,7 +6466,7 @@ const App: React.FC = () => {
                       setMethaneLoading(false);
                     }
                   }}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 ${
+                  className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
                     methaneEnabled && !methaneLoading && !loading
                       ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
                       : 'cursor-pointer opacity-50'
@@ -6478,7 +6477,7 @@ const App: React.FC = () => {
                   }`}
                   title="Methane Concentration"
                 >
-                  <span className="text-lg">💨</span>
+                  <span className="text-base">💨</span>
                 </div>
               </div>
             </div>
@@ -6768,35 +6767,42 @@ const App: React.FC = () => {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            setPestGraphSize(prev => ({
-                              width: Math.max(300, prev.width - 50),
-                              height: Math.max(150, prev.height - 25)
-                            }));
+                          className="px-1.5 py-0.5 rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
+                          title="Drag to resize: drag up/right to increase, down/left to decrease"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            pestResizeSourceRef.current = 'right';
+                            pestResizeStartRef.current = { x: e.clientX, y: e.clientY };
+                            pestResizeAccumRef.current = { x: 0, y: 0 };
+                            const onMove = (e2: MouseEvent) => {
+                              if (pestResizeSourceRef.current !== 'right') return;
+                              const dx = e2.clientX - pestResizeStartRef.current.x;
+                              const dy = e2.clientY - pestResizeStartRef.current.y;
+                              pestResizeAccumRef.current = { x: pestResizeAccumRef.current.x + dx, y: pestResizeAccumRef.current.y + dy };
+                              pestResizeStartRef.current = { x: e2.clientX, y: e2.clientY };
+                              const { x: ax, y: ay } = pestResizeAccumRef.current;
+                              if (ay < -PEST_RESIZE_STEP || ax > PEST_RESIZE_STEP) {
+                                setPestGraphSize(prev => ({ width: Math.min(600, prev.width + 50), height: Math.min(300, prev.height + 25) }));
+                                pestResizeAccumRef.current = { x: 0, y: 0 };
+                              } else if (ay > PEST_RESIZE_STEP || ax < -PEST_RESIZE_STEP) {
+                                setPestGraphSize(prev => ({ width: Math.max(300, prev.width - 50), height: Math.max(150, prev.height - 25) }));
+                                pestResizeAccumRef.current = { x: 0, y: 0 };
+                              }
+                            };
+                            const onUp = () => {
+                              window.removeEventListener('mousemove', onMove);
+                              window.removeEventListener('mouseup', onUp);
+                              pestResizeSourceRef.current = null;
+                            };
+                            window.addEventListener('mousemove', onMove);
+                            window.addEventListener('mouseup', onUp);
                           }}
-                          className="px-1.5 py-0.5 text-[10px] rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center"
-                          title="Decrease graph size"
                         >
-                          <ChevronDown size={12} />
+                          <IoResize size={12} />
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setPestGraphSize(prev => ({
-                              width: Math.min(600, prev.width + 50),
-                              height: Math.min(300, prev.height + 25)
-                            }));
-                          }}
-                          className="px-1.5 py-0.5 text-[10px] rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center"
-                          title="Increase graph size"
-                        >
-                          <ChevronUp size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRightShowAllTimeSeries(!rightShowAllTimeSeries);
-                          }}
+                          onClick={() => setRightShowAllTimeSeries(!rightShowAllTimeSeries)}
                           className={`px-1.5 py-0.5 text-[10px] rounded border ${
                             rightShowAllTimeSeries
                               ? 'bg-blue-500 text-white border-blue-600 hover:bg-blue-600'
@@ -6804,14 +6810,15 @@ const App: React.FC = () => {
                           }`}
                           title={rightShowAllTimeSeries ? 'Show only selected month' : 'Show all time series data'}
                         >
-                          {rightShowAllTimeSeries ? 'View Selected' : 'View All'}
+                          {rightShowAllTimeSeries ? 'Selected' : 'All'}
                         </button>
                         <button
                           type="button"
                           onClick={() => setRightShowPestSeries(false)}
-                          className="px-1.5 py-0.5 text-[10px] rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400"
+                          className="px-1.5 py-0.5 rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center"
+                          title="Hide"
                         >
-                          Hide
+                          <Eye size={12} />
                         </button>
                       </div>
                     </div>
@@ -6969,20 +6976,20 @@ const App: React.FC = () => {
                   className="absolute right-4 z-[1000] w-[320px] max-w-[calc(50vw-120px)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl"
                   style={{ bottom: '320px' }}
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-semibold text-gray-300 uppercase">
+                  <div className="flex items-center justify-between mb-2 max-[1024px]:mb-1">
+                    <span className="text-xs font-semibold text-gray-300 uppercase max-[1024px]:text-[10px]">
                       {rightSelectedPestCategory.replace(/_/g, ' ')}
                     </span>
                     <button
                       type="button"
                       onClick={() => setRightShowPestChildren(prev => !prev)}
-                      className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200"
+                      className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 max-[1024px]:text-[10px] max-[1024px]:px-1.5 max-[1024px]:py-0.5"
                     >
                       {rightShowPestChildren ? 'Hide' : 'Show'}
                     </button>
                   </div>
                   {rightShowPestChildren && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-[1024px]:gap-1">
                       {Object.entries(children).map(([childKey, child]: [string, any]) => (
                         <button
                           key={childKey}
@@ -6996,18 +7003,18 @@ const App: React.FC = () => {
                               setRightShowTileLayers(true);
                             }
                           }}
-                          className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors"
+                          className="p-2 rounded-lg border border-gray-600 bg-gray-800/90 hover:bg-gray-700 text-left cursor-pointer transition-colors max-[1024px]:p-1.5"
                         >
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 max-[1024px]:gap-1">
                             <span
-                              className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                              className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 max-[1024px]:w-2 max-[1024px]:h-2"
                               style={{ backgroundColor: PEST_CARD_COLORS[rightSelectedPestCategory] ?? '#f97316' }}
                             />
-                            <span className="text-sm font-medium text-gray-200 capitalize truncate">
+                            <span className="text-sm font-medium text-gray-200 capitalize truncate max-[1024px]:text-xs">
                               {childKey.replace(/_/g, ' ')}
                             </span>
                           </div>
-                          <div className="text-xs text-gray-400 mt-0.5">
+                          <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
                             {child.pct_of_parent?.toFixed(1) ?? '0.0'}% · {child.area_ha?.toFixed(2) ?? '0.00'} ha
                           </div>
                         </button>
@@ -7220,6 +7227,25 @@ const App: React.FC = () => {
             {/* Header section removed - no title or logout icon for right sidebar */}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Crops Dropdown - before District, independent */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Crops
+                </label>
+                <select
+                  value={selectedCrop}
+                  onChange={(e) => {
+                    setSelectedCrop(e.target.value);
+                    setSelectedVillage('');
+                    setRightSelectedVillage('');
+                  }}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <option value="">-- Select Crop --</option>
+                  <option value="sugarcane">Sugarcane</option>
+                </select>
+              </div>
+
               {/* District Dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">

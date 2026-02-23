@@ -49,3 +49,20 @@ html, body {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
+
+/* Thin scrollbar for active tab bar - visible so users know they can scroll */
+.tab-bar-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+.tab-bar-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+.tab-bar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.5);
+  border-radius: 3px;
+}
+.tab-bar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.5) rgba(255, 255, 255, 0.05);
+}
