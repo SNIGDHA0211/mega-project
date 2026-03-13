@@ -39,10 +39,7 @@ import {
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
-import { HiOutlineLogout } from "react-icons/hi";
-import { IoResize } from "react-icons/io5";
-import { BsArrowsMove, BsGraphUp } from "react-icons/bs";
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
@@ -4507,7 +4504,7 @@ const App: React.FC = () => {
                 <ChevronLeft size={18} />
               </button>
               <div className="flex items-center justify-center text-green-400">
-                <BsGraphUp size={22} />
+                <TrendingUp size={22} />
               </div>
             </div>
             <div className="flex flex-wrap items-end justify-between gap-3 px-4 md:px-6 pb-3">
@@ -4809,7 +4806,7 @@ const App: React.FC = () => {
             className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
             title="Bar Graph"
           >
-            <BsGraphUp size={18} />
+            <TrendingUp size={18} />
           </button>
         </div>
         <h1 className="text-lg md:text-xl font-bold text-green-400 shrink-0 justify-self-center">
@@ -5156,7 +5153,7 @@ const App: React.FC = () => {
                 // className="w-full logout-btn px-1 py-0.5 rounded text-[10px] transition-colors flex items-center justify-center gap-0.5 bg-red-600/20 hover:bg-red-600/30 border border-red-700/50 hover:border-red-600 text-red-300 hover:text-red-200"
                 title="Logout"
               >
-                <HiOutlineLogout size={25} />
+                <LogOut size={25} />
                 {/* <span className="text-[10px]">Logout</span> */}
               </button>
             </div>
@@ -5875,7 +5872,7 @@ const App: React.FC = () => {
                           window.addEventListener('mouseup', onUp);
                         }}
                       >
-                        <BsArrowsMove size={splitScreenMode ? 12 : 14} />
+                        <Move size={splitScreenMode ? 12 : 14} />
                       </button>
                       <button
                         type="button"
@@ -5916,7 +5913,7 @@ const App: React.FC = () => {
                           window.addEventListener('mouseup', onUp);
                         }}
                       >
-                        <IoResize size={splitScreenMode ? 12 : 14} />
+                        <Maximize2 size={splitScreenMode ? 12 : 14} />
                       </button>
                       <button
                         type="button"
@@ -6507,7 +6504,7 @@ const App: React.FC = () => {
                     window.addEventListener('mouseup', onUp);
                   }}
                 >
-                  <BsArrowsMove size={14} />
+                  <Move size={14} />
                 </button>
                 {weatherDailyLoading ? (
                   <div className="text-xs text-gray-400">Loading…</div>
@@ -8010,7 +8007,7 @@ const App: React.FC = () => {
                             window.addEventListener('mouseup', onUp);
                           }}
                         >
-                          <IoResize size={12} />
+                          <Maximize2 size={12} />
                         </button>
                         <button
                           type="button"
