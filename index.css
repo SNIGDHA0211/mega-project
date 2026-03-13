@@ -18,11 +18,14 @@ html, body {
   width: 100%;
 }
 
-/* Ensure map container takes full height */
+/* Ensure map container takes full height; remove outer border/outline */
 .leaflet-container {
   height: 100%;
   width: 100%;
   background-color: #202020;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 /* Additional utility classes if needed */

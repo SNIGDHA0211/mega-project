@@ -5,7 +5,10 @@ import { LoginPage } from './components/LoginPage';
 import { 
   fetchDistricts, 
   fetchSubdistricts, 
-  fetchVillages, 
+  fetchVillages,
+  fetchBoundaryGeoJSON, 
+  fetchFieldBoundaries,
+  fetchPredictArea,
   fetchGrowthAnalysis1,
   fetchWaterUptakeAnalysis,
   fetchSoilMoistureAnalysis,
@@ -18,8 +21,14 @@ import {
   fetchET,
   fetchWeather,
   fetchPestStoredSeries,
+  fetchDashboardIndicesStore,
   fetchWeatherDaily,
   GrowthAnalysisResponse,
+  type DashboardIndicesStoreResponse,
+  type DashboardIndicesFrequency,
+  GrowthAnalysisWithStoredResponse,
+  GrowthStoredResponse,
+  GrowthStoredItem,
   NDWIDetectionResponse,
   ETResponse,
   WeatherResponse,
@@ -30,16 +39,19 @@ import {
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
 import { HiOutlineLogout } from "react-icons/hi";
 import { IoResize } from "react-icons/io5";
+import { BsArrowsMove, BsGraphUp } from "react-icons/bs";
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
+import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
 
 // Local Graph icon component (acts like GoGraph from react-icons/go)
 const GoGraph: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
-  <LineChart size={size} className={className} />
+  <LineChartIcon size={size} className={className} />
 );
 import BlurText from './components/BlurText';
 import L from 'leaflet';
@@ -124,9 +136,13 @@ const App: React.FC = () => {
   const [methaneLoading, setMethaneLoading] = useState<boolean>(false);
   const [methaneEnabled, setMethaneEnabled] = useState<boolean>(false);
   
-  // State for GeoJSON plots from palus1.geojson
+  // State for GeoJSON plots (e.g. from boundary load; currently unused)
   const [geojsonPlots, setGeojsonPlots] = useState<Array<{id: string; field_id?: string; area_ha: string; boundary: Coordinate[]}>>([]);
   const [geojsonLoading, setGeojsonLoading] = useState<boolean>(false);
+
+  // Predict-area (crop): color and field_area_ha per field_id when crop + village selected
+  const [predictAreaCropColor, setPredictAreaCropColor] = useState<string | null>(null);
+  const [predictAreaFieldAreas, setPredictAreaFieldAreas] = useState<Record<string, number>>({});
   
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
@@ -159,6 +175,32 @@ const App: React.FC = () => {
   const [showPestSeries, setShowPestSeries] = useState<boolean>(true);
   const [selectedPestChildSeries, setSelectedPestChildSeries] = useState<string | null>(null);
   const [showAllTimeSeries, setShowAllTimeSeries] = useState<boolean>(false);
+
+  // Shared time series selection across Growth, Water, Soil, Pest (null = "Current" for growth/water/soil)
+  const [selectedTimeSeriesYearMonth, setSelectedTimeSeriesYearMonth] = useState<string | null>(null);
+
+  // State for Growth stored time series (year_month from analyze_Growthclasswise response.stored)
+  const [growthStoredSeries, setGrowthStoredSeries] = useState<GrowthStoredResponse | null>(null);
+  const [growthStoredLoading, setGrowthStoredLoading] = useState<boolean>(false);
+  const [growthStoredError, setGrowthStoredError] = useState<string | null>(null);
+  const [growthCurrentData, setGrowthCurrentData] = useState<any>(null); // current snapshot for "Current" tab
+  const [selectedGrowthYearMonth, setSelectedGrowthYearMonth] = useState<string | null>(null);
+  const [showGrowthSeries, setShowGrowthSeries] = useState<boolean>(true);
+  const [showAllGrowthTimeSeries, setShowAllGrowthTimeSeries] = useState<boolean>(false);
+  const [growthChartViewMode, setGrowthChartViewMode] = useState<'all' | 'selected'>('all');
+
+  // State for Water/Soil stored time series (year_month from analyze_wateruptakeclasswise / analyze_soilmoistureclasswise)
+  const [waterStoredSeries, setWaterStoredSeries] = useState<GrowthStoredResponse | null>(null);
+  const [soilStoredSeries, setSoilStoredSeries] = useState<GrowthStoredResponse | null>(null);
+  const [selectedWaterYearMonth, setSelectedWaterYearMonth] = useState<string | null>(null);
+  const [selectedSoilYearMonth, setSelectedSoilYearMonth] = useState<string | null>(null);
+
+  // Dashboard indices store (frequency dropdown: weekly | monthly | yearly; indices dropdown from API)
+  const [dashboardIndicesData, setDashboardIndicesData] = useState<DashboardIndicesStoreResponse | null>(null);
+  const [dashboardIndicesLoading, setDashboardIndicesLoading] = useState<boolean>(false);
+  const [dashboardIndicesError, setDashboardIndicesError] = useState<string | null>(null);
+  const [dashboardIndicesFrequency, setDashboardIndicesFrequency] = useState<DashboardIndicesFrequency>('weekly');
+  const [selectedDashboardIndex, setSelectedDashboardIndex] = useState<string | null>(null);
   
   // State for pest graph size (normal screen)
   const [pestGraphSize, setPestGraphSize] = useState<{ width: number; height: number }>({ width: 800, height: 300 });
@@ -206,6 +248,7 @@ const App: React.FC = () => {
 
   // State for sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
+  const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
   // State for sidebar expanded (full dropdowns + %/area) vs collapsed (icon-only); double-click toggles
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(false);
   // Which icon card is shown next to left sidebar (click icon = show card beside it, not full sidebar)
@@ -219,6 +262,7 @@ const App: React.FC = () => {
 
   // State for download menu
   const [showDownloadMenu, setShowDownloadMenu] = useState<boolean>(false);
+  const [showDashboardIndicesDownloadMenu, setShowDashboardIndicesDownloadMenu] = useState<boolean>(false);
 
   // State for split screen mode
   const [splitScreenMode, setSplitScreenMode] = useState<boolean>(false);
@@ -280,6 +324,11 @@ const App: React.FC = () => {
   const pestResizeStartRef = useRef({ x: 0, y: 0 });
   const pestResizeAccumRef = useRef({ x: 0, y: 0 });
   const PEST_RESIZE_STEP = 18;
+  // Draggable card positions (px from bottom-left); null = use default CSS position
+  const [pestCardPosition, setPestCardPosition] = useState<{ left: number; bottom: number } | null>(null);
+  const [weatherCardPosition, setWeatherCardPosition] = useState<{ left: number; bottom: number } | null>(null);
+  const pestDragStartRef = useRef<{ x: number; y: number; left: number; bottom: number } | null>(null);
+  const weatherDragStartRef = useRef<{ x: number; y: number; left: number; bottom: number } | null>(null);
 
   // Refs to ignore stray second click when user double-taps Land Surface or Methane (so the second tap doesn't open the other)
   const lastLstDoubleClickRef = useRef(0);
@@ -675,6 +724,64 @@ const App: React.FC = () => {
     }
   };
 
+  const downloadDashboardIndicesPDF = () => {
+    try {
+      setShowDashboardIndicesDownloadMenu(false);
+      const stored = dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored)
+        ? (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored
+        : [];
+      if (!stored.length) {
+        alert('No indices data to export. Load data first.');
+        return;
+      }
+      const filename = `Nearlive-crop-Monitoring-${selectedDistrict || 'export'}-${selectedSubdistrict || ''}-${selectedVillage || ''}-${Date.now()}.pdf`;
+      generateDashboardIndicesPdf(
+        {
+          district: selectedDistrict || '',
+          subdistrict: selectedSubdistrict || '',
+          village: selectedVillage || '',
+          stored,
+        },
+        filename
+      );
+    } catch (error) {
+      console.error('Error generating dashboard indices PDF:', error);
+      alert('Failed to generate PDF');
+    }
+  };
+
+  const downloadDashboardIndicesExcel = () => {
+    try {
+      setShowDashboardIndicesDownloadMenu(false);
+      const stored = dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored)
+        ? (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored
+        : [];
+      if (!stored.length) {
+        alert('No indices data to export. Load data first.');
+        return;
+      }
+      const headers = ['Card Name', 'District', 'Subdistrict', 'Village', 'Period Date', 'Value'];
+      const rows: (string | number)[][] = [headers];
+      stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
+        rows.push([
+          String(item.index_name || '').toUpperCase(),
+          selectedDistrict || '',
+          selectedSubdistrict || '',
+          selectedVillage || '',
+          item.period_date || '',
+          item.value
+        ]);
+      });
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Indices');
+      XLSX.writeFile(wb, `Nearlive-crop-Monitoring-${selectedDistrict || 'export'}-${Date.now()}.xlsx`);
+    } catch (error) {
+      console.error('Error generating dashboard indices Excel:', error);
+      alert('Failed to generate Excel file');
+    }
+  };
+
   // Fetch districts on mount
   useEffect(() => {
     const loadDistricts = async () => {
@@ -749,60 +856,13 @@ const App: React.FC = () => {
           setLoading(true);
           setError(null);
           
-          // If subdistrict is "Palus", load villages from GeoJSON file
-          if (selectedSubdistrict === 'Palus') {
-            console.log('Loading villages from palus1.geojson for subdistrict: Palus');
-            const response = await fetch('/palus1.geojson');
-            if (!response.ok) {
-              throw new Error('Failed to load GeoJSON file');
-            }
-            
-            // Read response as text first (handles large files better)
-            const responseText = await response.text();
-            if (!responseText || responseText.length === 0) {
-              throw new Error('Empty response from GeoJSON file');
-            }
-            
-            // Parse JSON from text
-            let geojsonData: any;
-            try {
-              geojsonData = JSON.parse(responseText.trim());
-            } catch (parseError) {
-              console.error('JSON parse error:', parseError);
-              throw new Error(`Failed to parse GeoJSON: ${parseError instanceof Error ? parseError.message : 'Unknown parse error'}`);
-            }
-            
-            // Validate structure
-            if (!geojsonData || !geojsonData.features || !Array.isArray(geojsonData.features)) {
-              throw new Error('Invalid GeoJSON format: missing features array');
-            }
-            
-            // Extract unique village names from features
-            const villageNamesSet = new Set<string>();
-            geojsonData.features.forEach((feature: any) => {
-              if (feature.properties && feature.properties.village_name) {
-                villageNamesSet.add(feature.properties.village_name);
-              }
-            });
-            
-            // Convert to array of village objects (matching the expected format)
-            const villagesFromGeoJSON = Array.from(villageNamesSet)
-              .sort()
-              .map(villageName => ({
-                village: villageName
-              }));
-            
-            console.log(`✅ Loaded ${villagesFromGeoJSON.length} unique villages from GeoJSON file`);
-            setVillages(villagesFromGeoJSON);
+          // Use API for all subdistricts (including Palus)
+          const data = await fetchVillages(selectedSubdistrict);
+          if (Array.isArray(data)) {
+            setVillages(data);
           } else {
-            // For other subdistricts, use API
-            const data = await fetchVillages(selectedSubdistrict);
-            if (Array.isArray(data)) {
-              setVillages(data);
-            } else {
-              console.warn('Unexpected villages response format:', data);
-              setVillages([]);
-            }
+            console.warn('Unexpected villages response format:', data);
+            setVillages([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
@@ -820,414 +880,377 @@ const App: React.FC = () => {
     }
   }, [selectedSubdistrict]);
 
-  // Handle district selection and display coordinates on map
+  // Handle district selection and display coordinates on map (from list geometry or get-geojson API)
   useEffect(() => {
-    if (selectedDistrict) {
-      // Find the selected district data
-      const districtData = districts.find(d => d.district === selectedDistrict);
-      setSelectedDistrictData(districtData || null);
-      
-      // Extract coordinates from geometry and display on map
-      if (districtData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle different geometry formats
-          if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-            // Extract coordinates from GeoJSON Polygon/MultiPolygon
-            const coords = districtData.geometry.coordinates;
-            
-            if (districtData.geometry.type === 'Polygon') {
-              // Polygon: coordinates is an array of rings, first ring is outer boundary
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (districtData.geometry.type === 'MultiPolygon') {
-              // MultiPolygon: coordinates is an array of polygons, take first polygon's outer ring
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (Array.isArray(districtData.geometry)) {
-            // Direct coordinate array
-            coordinates = districtData.geometry.map((coord: number[]) => 
-              Array.isArray(coord) && coord.length >= 2 
-                ? [coord[0], coord[1]] as Coordinate 
-                : null
-            ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-          } else if (districtData.geometry.coordinates) {
-            // Nested coordinates structure
-            const coords = districtData.geometry.coordinates;
-            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-              // Nested array: extract outer ring
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              // Flat array
-              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
-          
-          // Create a plot from district boundary for map display
-          if (coordinates.length >= 3) {
-            const districtPlot = {
-              id: selectedDistrict,
-              area_ha: '0', // Area not provided
-              boundary: coordinates
-            };
-            setAllPlots([districtPlot]);
-            
-            // Calculate bounds for the district
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
-            }
-            
-            // District boundary prepared for map display
-          } else {
-            console.warn(`District ${selectedDistrict} has insufficient coordinates:`, coordinates.length);
-            setAllPlots([]);
-          }
-        } catch (err) {
-          console.error('Error processing district geometry:', err);
-          setAllPlots([]);
-        }
-      } else {
-        // No geometry available
-        setAllPlots([]);
-      }
-      
-      // Clear other data
-      setSelectedPlotId(null);
-      setPlotBoundary([]);
-      setAreaHa(null);
-      setTileUrl(null);
-      setGrowthData(null);
-      setWaterData(null);
-      setSoilData(null);
-      setPestData(null);
-      setAllPlotsTileUrls({});
-      setAvailablePlots([]);
-      setTotalPlotsCount(0);
-    } else {
+    if (!selectedDistrict) {
       setSelectedDistrictData(null);
       setAllPlots([]);
       setAvailablePlots([]);
       setTotalPlotsCount(0);
       setPlotBounds(null);
+      return;
+    }
+
+    const districtData = districts.find(d => d.district === selectedDistrict);
+    setSelectedDistrictData(districtData || null);
+
+    const setDistrictBoundary = (coordinates: Coordinate[]) => {
+      if (coordinates.length >= 3) {
+        setAllPlots([{ id: selectedDistrict, area_ha: '0', boundary: coordinates }]);
+        const bounds = L.latLngBounds([]);
+        coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        if (bounds.isValid()) setPlotBounds(bounds);
+      } else {
+        setAllPlots([]);
+      }
+    };
+
+    setSelectedPlotId(null);
+    setPlotBoundary([]);
+    setAreaHa(null);
+    setTileUrl(null);
+    setGrowthData(null);
+    setWaterData(null);
+    setSoilData(null);
+    setPestData(null);
+    setAllPlotsTileUrls({});
+    setAvailablePlots([]);
+    setTotalPlotsCount(0);
+
+    if (districtData?.geometry) {
+      try {
+        let coordinates: Coordinate[] = [];
+        const geom = districtData.geometry;
+        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+          const coords = geom.coordinates;
+          if (geom.type === 'Polygon') {
+            const outerRing = coords[0] || [];
+            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          } else {
+            const firstPolygon = coords[0] || [];
+            const outerRing = firstPolygon[0] || [];
+            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          }
+        } else if (Array.isArray(geom)) {
+          coordinates = geom.map((coord: number[]) =>
+            Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
+          ).filter((c: Coordinate | null): c is Coordinate => c !== null);
+        } else if (geom.coordinates) {
+          const coords = geom.coordinates;
+          if (Array.isArray(coords[0])?.[0]) {
+            const outerRing = coords[0] || [];
+            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          } else {
+            coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          }
+        }
+        setDistrictBoundary(coordinates);
+      } catch (err) {
+        console.error('Error processing district geometry:', err);
+        setAllPlots([]);
+      }
+    } else {
+      // Fallback: fetch boundary from get-geojson API when list has no geometry
+      let cancelled = false;
+      fetchBoundaryGeoJSON(selectedDistrict).then((coords) => {
+        if (cancelled) return;
+        if (coords && coords.length >= 3) setDistrictBoundary(coords);
+        else setAllPlots([]);
+      });
+      return () => { cancelled = true; };
     }
   }, [selectedDistrict, districts]);
 
-  // Handle subdistrict selection and display coordinates on map
+  // Helper: set boundary plot and bounds from coordinates
+  const setBoundaryPlot = (id: string, coordinates: Coordinate[]) => {
+    if (coordinates.length >= 3) {
+      setAllPlots([{ id, area_ha: '0', boundary: coordinates }]);
+      const bounds = L.latLngBounds([]);
+      coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+      if (bounds.isValid()) setPlotBounds(bounds);
+    } else {
+      setAllPlots([]);
+    }
+  };
+
+  // Handle subdistrict selection and display coordinates on map (from list geometry or get-geojson API)
   useEffect(() => {
+    setSelectedPlotId(null);
+    setPlotBoundary([]);
+    setAreaHa(null);
+    setTileUrl(null);
+    setGrowthData(null);
+    setWaterData(null);
+    setSoilData(null);
+    setPestData(null);
+    setAllPlotsTileUrls({});
+    setAvailablePlots([]);
+    setTotalPlotsCount(0);
+
     if (selectedSubdistrict && subdistricts.length > 0) {
-      // Find the selected subdistrict data
       const subdistrictData = subdistricts.find(s => s.subdistrict === selectedSubdistrict);
-      
       if (subdistrictData?.geometry) {
         try {
           let coordinates: Coordinate[] = [];
-          
-          // Handle different geometry formats
-          if (subdistrictData.geometry.type === 'Polygon' || subdistrictData.geometry.type === 'MultiPolygon') {
-            // Extract coordinates from GeoJSON Polygon/MultiPolygon
-            const coords = subdistrictData.geometry.coordinates;
-            
-            if (subdistrictData.geometry.type === 'Polygon') {
-              // Polygon: coordinates is an array of rings, first ring is outer boundary
+          const geom = subdistrictData.geometry;
+          if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+            const coords = geom.coordinates;
+            if (geom.type === 'Polygon') {
               const outerRing = coords[0] || [];
               coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (subdistrictData.geometry.type === 'MultiPolygon') {
-              // MultiPolygon: coordinates is an array of polygons, take first polygon's outer ring
+            } else {
               const firstPolygon = coords[0] || [];
               const outerRing = firstPolygon[0] || [];
               coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
-          } else if (subdistrictData.geometry.coordinates) {
-            // Nested coordinates structure
-            const coords = subdistrictData.geometry.coordinates;
-            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-              // Nested array: extract outer ring
+          } else if (geom.coordinates) {
+            const coords = geom.coordinates;
+            if (Array.isArray(coords[0])?.[0]) {
               const outerRing = coords[0] || [];
               coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             } else {
-              // Flat array
               coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
           }
-          
-          // Create a plot from subdistrict boundary for map display
-          if (coordinates.length >= 3) {
-            const subdistrictPlot = {
-              id: selectedSubdistrict,
-              area_ha: '0', // Area not provided
-              boundary: coordinates
-            };
-            setAllPlots([subdistrictPlot]);
-            
-            // Calculate bounds for the subdistrict
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
-            }
-            
-            // Subdistrict boundary prepared for map display
-          } else {
-            console.warn(`Subdistrict ${selectedSubdistrict} has insufficient coordinates:`, coordinates.length);
-            setAllPlots([]);
-          }
+          setBoundaryPlot(selectedSubdistrict, coordinates);
         } catch (err) {
           console.error('Error processing subdistrict geometry:', err);
           setAllPlots([]);
         }
       } else {
-        // No geometry available
-        setAllPlots([]);
+        let cancelled = false;
+        fetchBoundaryGeoJSON(selectedSubdistrict).then((coords) => {
+          if (cancelled) return;
+          if (coords && coords.length >= 3) setBoundaryPlot(selectedSubdistrict, coords);
+          else setAllPlots([]);
+        });
+        return () => { cancelled = true; };
       }
-      
-      // Clear other data
-      setSelectedPlotId(null);
-      setPlotBoundary([]);
-      setAreaHa(null);
-      setTileUrl(null);
-      setGrowthData(null);
-      setWaterData(null);
-      setSoilData(null);
-      setPestData(null);
-      setAllPlotsTileUrls({});
-      setAvailablePlots([]);
-      setTotalPlotsCount(0);
-    } else if (!selectedSubdistrict) {
-      // If subdistrict is cleared, show district boundary again
-      if (selectedDistrict) {
-        const districtData = districts.find(d => d.district === selectedDistrict);
-        if (districtData?.geometry) {
-          try {
-            let coordinates: Coordinate[] = [];
-            
-            if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-              const coords = districtData.geometry.coordinates;
-              
-              if (districtData.geometry.type === 'Polygon') {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else if (districtData.geometry.type === 'MultiPolygon') {
-                const firstPolygon = coords[0] || [];
-                const outerRing = firstPolygon[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              }
-            } else if (districtData.geometry.coordinates) {
-              const coords = districtData.geometry.coordinates;
-              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else {
-                coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              }
+    } else if (!selectedSubdistrict && selectedDistrict) {
+      const districtData = districts.find(d => d.district === selectedDistrict);
+      if (districtData?.geometry) {
+        try {
+          let coordinates: Coordinate[] = [];
+          const geom = districtData.geometry;
+          if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+            const coords = geom.coordinates;
+            if (geom.type === 'Polygon') {
+              const outerRing = coords[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else {
+              const firstPolygon = coords[0] || [];
+              const outerRing = firstPolygon[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
-            
-            if (coordinates.length >= 3) {
-              const districtPlot = {
-                id: selectedDistrict,
-                area_ha: '0',
-                boundary: coordinates
-              };
-              setAllPlots([districtPlot]);
-              
-              if (coordinates.length > 0) {
-                const bounds = L.latLngBounds([]);
-                coordinates.forEach((coord: Coordinate) => {
-                  bounds.extend([coord[1], coord[0]]);
-                });
-                if (bounds.isValid()) {
-                  setPlotBounds(bounds);
-                }
-              }
+          } else if (geom.coordinates) {
+            const coords = geom.coordinates;
+            if (Array.isArray(coords[0])?.[0]) {
+              const outerRing = coords[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else {
+              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
-          } catch (err) {
-            console.error('Error processing district geometry:', err);
           }
+          setBoundaryPlot(selectedDistrict, coordinates);
+        } catch (err) {
+          console.error('Error processing district geometry:', err);
         }
+      } else {
+        let cancelled = false;
+        fetchBoundaryGeoJSON(selectedDistrict).then((coords) => {
+          if (cancelled) return;
+          if (coords && coords.length >= 3) setBoundaryPlot(selectedDistrict, coords);
+          else setAllPlots([]);
+        });
+        return () => { cancelled = true; };
       }
     }
   }, [selectedSubdistrict, subdistricts, selectedDistrict, districts]);
 
-  // Handle village selection and display coordinates on map
+  // Handle village selection: fetch field boundaries from API and display on map
   useEffect(() => {
-    if (selectedVillage && villages.length > 0) {
-      // Find the selected village data
-      const villageData = villages.find(v => v.village === selectedVillage);
-      
-      if (villageData?.coordinates || villageData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle new format: coordinates directly on village object with geom_type
-          if (villageData.coordinates && villageData.geom_type) {
-            const coords = villageData.coordinates;
-            const geomType = villageData.geom_type.toUpperCase();
-            
-            if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-              // Polygon format: coordinates is nested array [[[lng, lat], [lng, lat], ...]]
-              if (Array.isArray(coords) && coords.length > 0) {
-                if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                  // Nested array: extract outer ring
-                  const outerRing = coords[0] || [];
-                  coordinates = outerRing.map((coord: number[]) => {
-                    // Handle both [lng, lat] and [[lng, lat]] formats
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                } else {
-                  // Flat array of coordinates
-                  coordinates = coords.map((coord: number[]) => {
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                }
-              }
-            }
-          }
-          // Handle old format: geometry object (for backward compatibility)
-          else if (villageData.geometry) {
-            if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-              const coords = villageData.geometry.coordinates;
-              
-              if (villageData.geometry.type === 'Polygon') {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else if (villageData.geometry.type === 'MultiPolygon') {
-                const firstPolygon = coords[0] || [];
-                const outerRing = firstPolygon[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              }
-            } else if (villageData.geometry.coordinates) {
-              const coords = villageData.geometry.coordinates;
-              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else {
-                coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              }
-            }
-          }
-          
-          // Create a plot from village boundary for map display
-          if (coordinates.length >= 3) {
-            const villagePlot = {
-              id: selectedVillage,
-              area_ha: '0',
-              boundary: coordinates
-            };
-            setAllPlots([villagePlot]);
-            
-            // Calculate bounds for the village
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
-            }
-            
-            // Village boundary prepared for map display
-          } else {
-            console.warn(`Village ${selectedVillage} has insufficient coordinates:`, coordinates.length);
-            setAllPlots([]);
-          }
-        } catch (err) {
-          console.error('Error processing village geometry:', err);
-          setAllPlots([]);
-        }
-    } else {
+    if (!selectedVillage) return;
+    if (!selectedDistrict || !selectedSubdistrict) {
       setAllPlots([]);
+      return;
     }
 
-      // Clear other data
-      setSelectedPlotId(null);
-      setPlotBoundary([]);
-      setAreaHa(null);
-      setTileUrl(null);
-      setGrowthData(null);
-      setWaterData(null);
-      setSoilData(null);
-      setPestData(null);
-      setAllPlotsTileUrls({});
-      setAvailablePlots([]);
-      setTotalPlotsCount(0);
-      // Clear GeoJSON plots when village changes
-      setGeojsonPlots([]);
-    } else if (!selectedVillage) {
-      // Clear GeoJSON plots when village is cleared
-      setGeojsonPlots([]);
-      // If village is cleared, show subdistrict boundary again
-      if (selectedSubdistrict) {
-        const subdistrictData = subdistricts.find(s => s.subdistrict === selectedSubdistrict);
-        if (subdistrictData?.geometry) {
-          try {
-            let coordinates: Coordinate[] = [];
-            
-            if (subdistrictData.geometry.type === 'Polygon' || subdistrictData.geometry.type === 'MultiPolygon') {
-              const coords = subdistrictData.geometry.coordinates;
-              
-              if (subdistrictData.geometry.type === 'Polygon') {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else if (subdistrictData.geometry.type === 'MultiPolygon') {
-                const firstPolygon = coords[0] || [];
-                const outerRing = firstPolygon[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              }
-            } else if (subdistrictData.geometry.coordinates) {
-              const coords = subdistrictData.geometry.coordinates;
+    let cancelled = false;
+
+    const loadVillageBoundary = async () => {
+      try {
+        // Prefer field-boundaries API for village boundaries (any village)
+        const plots = await fetchFieldBoundaries(selectedDistrict, selectedSubdistrict, selectedVillage);
+        if (cancelled) return;
+
+        if (plots.length > 0) {
+          setAllPlots(plots);
+          const bounds = L.latLngBounds([]);
+          plots.forEach((plot) => {
+            (plot.boundary || []).forEach((coord: Coordinate) => {
+              bounds.extend([coord[1], coord[0]]);
+            });
+          });
+          if (bounds.isValid()) {
+            setPlotBounds(bounds);
+          }
+          return;
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('Field boundaries API failed, falling back to village geometry:', err);
+      }
+
+      // Fallback: use village geometry from villages list if API returned nothing or failed
+      if (villages.length === 0) {
+        setAllPlots([]);
+        return;
+      }
+      const villageData = villages.find((v) => v.village === selectedVillage);
+      if (!villageData?.coordinates && !villageData?.geometry) {
+        setAllPlots([]);
+        return;
+      }
+
+      try {
+        let coordinates: Coordinate[] = [];
+        if (villageData.coordinates && villageData.geom_type) {
+          const coords = villageData.coordinates;
+          const geomType = villageData.geom_type.toUpperCase();
+          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
+            if (Array.isArray(coords) && coords.length > 0) {
               if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
                 const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+                coordinates = outerRing.map((coord: number[]) =>
+                  Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
+                ).filter((c): c is Coordinate => c !== null);
               } else {
-                coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+                coordinates = coords.map((coord: number[]) =>
+                  Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
+                ).filter((c): c is Coordinate => c !== null);
               }
             }
-            
-            if (coordinates.length >= 3) {
-              const subdistrictPlot = {
-                id: selectedSubdistrict,
-                area_ha: '0',
-                boundary: coordinates
-              };
-              setAllPlots([subdistrictPlot]);
-              
-              if (coordinates.length > 0) {
-                const bounds = L.latLngBounds([]);
-                coordinates.forEach((coord: Coordinate) => {
-                  bounds.extend([coord[1], coord[0]]);
-                });
-                if (bounds.isValid()) {
-                  setPlotBounds(bounds);
-                }
-              }
-            }
-          } catch (err) {
-            console.error('Error processing subdistrict geometry:', err);
           }
+        } else if (villageData.geometry) {
+          const g = villageData.geometry;
+          if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+            const c = g.coordinates;
+            if (g.type === 'Polygon') {
+              const outerRing = (c && c[0]) || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else {
+              const firstPolygon = (c && c[0]) || [];
+              const outerRing = firstPolygon[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            }
+          } else if (g.coordinates) {
+            const c = g.coordinates;
+            const outerRing = Array.isArray(c[0]) && Array.isArray(c[0][0]) ? c[0] : c;
+            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          }
+        }
+
+        if (coordinates.length >= 3) {
+          setAllPlots([{ id: selectedVillage, area_ha: '0', boundary: coordinates }]);
+          const bounds = L.latLngBounds([]);
+          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+          if (bounds.isValid()) setPlotBounds(bounds);
+        } else {
+          setAllPlots([]);
+        }
+      } catch (err) {
+        console.error('Error processing village geometry:', err);
+        setAllPlots([]);
+      }
+    };
+
+    loadVillageBoundary();
+    return () => { cancelled = true; };
+  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages]);
+
+  // When crop type + village selected, fetch predict-area for color and field_area_ha per field_id
+  useEffect(() => {
+    if (!selectedCrop || !selectedDistrict || !selectedSubdistrict || !selectedVillage) {
+      setPredictAreaCropColor(null);
+      setPredictAreaFieldAreas({});
+      return;
+    }
+    let cancelled = false;
+    const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+    fetchPredictArea(selectedDistrict, selectedSubdistrict, selectedVillage, month)
+      .then((res) => {
+        if (cancelled) return;
+        const cropKey = selectedCrop.toLowerCase();
+        const cropData = res[cropKey] as { crop_name?: string; crop_area_ha?: number; color?: string; identified_field_boundaries?: Record<string, { field_id: number; field_area_ha: number }> } | undefined;
+        if (!cropData || typeof cropData !== 'object') {
+          setPredictAreaCropColor(null);
+          setPredictAreaFieldAreas({});
+          return;
+        }
+        setPredictAreaCropColor(cropData.color ?? null);
+        const areas: Record<string, number> = {};
+        const boundaries = cropData.identified_field_boundaries ?? {};
+        Object.values(boundaries).forEach((item) => {
+          areas[String(item.field_id)] = item.field_area_ha;
+        });
+        setPredictAreaFieldAreas(areas);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPredictAreaCropColor(null);
+          setPredictAreaFieldAreas({});
+        }
+      });
+    return () => { cancelled = true; };
+  }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
+
+  // Clear analysis data when village changes; when village cleared, show subdistrict boundary
+  useEffect(() => {
+    setSelectedPlotId(null);
+    setPlotBoundary([]);
+    setAreaHa(null);
+    setTileUrl(null);
+    setGrowthData(null);
+    setWaterData(null);
+    setSoilData(null);
+    setPestData(null);
+    setAllPlotsTileUrls({});
+    setAvailablePlots([]);
+    setTotalPlotsCount(0);
+    setGeojsonPlots([]);
+
+    if (!selectedVillage && selectedSubdistrict) {
+      const subdistrictData = subdistricts.find((s) => s.subdistrict === selectedSubdistrict);
+      if (subdistrictData?.geometry) {
+        try {
+          let coordinates: Coordinate[] = [];
+          const g = subdistrictData.geometry;
+          if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+            const c = g.coordinates;
+            if (g.type === 'Polygon') {
+              coordinates = (c[0] || []).map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else {
+              const firstPolygon = c[0] || [];
+              const outerRing = firstPolygon[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            }
+          } else if (g.coordinates) {
+            const c = g.coordinates;
+            const outerRing = Array.isArray(c[0]) && Array.isArray(c[0][0]) ? c[0] : c;
+            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+          }
+          if (coordinates.length >= 3) {
+            setAllPlots([{ id: selectedSubdistrict, area_ha: '0', boundary: coordinates }]);
+            const bounds = L.latLngBounds([]);
+            coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+            if (bounds.isValid()) setPlotBounds(bounds);
+          }
+        } catch (err) {
+          console.error('Error processing subdistrict geometry:', err);
         }
       }
     }
-  }, [selectedVillage, villages, selectedSubdistrict, subdistricts]);
+  }, [selectedVillage, selectedSubdistrict, subdistricts]);
 
   // Fetch total area when district/subdistrict/village changes
   useEffect(() => {
@@ -1739,6 +1762,16 @@ const App: React.FC = () => {
           else if (Array.isArray(response)) {
             plotsArray = response;
           }
+          // Format 5: Growth API current object: { current: { feature | features } }
+          else if (responseAny.current && Array.isArray(responseAny.current.features)) {
+            plotsArray = responseAny.current.features;
+          } else if (responseAny.current?.feature && responseAny.current.feature.type === 'Feature' && responseAny.current.feature.geometry) {
+            plotsArray = [responseAny.current.feature];
+          }
+          // Format 6: Single feature at top level (fallback)
+          else if (responseAny.feature && responseAny.feature.type === 'Feature' && responseAny.feature.geometry) {
+            plotsArray = [responseAny.feature];
+          }
           
           console.log('📦 Processed plots array count:', plotsArray.length);
           if (plotsArray.length > 0) {
@@ -1908,7 +1941,10 @@ const App: React.FC = () => {
               console.log(`✅ Displaying ${plotsForMap.length} plots on map from ${activeTab} analysis`);
             } else {
               console.warn(`No valid plots with coordinates found in ${activeTab} response`);
-              setAllPlots([]);
+              // Keep existing boundary (district/subdistrict) visible when we have tile URLs but no boundaries from API
+              if (Object.keys(tileUrlsMap).length === 0) {
+                setAllPlots([]);
+              }
             }
           } else {
             console.error(`❌ No plots array found in ${activeTab} analysis response!`);
@@ -1936,9 +1972,13 @@ const App: React.FC = () => {
             }));
           } else if (activeTab === 'pest') {
             const pestResponse: any = response;
-            // New format: hierarchy with tile_url, total_area_ha, percentage, children per category
+            // New format: hierarchy with tile_url, total_area_ha, percentage, children per category (from POST pest-detectionclasswise current)
             if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
-              setPestHierarchy(pestResponse as PestHierarchyResponse);
+              setPestHierarchy({
+                plot: pestResponse.plots?.[0]?.properties?.plot_id ?? '',
+                total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
+                hierarchy: pestResponse.hierarchy,
+              } as PestHierarchyResponse);
               const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
               const pestSummary = {
                 healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
@@ -1960,6 +2000,21 @@ const App: React.FC = () => {
                 ...prev,
                 pest: pestSummary,
               }));
+              // Current snapshot: set map tile from first feature so "Current" shows the right layer
+              const currentTile = pestResponse.plots?.[0]?.properties?.tile_url ?? null;
+              if (currentTile) {
+                setPestTileUrl(currentTile);
+                setAllPlotsTileUrls(prev => ({ ...prev, pest: currentTile }));
+              }
+              // Time series: use stored year_month from same response (Current + all stored dates on tab)
+              const stored = Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : [];
+              setPestStoredSeries(stored);
+              // Keep selectedPestYearMonth in sync if it exists in stored; default to null so "Current" is shown
+              if (stored.length > 0 && selectedTimeSeriesYearMonth && stored.some((x: PestStoredItem) => x.year_month === selectedTimeSeriesYearMonth)) {
+                setSelectedPestYearMonth(selectedTimeSeriesYearMonth);
+              } else {
+                setSelectedPestYearMonth(null);
+              }
             } else {
               // Legacy: percentage_summary and area_summary_hectare
               const pct = pestResponse.percentage_summary || {};
@@ -2000,6 +2055,38 @@ const App: React.FC = () => {
               pest: activeTab === 'pest' ? (response.pixel_summary || {}) : (prev?.pest || null),
               waterSource: prev?.waterSource || null,
             }));
+            // Growth/Water/Soil/Pest: set stored year_month from analyze_* response for time series tab
+            const storedResponse = response as GrowthAnalysisWithStoredResponse;
+            if (activeTab === 'growth') {
+              setGrowthCurrentData(tabData); // keep current snapshot for "Current" tab
+              setGrowthStoredSeries(Array.isArray(storedResponse.stored) ? storedResponse.stored : []);
+              setGrowthStoredError(null);
+            } else if (activeTab === 'water') {
+              const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
+              setWaterStoredSeries(wStored);
+              if (wStored.length > 0) {
+                const inList = selectedTimeSeriesYearMonth && wStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
+                setSelectedWaterYearMonth(inList ? selectedTimeSeriesYearMonth : wStored[0].year_month);
+                if (!inList) setSelectedTimeSeriesYearMonth(wStored[0].year_month);
+              } else setSelectedWaterYearMonth(null);
+            } else if (activeTab === 'soil') {
+              const sStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
+              setSoilStoredSeries(sStored);
+              if (sStored.length > 0) {
+                const inList = selectedTimeSeriesYearMonth && sStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
+                setSelectedSoilYearMonth(inList ? selectedTimeSeriesYearMonth : sStored[0].year_month);
+                if (!inList) setSelectedTimeSeriesYearMonth(sStored[0].year_month);
+              } else setSelectedSoilYearMonth(null);
+            } else if (activeTab === 'pest' && Array.isArray(storedResponse.stored)) {
+              const stored = storedResponse.stored as PestStoredResponse;
+              setPestStoredSeries(stored);
+              if (stored.length > 0) {
+                const inList = selectedTimeSeriesYearMonth && stored.some((x: PestStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
+                const effective = inList ? selectedTimeSeriesYearMonth! : stored[0].year_month;
+                setSelectedPestYearMonth(effective);
+                if (!inList) setSelectedTimeSeriesYearMonth(stored[0].year_month);
+              }
+            }
           } else {
             setAllPlotsAnalysisData(prev => ({
               growth: activeTab === 'growth' ? null : (prev?.growth || null),
@@ -2102,6 +2189,10 @@ const App: React.FC = () => {
       setTotalPlotsCount(0);
       setAllPlotsTileUrls({});
       setAllPlotsAnalysisData(null);
+      setGrowthStoredSeries(null);
+      setWaterStoredSeries(null);
+      setSoilStoredSeries(null);
+      setGrowthCurrentData(null);
     }
   }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage]); // Fetch when tab OR location changes
 
@@ -2942,6 +3033,12 @@ const App: React.FC = () => {
             plotsArray = responseAny.data;
           } else if (Array.isArray(response)) {
             plotsArray = response;
+          } else if (responseAny.current && Array.isArray(responseAny.current.features)) {
+            plotsArray = responseAny.current.features;
+          } else if (responseAny.current?.feature && responseAny.current.feature.type === 'Feature' && responseAny.current.feature.geometry) {
+            plotsArray = [responseAny.current.feature];
+          } else if (responseAny.feature && responseAny.feature.type === 'Feature' && responseAny.feature.geometry) {
+            plotsArray = [responseAny.feature];
           }
           
           // Extract tile URLs and plot boundaries from plots
@@ -3363,6 +3460,12 @@ const App: React.FC = () => {
             plotsArray = responseAny.data;
           } else if (Array.isArray(response)) {
             plotsArray = response;
+          } else if (responseAny.current && Array.isArray(responseAny.current.features)) {
+            plotsArray = responseAny.current.features;
+          } else if (responseAny.current?.feature && responseAny.current.feature.type === 'Feature' && responseAny.current.feature.geometry) {
+            plotsArray = [responseAny.current.feature];
+          } else if (responseAny.feature && responseAny.feature.type === 'Feature' && responseAny.feature.geometry) {
+            plotsArray = [responseAny.feature];
           }
           
           // Extract tile URLs and plot boundaries from plots
@@ -3653,16 +3756,14 @@ const App: React.FC = () => {
     }
   }, [activeTab]);
 
-  // Fetch sugarcane data when crop is selected
+  // Fetch sugarcane tile only when crop + district + subdistrict + village selected (do not show large overlay for district/subdistrict only)
   useEffect(() => {
-    if (selectedCrop === 'sugarcane' && selectedDistrict && !selectedSubdistrict) {
+    if (selectedCrop === 'sugarcane' && selectedDistrict && selectedSubdistrict && selectedVillage) {
       const loadSugarcaneData = async () => {
         try {
           setLoading(true);
           setError(null);
-          
           const response = await fetchNDVISugarcaneDetection(selectedDistrict);
-          
           if (response.tile_url && response.area_ha !== undefined) {
             setCropTileUrl(response.tile_url);
             setCropAreaHa(response.area_ha);
@@ -3680,14 +3781,19 @@ const App: React.FC = () => {
           setLoading(false);
         }
       };
-      
       loadSugarcaneData();
-    } else if (!selectedCrop) {
-      // Clear crop data when no crop is selected
+    } else {
       setCropTileUrl(null);
       setCropAreaHa(null);
+      if (!selectedCrop || !selectedVillage) {
+        setAllPlotsTileUrls(prev => {
+          const next = { ...prev };
+          delete next['sugarcane'];
+          return next;
+        });
+      }
     }
-  }, [selectedCrop, selectedDistrict, selectedSubdistrict]);
+  }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
 
   // Reset methane when district/subdistrict changes
   useEffect(() => {
@@ -3695,62 +3801,56 @@ const App: React.FC = () => {
     setMethaneTileUrl(null);
   }, [selectedDistrict, selectedSubdistrict]);
 
-  // Fetch Pest stored time series when Pest tab is active and district + subdistrict are selected
+  // Pest stored year_month now comes from analyze_pestclasswise response (set in loadAnalysisData). Clear when switching away.
+  useEffect(() => {
+    if (activeTab !== 'pest' || !selectedDistrict || !selectedSubdistrict) {
+      setPestStoredSeries(null);
+      setPestStoredError(null);
+      setPestStoredLoading(false);
+      setSelectedPestYearMonth(null);
+    }
+  }, [activeTab, selectedDistrict, selectedSubdistrict]);
+
+  // Growth/Water/Soil time series year_month come from analyze_* response (set in loadAnalysisData). No separate api-stored fetch.
+
+  // Fetch dashboard indices store when district, subdistrict and frequency are set
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (activeTab !== 'pest' || !selectedDistrict || !selectedSubdistrict) {
+      if (!selectedDistrict || !selectedSubdistrict) {
         if (!cancelled) {
-          setPestStoredSeries(null);
-          setPestStoredError(null);
-          setPestStoredLoading(false);
-          setSelectedPestYearMonth(null);
+          setDashboardIndicesData(null);
+          setDashboardIndicesError(null);
+          setSelectedDashboardIndex(null);
         }
         return;
       }
       try {
-        setPestStoredLoading(true);
-        setPestStoredError(null);
-        const data = await fetchPestStoredSeries(selectedDistrict, selectedSubdistrict, 50);
+        setDashboardIndicesLoading(true);
+        setDashboardIndicesError(null);
+        const data = await fetchDashboardIndicesStore(selectedDistrict, selectedSubdistrict, dashboardIndicesFrequency);
         if (!cancelled) {
-          setPestStoredSeries(data);
-          setSelectedPestYearMonth(data.length > 0 ? data[0].year_month : null);
-          
-          // Auto-select first pest category from first month's data if available
-          if (data.length > 0 && data[0].response_data?.hierarchy) {
-            const hierarchy = data[0].response_data.hierarchy;
-            const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
-            const firstCategory = order.find(k => hierarchy[k] != null);
-            if (firstCategory) {
-              // Use functional update to check current value and set if not already set
-              setSelectedPestCategory(prev => {
-                if (!prev && firstCategory) {
-                  const children = hierarchy[firstCategory]?.children;
-                  if (children) {
-                    setShowPestChildren(Object.keys(children).length > 0);
-                  }
-                  return firstCategory;
-                }
-                return prev;
-              });
-            }
-          }
+          setDashboardIndicesData(data);
+          const raw = data as any;
+          const indices = Array.isArray(raw?.indices) ? raw.indices
+            : Array.isArray(raw?.data) ? raw.data
+            : Array.isArray(data) ? data
+            : [];
+          const firstIndex = indices.length > 0 ? (typeof indices[0] === 'string' ? indices[0] : indices[0]?.name ?? indices[0]?.id ?? null) : null;
+          setSelectedDashboardIndex(firstIndex);
         }
       } catch (e) {
         if (!cancelled) {
-          const msg = e instanceof Error ? e.message : 'Failed to load pest time series';
-          setPestStoredSeries(null);
-          setPestStoredError(msg);
+          setDashboardIndicesData(null);
+          setDashboardIndicesError(e instanceof Error ? e.message : 'Failed to load dashboard indices');
         }
       } finally {
-        if (!cancelled) setPestStoredLoading(false);
+        if (!cancelled) setDashboardIndicesLoading(false);
       }
     };
     run();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTab, selectedDistrict, selectedSubdistrict]);
+    return () => { cancelled = true; };
+  }, [selectedDistrict, selectedSubdistrict, dashboardIndicesFrequency]);
 
   // Fetch Pest stored time series for left side (split screen mode)
   useEffect(() => {
@@ -3863,11 +3963,12 @@ const App: React.FC = () => {
 
     const resp: any = item.response_data;
     const hierarchy = resp.hierarchy || {};
+    const totalAreaHa = resp.total_area_ha ?? resp.features?.[0]?.properties?.total_area_ha ?? 0;
 
     // Update pest hierarchy so sidebar Percentage / Area uses stored data
     setPestHierarchy({
-      plot: resp.plot || '',
-      total_area_ha: resp.total_area_ha ?? resp.total_area_ha ?? 0,
+      plot: resp.plot ?? resp.features?.[0]?.properties?.plot_id ?? '',
+      total_area_ha: totalAreaHa,
       hierarchy,
     } as PestHierarchyResponse);
 
@@ -3886,7 +3987,7 @@ const App: React.FC = () => {
       wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
       soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
       soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
-      total_area_hectare: resp.total_area_ha ?? 0,
+      total_area_hectare: totalAreaHa,
     };
 
     setAllPlotsAnalysisData((prev) => ({
@@ -3897,10 +3998,11 @@ const App: React.FC = () => {
       waterSource: prev?.waterSource || null,
     }));
 
-    // Update map tile_url for this month (overall pest tile)
-    if (resp.tile_url) {
-      setPestTileUrl(resp.tile_url);
-      setAllPlotsTileUrls({ pest: resp.tile_url });
+    // Update map tile_url for this month (overall pest tile; stored can have tile in .tile_url or .features[0].properties.tile_url)
+    const tileForMonth = resp.tile_url ?? resp.features?.[0]?.properties?.tile_url;
+    if (tileForMonth) {
+      setPestTileUrl(tileForMonth);
+      setAllPlotsTileUrls(prev => ({ ...prev, pest: tileForMonth }));
       setShowTileLayers(true);
     }
 
@@ -3915,6 +4017,57 @@ const App: React.FC = () => {
       }
     }
   }, [activeTab, pestStoredSeries, selectedPestYearMonth, selectedPestCategory]);
+
+  // Sync Growth tab selection from shared time series (so switching from Pest back to Growth keeps same month)
+  useEffect(() => {
+    if (activeTab !== 'growth' || !growthStoredSeries) return;
+    const inList = selectedTimeSeriesYearMonth === null || growthStoredSeries.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
+    setSelectedGrowthYearMonth(inList ? selectedTimeSeriesYearMonth : null);
+  }, [activeTab, growthStoredSeries, selectedTimeSeriesYearMonth]);
+
+  // When Growth tab: show current snapshot or selected stored year_month in sidebar/map
+  useEffect(() => {
+    if (activeTab !== 'growth') return;
+    if (!selectedGrowthYearMonth) {
+      // Show current data
+      if (growthCurrentData) {
+        setAllPlotsAnalysisData((prev) => ({
+          growth: growthCurrentData,
+          water: prev?.water || null,
+          soil: prev?.soil || null,
+          pest: prev?.pest || null,
+          waterSource: prev?.waterSource || null,
+        }));
+      }
+      return;
+    }
+    if (!growthStoredSeries) return;
+    const item = growthStoredSeries.find((it) => it.year_month === selectedGrowthYearMonth);
+    if (!item?.response_data) return;
+    const rd = item.response_data as any;
+    const pixelSummary = rd.pixel_summary || {};
+    const classwise = rd.classwise;
+    const tabData = { ...pixelSummary, classwise: classwise || [] };
+    setAllPlotsAnalysisData((prev) => ({
+      growth: tabData,
+      water: prev?.water || null,
+      soil: prev?.soil || null,
+      pest: prev?.pest || null,
+      waterSource: prev?.waterSource || null,
+    }));
+    // Support both features[] and single feature (e.g. stored 2026-03 has response_data.feature)
+    const feat = (rd.features && rd.features[0]) ? rd.features[0] : rd.feature;
+    if (feat?.properties?.tile_url) {
+      setAllPlotsTileUrls((prev) => ({ ...prev, [feat.properties?.plot_id || 'growth']: feat.properties.tile_url }));
+      setShowTileLayers(true);
+    }
+    // Keep boundary visible when switching stored month: set allPlots from feature geometry if present
+    if (feat?.geometry?.type === 'Polygon' && feat.geometry.coordinates?.[0]?.length >= 3) {
+      const coords = feat.geometry.coordinates[0].map((c: number[]) => [c[0], c[1]] as Coordinate);
+      const plotId = feat.properties?.plot_id || selectedDistrict || 'growth';
+      setAllPlots([{ id: plotId, area_ha: String(feat.properties?.area_acres || 0), boundary: coords }]);
+    }
+  }, [activeTab, growthStoredSeries, selectedGrowthYearMonth, growthCurrentData, selectedDistrict]);
 
   // When a stored pest year_month is selected for left side, update hierarchy, sidebar cards and map tile
   useEffect(() => {
@@ -4208,6 +4361,30 @@ const App: React.FC = () => {
   const formatClassLabel = (name: string) =>
     (name || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+  // Tab name for Health Trends card header (e.g. growth -> "Growth", waterSource -> "Water Source")
+  const getActiveTabDisplayName = (side: 'left' | 'right' = 'left'): string => {
+    const tab = getActiveTab(side);
+    if (!tab) return 'Health Trends';
+    const names: Record<string, string> = {
+      growth: 'Growth',
+      water: 'Water',
+      soil: 'Soil',
+      pest: 'Pest',
+      waterSource: 'Water Source',
+      forest: 'Forest',
+    };
+    return names[tab] || (tab.charAt(0).toUpperCase() + tab.slice(1));
+  };
+
+  // Location name for Daily Weather card header: village, or subdistrict, or district
+  const getWeatherCardLocationName = (side: 'left' | 'right' = 'left'): string => {
+    if (!splitScreenMode) {
+      return selectedVillage || selectedSubdistrict || selectedDistrict || '—';
+    }
+    if (side === 'left') return leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || '—';
+    return rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || '—';
+  };
+
   // Helper function to calculate area cards for a specific side
   const calculateAreaCards = (side: 'left' | 'right' = 'left'): { label: string; value: number; percentage?: number; color?: string; tileUrl?: string | null; pestKey?: string }[] => {
     const sideActiveTab = getActiveTab(side);
@@ -4307,78 +4484,416 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen w-full bg-gray-900 text-gray-100 font-sans overflow-hidden relative">
-      {/* Mobile Overlay when sidebar is visible */}
-      {sidebarVisible && (
-        <div 
-          className="md:hidden fixed inset-0 bg-black/50 z-[9]"
-          onClick={() => setSidebarVisible(false)}
-        />
-      )}
-      
-      {/* Sidebar - Left Side */}
-      {sidebarVisible && (
-        <aside 
-          className="w-full md:w-64 flex-shrink-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
-          style={{
-            backgroundImage: `url(${backgroundImages[currentBgImageIndex]})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            backgroundRepeat: 'no-repeat'
-          }}
-        >
-          {/* Overlay for better text readability */}
-          <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>
-          
-          {/* Content with relative positioning */}
-          <div className="relative z-10 flex flex-col h-full">
-            <div className="p-4 md:p-6 border-b border-gray-700 bg-gray-900/50 relative">
-              <div className="flex items-center justify-between mb-2">
-                <h1 className="text-lg md:text-xl font-bold text-green-400">
-                  <BlurText 
-                    text="Nearlive Crop Monitoring" 
-                    animateBy="words"
-                    direction="top"
-                    delay={100}
-                    className="text-green-400"
-                  />
-                </h1>
-                {/* Home and Split Screen buttons on the right side of header - stacked vertically */}
-                <div className="flex flex-col items-center gap-1">
+    <div className="flex flex-col h-screen w-full bg-gray-900 text-gray-100 font-sans overflow-hidden relative">
+      {/* Bar Graph page - full screen when opened from header icon */}
+      {showGraphPage ? (
+        <div className="flex-1 flex flex-col bg-gray-900 overflow-auto">
+          <div className="flex-shrink-0 border-b border-gray-700 bg-gray-800">
+            <div className="flex items-center gap-3 px-4 md:px-6 py-3">
+              <button
+                type="button"
+                onClick={() => setShowGraphPage(false)}
+                className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+                title="Home"
+              >
+                <Home size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowGraphPage(false)}
+                className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+                title="Back"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <div className="flex items-center justify-center text-green-400">
+                <BsGraphUp size={22} />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-end justify-between gap-3 px-4 md:px-6 pb-3">
+              <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Crops</label>
+                <select
+                  value={selectedCrop}
+                  onChange={(e) => { setSelectedCrop(e.target.value); setSelectedVillage(''); }}
+                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
+                >
+                  <option value="">-- Select Crop --</option>
+                  <option value="sugarcane">Sugarcane</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">District</label>
+                <select
+                  value={selectedDistrict}
+                  onChange={(e) => { setSelectedDistrict(e.target.value); setSelectedSubdistrict(''); setSelectedVillage(''); }}
+                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
+                >
+                  <option value="">-- Select District --</option>
+                  {districts.map((d) => (
+                    <option key={d.district} value={d.district}>{d.district}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Subdistrict</label>
+                <select
+                  value={selectedSubdistrict}
+                  onChange={(e) => { setSelectedSubdistrict(e.target.value); setSelectedVillage(''); }}
+                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
+                  disabled={!selectedDistrict || subdistricts.length === 0}
+                >
+                  <option value="">-- Select Subdistrict --</option>
+                  {subdistricts.map((s) => (
+                    <option key={s.subdistrict} value={s.subdistrict}>{s.subdistrict}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Village</label>
+                <select
+                  value={selectedVillage}
+                  onChange={(e) => setSelectedVillage(e.target.value)}
+                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
+                  disabled={!selectedSubdistrict || villages.length === 0}
+                >
+                  <option value="">-- Select Village --</option>
+                  {villages.map((v) => (
+                    <option key={v.village} value={v.village}>{v.village}</option>
+                  ))}
+                </select>
+              </div>
+              {/* Frequency dropdown - same row as other filters */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Frequency</label>
+                <select
+                  value={dashboardIndicesFrequency}
+                  onChange={(e) => setDashboardIndicesFrequency(e.target.value as DashboardIndicesFrequency)}
+                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
+                >
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </div>
+              {dashboardIndicesError && selectedDistrict && selectedSubdistrict && (
+                <div className="text-[10px] text-red-400 flex items-center gap-1 w-full basis-full">
+                  {dashboardIndicesError}
+                </div>
+              )}
+              </div>
+              <div className="relative flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowDashboardIndicesDownloadMenu(!showDashboardIndicesDownloadMenu)}
+                  className="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white hover:bg-gray-600 transition-all flex items-center justify-center w-9 h-9"
+                  title="Download"
+                >
+                  <Download size={18} />
+                </button>
+                {showDashboardIndicesDownloadMenu && (
+                  <>
+                    <div className="fixed inset-0 z-[998]" onClick={() => setShowDashboardIndicesDownloadMenu(false)} aria-hidden="true" />
+                    <div className="absolute right-0 top-full mt-1 z-[999] py-1 rounded-lg border border-gray-600 bg-gray-800 shadow-xl min-w-[120px]">
+                      <button
+                        type="button"
+                        onClick={() => downloadDashboardIndicesPDF()}
+                        className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2"
+                      >
+                        <FileText size={14} /> PDF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadDashboardIndicesExcel()}
+                        className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2"
+                      >
+                        <FileSpreadsheet size={14} /> Excel
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex-1 p-4 md:p-6 overflow-auto">
+            {!selectedDistrict || !selectedSubdistrict ? (
+              <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
+                <p className="text-gray-400">Select District and Subdistrict, then choose Frequency to load indices data.</p>
+              </div>
+            ) : dashboardIndicesLoading ? (
+              <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
+                <Loader2 className="animate-spin text-green-400" size={32} />
+                <p className="text-gray-400">Loading indices data…</p>
+              </div>
+            ) : dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored) ? (
+              (() => {
+                const stored = (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored;
+                const INDEX_NAMES = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
+                const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
+                INDEX_NAMES.forEach(name => { byIndex[name] = []; });
+                stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
+                  const key = item.index_name.toLowerCase();
+                  if (byIndex[key]) {
+                    byIndex[key].push({ period_date: item.period_date, value: item.value });
+                  }
+                });
+                INDEX_NAMES.forEach(name => {
+                  byIndex[name].sort((a, b) => a.period_date.localeCompare(b.period_date));
+                });
+                const cardColors: Record<string, string> = {
+                  evi: '#22c55e', bsi: '#f59e0b', gndvi: '#06b6d4', lst: '#ef4444',
+                  ndbi: '#8b5cf6', ndmi: '#ec4899', ndre: '#14b8a6', ndvi: '#3b82f6', evi2: '#84cc16'
+                };
+                const yearPalette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444'];
+                return (
+                  <div id="dashboard-indices-cards" className="w-full px-4 md:px-6 space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
+                      {INDEX_NAMES.map((indexName) => {
+                        const points = byIndex[indexName] || [];
+                        const latest = points.length > 0 ? points[points.length - 1] : null;
+                        const titleColor = cardColors[indexName] ?? '#6b7280';
+
+                        // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
+                        const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
+                        const yearsSet = new Set<number>();
+
+                        points.forEach((p) => {
+                          const date = new Date(p.period_date);
+                          if (isNaN(date.getTime())) return;
+                          const year = date.getFullYear();
+                          const monthIndex = date.getMonth();
+                          const monthLabel = date.toLocaleString('en-US', { month: 'short' });
+                          const key = `${monthIndex}-${monthLabel}`;
+                          yearsSet.add(year);
+                          if (!monthMap[key]) {
+                            monthMap[key] = { month: monthLabel, monthIndex };
+                          }
+                          monthMap[key][String(year)] = p.value;
+                        });
+
+                        const years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
+                        // One row per month (12 rows); missing values are null so lines connect across gaps
+                        const chartData = MONTH_LABELS.map((month, monthIndex) => {
+                          const key = `${monthIndex}-${month}`;
+                          const entry = monthMap[key];
+                          const row: Record<string, string | number | null> = { month };
+                          years.forEach((y) => {
+                            const val = entry != null ? entry[y] : undefined;
+                            row[y] = typeof val === 'number' && !isNaN(val) ? val : null;
+                          });
+                          return row;
+                        });
+
+                        return (
+                          <div
+                            key={indexName}
+                            className="rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px]"
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-semibold text-gray-200 uppercase" style={{ color: titleColor }}>
+                                {indexName}
+                              </span>
+                              {latest && (
+                                <span className="text-xs text-gray-400">
+                                  {typeof latest.value === 'number' && (latest.value > 1000 || latest.value < -1000)
+                                    ? latest.value.toExponential(2)
+                                    : typeof latest.value === 'number'
+                                      ? latest.value.toFixed(4)
+                                      : String(latest.value)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-gray-500 mb-1">
+                              {points.length} points · {dashboardIndicesFrequency}
+                            </div>
+                            {chartData.length > 0 ? (
+                              <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: '70vh' }}>
+                                <ResponsiveContainer width="100%" height={220}>
+                                  <LineChart
+                                    data={chartData}
+                                    margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                                  >
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis
+                                      dataKey="month"
+                                      tick={{ fill: '#9ca3af', fontSize: 10 }}
+                                      interval="preserveStartEnd"
+                                    />
+                                    <YAxis
+                                      width={48}
+                                      tick={{ fill: '#9ca3af', fontSize: 10 }}
+                                      tickFormatter={(v) => {
+                                        if (v === 0) return '0';
+                                        if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.0001 && v !== 0)) return v.toExponential(1);
+                                        if (Math.abs(v) < 1) return v.toFixed(3);
+                                        return v.toFixed(2);
+                                      }}
+                                    />
+                                    <Tooltip
+                                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: 6 }}
+                                      labelStyle={{ color: '#d1d5db' }}
+                                      formatter={(value: number, name: string) => [
+                                        typeof value === 'number' ? value.toFixed(4) : value,
+                                        name,
+                                      ]}
+                                      labelFormatter={(label) => label}
+                                    />
+                                    <Legend
+                                      verticalAlign="bottom"
+                                      height={20}
+                                      wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
+                                    />
+                                    {years.map((yearKey, idx) => (
+                                      <Line
+                                        key={yearKey}
+                                        type="monotone"
+                                        dataKey={yearKey}
+                                        stroke={yearPalette[idx % yearPalette.length]}
+                                        dot={{ r: 2 }}
+                                        strokeWidth={1.5}
+                                        connectNulls
+                                        isAnimationActive
+                                        animationDuration={600}
+                                      />
+                                    ))}
+                                  </LineChart>
+                                </ResponsiveContainer>
+                              </div>
+                            ) : (
+                              <div className="min-h-[220px] flex items-center justify-center text-gray-500 text-xs">No data</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
+                <p className="text-gray-400">Select District, Subdistrict and Frequency to load indices. Data will appear here after selection.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
+      {/* Header bar - Home + Split (left), title, Download + Logout (right) */}
+      <header className="flex-shrink-0 grid grid-cols-[1fr_auto_1fr] items-center gap-2 md:gap-3 px-4 md:px-6 py-3 border-b border-gray-700 bg-gray-800 z-20">
+        <div className="flex items-center gap-1.5 md:gap-2 justify-self-start">
+          <button
+            onClick={() => setSidebarVisible(!sidebarVisible)}
+            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+            title={sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'}
+          >
+            <Home size={16} className="md:w-[18px] md:h-[18px]" />
+          </button>
+          <button
+            onClick={() => setSplitScreenMode(!splitScreenMode)}
+            onDoubleClick={() => setSplitScreenMode(false)}
+            className={`p-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
+              splitScreenMode
+                ? 'bg-purple-600 text-white hover:bg-purple-700 border border-transparent'
+                : 'bg-gray-800 border border-white/40 text-white hover:bg-gray-700'
+            }`}
+            title={splitScreenMode ? 'Double-click to exit split screen' : 'Split Screen'}
+          >
+            {splitScreenMode ? <Maximize2 size={16} className="md:w-[18px] md:h-[18px]" /> : <Columns size={16} className="md:w-[18px] md:h-[18px]" />}
+          </button>
+          {/* Bar Graph - opens new page */}
+          <button
+            type="button"
+            onClick={() => setShowGraphPage(true)}
+            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+            title="Bar Graph"
+          >
+            <BsGraphUp size={18} />
+          </button>
+        </div>
+        <h1 className="text-lg md:text-xl font-bold text-green-400 shrink-0 justify-self-center">
+          <BlurText 
+            text="Nearlive Crop Monitoring" 
+            animateBy="words"
+            direction="top"
+            delay={100}
+            className="text-green-400"
+          />
+        </h1>
+        <div className="flex items-center gap-1.5 md:gap-2 justify-self-end">
+          {/* Download - right side */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+              className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+              title="Download Data"
+            >
+              <Download size={18} />
+            </button>
+            {showDownloadMenu && (
+              <>
+                <div className="fixed inset-0 z-[998]" onClick={() => setShowDownloadMenu(false)} />
+                <div className="absolute right-0 top-full mt-2 bg-black/90 backdrop-blur-sm rounded-md border border-gray-600 shadow-xl overflow-hidden z-[1000] min-w-[120px]">
                   <button
-                    onClick={() => setSidebarVisible(!sidebarVisible)}
-                    className="p-1.5 md:p-2 rounded-lg bg-black/60 backdrop-blur-sm border border-gray-700 text-white hover:bg-gray-800 transition-all duration-300 flex items-center justify-center"
-                    title={sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'}
+                    type="button"
+                    onClick={() => { setShowDownloadMenu(false); downloadPestGraphPDF(); }}
+                    className="w-full px-3 py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-2 transition-colors"
                   >
-                    <Home size={16} className="md:w-[18px] md:h-[18px]" />
+                    <FileText size={16} />
+                    <span className="text-xs">PDF</span>
                   </button>
                   <button
-                    onClick={() => {
-                      setSplitScreenMode(!splitScreenMode);
-                    }}
-                    onDoubleClick={() => {
-                      setSplitScreenMode(false);
-                    }}
-                    className={`p-1.5 md:p-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center ${
-                      splitScreenMode
-                        ? 'bg-purple-600 text-white hover:bg-purple-700'
-                        : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
-                    }`}
-                    title={splitScreenMode ? 'Double-click to exit split screen, single-click to toggle' : 'Split Screen (double-click to toggle full-width)'}
+                    type="button"
+                    onClick={() => { setShowDownloadMenu(false); downloadPestGraphExcel(); }}
+                    className="w-full px-3 py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-2 transition-colors border-t border-gray-600/50"
                   >
-                    {splitScreenMode ? <Maximize2 size={16} className="md:w-[18px] md:h-[18px]" /> : <Columns size={16} className="md:w-[18px] md:h-[18px]" />}
+                    <FileSpreadsheet size={16} />
+                    <span className="text-xs">Excel</span>
                   </button>
                 </div>
-              </div>
-          {/* <p className="text-xs text-gray-400 mt-1">Satellite Field Monitoring</p>
-              {currentUser && (
-                <p className="text-xs text-gray-500 mt-1 truncate">User: {currentUser}</p>
-              )} */}
+              </>
+            )}
+          </div>
+          {/* Logout - right side */}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-red-600/30 hover:border-red-500/50 transition-all flex items-center justify-center w-9 h-9 shrink-0"
+            title="Logout"
+          >
+            <LogOut size={18} />
+          </button>
         </div>
+      </header>
 
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Crops Dropdown - before District, independent */}
+      <div className="flex flex-1 min-h-0 relative">
+        {/* Mobile Overlay when sidebar is visible */}
+        {sidebarVisible && (
+          <div 
+            className="md:hidden fixed inset-0 bg-black/50 z-[9]"
+            onClick={() => setSidebarVisible(false)}
+          />
+        )}
+        
+        {/* Sidebar - no header inside; starts with CONFIGURATION */}
+        {sidebarVisible && (
+          <aside 
+            className="w-full md:w-64 flex-shrink-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
+            style={{
+              backgroundImage: `url(${backgroundImages[currentBgImageIndex]})`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat'
+            }}
+          >
+            {/* Overlay for better text readability */}
+            <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>
+            
+            <div className="relative z-10 flex flex-col h-full flex-1 overflow-y-auto p-4 space-y-4 pt-4">
+              <div className="text-xs font-semibold text-white uppercase tracking-wider mb-3">CONFIGURATION</div>
+              {/* Crops Dropdown - before District, independent */}
           <div>
             <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
               Crops
@@ -4645,7 +5160,6 @@ const App: React.FC = () => {
                 {/* <span className="text-[10px]">Logout</span> */}
               </button>
             </div>
-        </div>
       </aside>
       )}
 
@@ -4905,147 +5419,6 @@ const App: React.FC = () => {
               <span className="text-lg">💨</span>
             </div>
 
-            {/* Boundary Button - Only visible when subdistrict is "Palus" and village is selected */}
-            {selectedSubdistrict === 'Palus' && selectedVillage && (
-              <button
-                onClick={async () => {
-                  if (geojsonLoading) return;
-                  
-                  try {
-                    setGeojsonLoading(true);
-                    setError(null);
-                    
-                    // Load GeoJSON file - read as text first for large files
-                    console.log('Loading GeoJSON file for village:', selectedVillage);
-                    const response = await fetch('/palus1.geojson');
-                    if (!response.ok) {
-                      throw new Error(`Failed to load GeoJSON file: ${response.status} ${response.statusText}`);
-                    }
-                    
-                    // Read response as text first (handles large files better)
-                    const responseText = await response.text();
-                    console.log('GeoJSON file loaded, size:', responseText.length, 'characters');
-                    
-                    // Check if response is empty
-                    if (!responseText || responseText.length === 0) {
-                      throw new Error('Empty response from GeoJSON file');
-                    }
-                    
-                    // Parse JSON from text - handle potentially incomplete files
-                    let geojsonData: any;
-                    let trimmed = responseText.trim();
-                    
-                    try {
-                      // Try parsing as-is first
-                      geojsonData = JSON.parse(trimmed);
-                    } catch (parseError) {
-                      console.warn('Initial JSON parse failed, attempting to fix common issues...');
-                      
-                      // Try to fix common issues: remove trailing comma and close structure
-                      let fixedText = trimmed;
-                      
-                      // Remove trailing comma before closing brackets/braces
-                      fixedText = fixedText.replace(/,\s*$/, ''); // Remove trailing comma
-                      fixedText = fixedText.replace(/,\s*\}/g, '}'); // Remove comma before }
-                      fixedText = fixedText.replace(/,\s*\]/g, ']'); // Remove comma before ]
-                      
-                      // If it doesn't end with }], try to close it
-                      if (!fixedText.endsWith('}')) {
-                        // Try to close the features array and the FeatureCollection
-                        if (fixedText.endsWith(',')) {
-                          fixedText = fixedText.slice(0, -1); // Remove last comma
-                        }
-                        if (!fixedText.endsWith(']')) {
-                          fixedText += ']'; // Close features array
-                        }
-                        if (!fixedText.endsWith('}')) {
-                          fixedText += '}'; // Close FeatureCollection
-                        }
-                      }
-                      
-                      try {
-                        geojsonData = JSON.parse(fixedText);
-                        console.log('Successfully parsed after fixing trailing issues');
-                      } catch (secondParseError) {
-                        console.error('JSON parse error (after fix attempt):', secondParseError);
-                        const previewStart = trimmed.substring(0, 500);
-                        const previewEnd = trimmed.length > 500 ? trimmed.substring(trimmed.length - 500) : '';
-                        console.error('Response preview (first 500 chars):', previewStart);
-                        console.error('Response preview (last 500 chars):', previewEnd);
-                        console.error('Response length:', trimmed.length);
-                        console.error('Response starts with:', trimmed.substring(0, 20));
-                        console.error('Response ends with:', trimmed.substring(Math.max(0, trimmed.length - 20)));
-                        
-                        if (parseError instanceof SyntaxError) {
-                          throw new Error(`JSON parse error: ${parseError.message}. The GeoJSON file appears to be incomplete or corrupted. Please check the file integrity.`);
-                        }
-                        throw new Error(`Failed to parse JSON: ${parseError instanceof Error ? parseError.message : 'Unknown parse error'}`);
-                      }
-                    }
-                    
-                    // Validate structure
-                    if (!geojsonData || !geojsonData.features || !Array.isArray(geojsonData.features)) {
-                      throw new Error('Invalid GeoJSON format: missing features array');
-                    }
-                    
-                    console.log(`Total features in GeoJSON: ${geojsonData.features.length}`);
-                    
-                    // Filter features by village_name matching selectedVillage
-                    const filteredFeatures = geojsonData.features.filter((feature: any) => 
-                      feature.properties && feature.properties.village_name === selectedVillage
-                    );
-                    
-                    console.log(`Filtered features for village "${selectedVillage}": ${filteredFeatures.length}`);
-                    
-                    // Parse features into plots format
-                    const parsedPlots = filteredFeatures.map((feature: any) => {
-                      if (!feature.geometry || !feature.geometry.coordinates) {
-                        console.warn('Feature missing geometry:', feature);
-                        return null;
-                      }
-                      const coords = feature.geometry.coordinates[0] || [];
-                      const boundary: Coordinate[] = coords.map((coord: number[]) => [coord[0], coord[1]]);
-                      return {
-                        id: String(feature.properties?.field_id || feature.properties?.id || ''),
-                        field_id: feature.properties?.field_id ? String(feature.properties.field_id) : undefined,
-                        area_ha: String(feature.properties?.area_ha || 0),
-                        boundary: boundary
-                      };
-                    }).filter((plot: any): plot is {id: string; field_id?: string; area_ha: string; boundary: Coordinate[]} => 
-                      plot !== null && plot.boundary && plot.boundary.length > 0
-                    );
-                    
-                    setGeojsonPlots(parsedPlots);
-                    console.log(`✅ Loaded ${parsedPlots.length} plots for village: ${selectedVillage}`);
-                  } catch (err) {
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    console.error('Error loading GeoJSON:', err);
-                    setError(`Failed to load plots: ${errorMessage}`);
-                    setGeojsonPlots([]);
-                  } finally {
-                    setGeojsonLoading(false);
-                  }
-                }}
-                className={`px-2 md:px-4 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-2 ${
-                  geojsonLoading
-                    ? 'opacity-50 cursor-not-allowed bg-gray-700 border-gray-600'
-                    : geojsonPlots.length > 0
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
-                }`}
-                disabled={geojsonLoading}
-                title={geojsonLoading ? 'Loading plots...' : 'Load village boundaries from GeoJSON'}
-              >
-                {geojsonLoading ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    <span>Loading...</span>
-                  </>
-                ) : (
-                  <span>Boundary</span>
-                )}
-              </button>
-            )}
           </div>
 
           {/* Legend circles only for waterSource and forest; pest uses sidebar cards with click-to-show on map */}
@@ -5070,8 +5443,8 @@ const App: React.FC = () => {
         </div>
         )}
 
-          {/* Map Container - Can be split; min-height so map is viewable when scrolling at 1024/1440 */}
-        <div className={`flex-1 relative min-h-[min(420px,55vh)] ${splitScreenMode ? 'w-1/2 border-r border-gray-700' : ''}`}>
+          {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
+        <div className={`relative min-h-[min(320px,40vh)] ${splitScreenMode ? 'flex-1 w-1/2 border-r border-gray-700' : 'flex-1 max-h-[55vh] min-h-[280px]'}`}>
           {/* Top Navigation Tabs and Legend - Centered within this map container */}
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
             {/* Active Tab Buttons - icons only */}
@@ -5335,8 +5708,8 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Pest stored time series chart (area vs year_month) with its own hide/show */}
-          {getActiveTab('left') === 'pest' && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries) && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries)!.length > 0 && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory) && (splitScreenMode ? leftShowPestSeries : showPestSeries) && (
+          {/* Pest time series chart: only on map in split-screen; in single view it is shown in the bottom PEST card */}
+          {splitScreenMode && getActiveTab('left') === 'pest' && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries) && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries)!.length > 0 && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory) && (splitScreenMode ? leftShowPestSeries : showPestSeries) && (
             (() => {
               const currentCategory = splitScreenMode ? leftSelectedPestCategory : selectedPestCategory;
               const currentSeries = splitScreenMode ? leftPestStoredSeries : pestStoredSeries;
@@ -5380,7 +5753,7 @@ const App: React.FC = () => {
               const W = splitScreenMode ? Math.min(Math.max(pestGraphSize.width, defaultSplitScreenWidth), 600) : pestGraphSize.width;
               const H = splitScreenMode ? Math.min(Math.max(pestGraphSize.height, defaultSplitScreenHeight), 300) : pestGraphSize.height;
               const P = splitScreenMode ? 35 : 50; // padding
-              const bottomPadding = splitScreenMode ? 30 : 40;
+              const bottomPadding = splitScreenMode ? 18 : 22;
               const topPadding = splitScreenMode ? 15 : 20;
               const chartHeight = H - bottomPadding - topPadding;
               
@@ -5449,11 +5822,14 @@ const App: React.FC = () => {
                 return chartHeight - (v / paddedMaxValue) * chartHeight;
               };
 
-              const fmtMonth = (ym: string) => {
-                const parts = ym.split('-');
-                if (parts.length !== 2) return ym;
-                const [y, m] = parts;
-                return `${m}-${y.slice(2)}`;
+              // Same date format as Growth/Water/Soil: "Jan '25", "Feb '25"
+              const formatMonthLabel = (ym: string | null) => {
+                if (!ym || typeof ym !== 'string') return 'Current';
+                const [y, m] = ym.split('-');
+                if (!m) return ym;
+                const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
               };
 
               const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
@@ -5461,14 +5837,46 @@ const App: React.FC = () => {
 
               return (
                 <div 
-                  className={`absolute ${splitScreenMode ? 'bottom-4 left-4' : 'bottom-4 right-4'} z-[1000] bg-gray-100 rounded-lg border border-gray-300 shadow-xl ${splitScreenMode ? 'px-3 py-2' : 'px-4 py-3'}`}
-                  style={splitScreenMode ? { width: `${W}px`, maxWidth: 'calc(50vw - 120px)' } : { width: `${pestGraphSize.width}px`, maxWidth: 'calc(100vw - 2rem)' }}
+                  className={`absolute z-[1000] bg-gray-100 rounded-lg border border-gray-300 shadow-xl ${splitScreenMode ? 'px-3 py-2' : 'px-4 py-3'} ${pestCardPosition ? '' : (splitScreenMode ? 'bottom-4 left-4' : (showWeatherDaily ? 'bottom-4 left-[340px]' : 'bottom-4 right-4'))}`}
+                  style={{
+                    ...(splitScreenMode ? { width: `${W}px`, maxWidth: 'calc(50vw - 120px)' } : { width: `${pestGraphSize.width}px`, maxWidth: 'calc(100vw - 2rem)' }),
+                    ...(pestCardPosition ? { left: pestCardPosition.left, bottom: pestCardPosition.bottom, right: 'auto' } : {})
+                  }}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className={`${splitScreenMode ? 'text-xs' : 'text-sm'} font-semibold text-gray-800 uppercase tracking-wider`}>
                       {currentCategory?.replace(/_/g, ' ') || ''} · Time Series
                     </span>
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className={`${splitScreenMode ? 'px-1.5 py-0.5' : 'px-2 py-1'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center cursor-grab active:cursor-grabbing select-none`}
+                        title="Drag to move card"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          const pos = pestCardPosition ?? { left: 16, bottom: 16 };
+                          pestDragStartRef.current = { x: e.clientX, y: e.clientY, left: pos.left, bottom: pos.bottom };
+                          setPestCardPosition(pos);
+                          const onMove = (e2: MouseEvent) => {
+                            if (!pestDragStartRef.current) return;
+                            const dx = e2.clientX - pestDragStartRef.current.x;
+                            const dy = e2.clientY - pestDragStartRef.current.y;
+                            setPestCardPosition({
+                              left: pestDragStartRef.current.left + dx,
+                              bottom: pestDragStartRef.current.bottom - dy
+                            });
+                          };
+                          const onUp = () => {
+                            window.removeEventListener('mousemove', onMove);
+                            window.removeEventListener('mouseup', onUp);
+                            pestDragStartRef.current = null;
+                          };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        <BsArrowsMove size={splitScreenMode ? 12 : 14} />
+                      </button>
                       <button
                         type="button"
                         className={`${splitScreenMode ? 'px-1.5 py-0.5' : 'px-2 py-1'} rounded bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-400 flex items-center justify-center cursor-grab active:cursor-grabbing select-none`}
@@ -5551,7 +5959,7 @@ const App: React.FC = () => {
                     {/* X-axis line */}
                     <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
                     
-                    {/* Y-axis labels */}
+                    {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                       const value = paddedMaxValue * ratio;
                       const y = H - bottomPadding - (chartHeight * ratio);
@@ -5635,29 +6043,39 @@ const App: React.FC = () => {
                     })}
                   </svg>
                   
-                  {/* X-axis labels */}
-                  <div className={`flex justify-between ${splitScreenMode ? 'text-[9px] px-[35px]' : 'text-xs px-[50px]'} font-semibold text-gray-700 mt-1`}>
-                    {labels.map((label, i) => {
-                      const isSelected = currentYearMonth === label;
-                      // If showAllTimeSeries is true, show all labels fully visible
-                      // Otherwise, highlight selected label and blur others
-                      const opacity = currentShowAllTimeSeries 
-                        ? 1 
-                        : (currentYearMonth ? (isSelected ? 1 : 0.3) : 1);
-                      return (
-                        <span 
-                          key={label + i} 
-                          className="whitespace-nowrap" 
-                          style={{ 
-                            width: `${barGroupWidth}px`, 
-                            textAlign: 'center',
-                            opacity: opacity
-                          }}
-                        >
-                          {fmtMonth(label)}
-                        </span>
-                      );
-                    })}
+                  {/* X-axis labels - align with bars, no extra gap, scroll when narrow */}
+                  <div
+                    className="overflow-x-auto overflow-y-hidden mt-0.5 font-semibold text-gray-700"
+                    style={{ paddingLeft: P, paddingRight: P }}
+                  >
+                    <div
+                      className="flex flex-nowrap flex-shrink-0"
+                      style={{ minWidth: labels.length * barGroupWidth }}
+                    >
+                      {labels.map((label, i) => {
+                        const isSelected = currentYearMonth === label;
+                        const opacity = currentShowAllTimeSeries
+                          ? 1
+                          : (currentYearMonth ? (isSelected ? 1 : 0.3) : 1);
+                        const labelW = Math.max(barGroupWidth, 24);
+                        return (
+                          <span
+                            key={label + i}
+                            className="whitespace-nowrap flex-shrink-0 overflow-visible"
+                            style={{
+                              width: `${labelW}px`,
+                              minWidth: `${labelW}px`,
+                              textAlign: 'center',
+                              opacity,
+                              fontSize: barGroupWidth < 36 ? (splitScreenMode ? 8 : 9) : (splitScreenMode ? 9 : 10),
+                            }}
+                            title={label}
+                          >
+                            {formatMonthLabel(label)}
+                          </span>
+                        );
+                      })}
+                    </div>
                   </div>
                   
                   {/* Legend */}
@@ -5685,9 +6103,9 @@ const App: React.FC = () => {
               );
             })()
           )}
-          {/* Pest children panel: on map, sized similar to Percentage / Area cards, positioned above year/month series */}
+          {/* Pest children panel: on map in top-left area (user-marked red zone), shows child breakdown e.g. Leaf Eating Caterpillar */}
           {!splitScreenMode && activeTab === 'pest' && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
-            <div className="absolute bottom-28 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
+            <div className="absolute top-4 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
               <div className="flex items-center justify-between mb-2 max-[1024px]:mb-1">
                 <span className="text-xs font-semibold text-gray-300 uppercase max-[1024px]:text-[10px]">
                   {selectedPestCategory.replace(/_/g, ' ')}
@@ -5826,23 +6244,8 @@ const App: React.FC = () => {
               {(splitScreenMode ? leftShowTileLayers : showTileLayers) ? <Eye size={18} /> : <EyeOff size={18} />}
             </button>
 
-            {/* Daily Weather Icon - Floating (bottom control stack) */}
-            {!splitScreenMode ? (
-            <button
-              type="button"
-              onClick={() => {
-                setShowWeatherDaily(prev => !prev);
-              }}
-              className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center transition-colors ${
-                showWeatherDaily
-                  ? 'bg-sky-500 text-black hover:bg-sky-400'
-                  : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700'
-              }`}
-              title={showWeatherDaily ? 'Hide daily weather' : 'Show daily weather'}
-            >
-              <span className="text-xl">🌧️</span>
-            </button>
-            ) : (
+            {/* Daily Weather Icon - only in split screen (left map) */}
+            {splitScreenMode && (
             <button
               type="button"
               onClick={() => {
@@ -5859,29 +6262,7 @@ const App: React.FC = () => {
             </button>
             )}
 
-            {/* Pest Time Series Graph Icon - Floating (only on Pest tab) */}
-            {getActiveTab('left') === 'pest' && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (splitScreenMode) {
-                    setLeftShowPestSeries(prev => !prev);
-                  } else {
-                    setShowPestSeries(prev => !prev);
-                  }
-                }}
-                className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center transition-colors ${
-                  (splitScreenMode ? leftShowPestSeries : showPestSeries)
-                    ? 'bg-rose-500 text-black hover:bg-rose-400'
-                    : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700'
-                }`}
-                title={(splitScreenMode ? leftShowPestSeries : showPestSeries) ? 'Hide pest time series' : 'Show pest time series'}
-              >
-                <GoGraph />
-              </button>
-            )}
-
-            {/* Download Button - Left Side (Split Screen) - After graph icon */}
+            {/* Download Button - Left Side (Split Screen) */}
             {splitScreenMode && (getActiveTab('left') === 'pest' || (leftShowWeatherDaily && leftWeatherDailyData)) && (
               <div className="relative">
                 <button
@@ -6084,7 +6465,10 @@ const App: React.FC = () => {
           )}
 
           {!splitScreenMode && showWeatherDaily && (
-          <div className={`absolute ${getActiveTab('left') === 'pest' && showPestSeries && selectedPestCategory && pestStoredSeries && pestStoredSeries.length > 0 ? 'bottom-4 left-4' : 'bottom-4 right-4'} z-[1000] w-[320px] max-w-[calc(100vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3`}>
+          <div
+            className={`absolute z-[1000] w-[320px] max-w-[calc(100vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3 ${weatherCardPosition ? '' : 'bottom-4 left-4'}`}
+            style={weatherCardPosition ? { left: weatherCardPosition.left, bottom: weatherCardPosition.bottom, right: 'auto' } : {}}
+          >
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Daily Weather</div>
@@ -6096,6 +6480,35 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="text-[10px] p-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-500 cursor-grab active:cursor-grabbing select-none"
+                  title="Drag to move card"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    const pos = weatherCardPosition ?? { left: 16, bottom: 16 };
+                    weatherDragStartRef.current = { x: e.clientX, y: e.clientY, left: pos.left, bottom: pos.bottom };
+                    setWeatherCardPosition(pos);
+                    const onMove = (e2: MouseEvent) => {
+                      if (!weatherDragStartRef.current) return;
+                      const dx = e2.clientX - weatherDragStartRef.current.x;
+                      const dy = e2.clientY - weatherDragStartRef.current.y;
+                      setWeatherCardPosition({
+                        left: weatherDragStartRef.current.left + dx,
+                        bottom: weatherDragStartRef.current.bottom - dy
+                      });
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('mousemove', onMove);
+                      window.removeEventListener('mouseup', onUp);
+                      weatherDragStartRef.current = null;
+                    };
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                  }}
+                >
+                  <BsArrowsMove size={14} />
+                </button>
                 {weatherDailyLoading ? (
                   <div className="text-xs text-gray-400">Loading…</div>
                 ) : weatherDailyError ? (
@@ -6243,6 +6656,15 @@ const App: React.FC = () => {
             <PlotsMap
               plots={splitScreenMode ? leftAllPlots : plots}
               selectedPlotId={selectedPlotId}
+              cropColor={predictAreaCropColor}
+              fieldAreaByFieldId={predictAreaFieldAreas}
+              hideFieldIdAreaCard={(() => {
+                const p = splitScreenMode ? leftAllPlots : plots;
+                const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
+                const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
+                const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
+                return p.length === 1 && (p[0].id === district || p[0].id === subdistrict || p[0].id === village);
+              })()}
               onSelectPlot={async (id) => {
                 setSelectedPlotId(id);
                 
@@ -6254,7 +6676,7 @@ const App: React.FC = () => {
                   return;
                 }
                 
-                // Extract area_ha from GeoJSON plot if it's from palus1.geojson
+                // Use area_ha from selected plot when available
                 if (geojsonPlots.length > 0 && selectedPlot.area_ha) {
                   const plotArea = parseFloat(selectedPlot.area_ha);
                   if (!isNaN(plotArea) && plotArea > 0) {
@@ -6333,12 +6755,13 @@ const App: React.FC = () => {
             />
           )}
 
-          {/* Pest stored year-month series tabs (bottom-left when Pest tab active - only for non-splitscreen) */}
-          {!splitScreenMode && getActiveTab('left') === 'pest' && pestStoredSeries && pestStoredSeries.length > 0 && (
-            <div className="absolute bottom-4 left-4 z-[1000] max-w-[500px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+          {/* Time series year-month tabs: show for Growth, Water, Soil, Pest (same bar style, shared selection) */}
+          {/* Pest: year/month list */}
+          {!splitScreenMode && getActiveTab('left') === 'pest' && pestStoredSeries && pestStoredSeries.length >= 0 && selectedDistrict && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
               <div className="flex items-center justify-between gap-2 mb-1">
                 <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                  Year / Month Series
+                  PEST · Year / Month Series
                 </div>
                 {pestStoredLoading && (
                   <div className="text-[9px] text-gray-400">Loading…</div>
@@ -6348,35 +6771,25 @@ const App: React.FC = () => {
                 <div className="text-[9px] text-red-300">{pestStoredError}</div>
               ) : (
                 <div className="flex items-center gap-1">
-                  {/* Left Arrow */}
                   <button
                     type="button"
-                    onClick={() => {
-                      if (timeSeriesScrollRef.current) {
-                        timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
-                      }
-                    }}
+                    onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
                     className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
                     title="Scroll left"
                   >
                     <ChevronLeft size={14} />
                   </button>
-                  
-                  {/* Scrollable Container */}
-                  <div 
-                    ref={timeSeriesScrollRef}
-                    className="flex gap-1 overflow-x-auto scrollbar-hide flex-1"
-                    style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                  >
-                    {pestStoredSeries.map((item: PestStoredItem, idx: number) => (
+                  <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                    {[...(pestStoredSeries || [])].sort((a, b) => a.year_month.localeCompare(b.year_month)).map((item: PestStoredItem, idx: number) => (
                       <button
                         key={`${item.year_month}-${idx}`}
                         type="button"
                         onClick={() => {
+                          setSelectedTimeSeriesYearMonth(item.year_month);
                           setSelectedPestYearMonth(item.year_month);
                         }}
-                        className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 ${
-                          selectedPestYearMonth === item.year_month
+                        className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${
+                          (selectedTimeSeriesYearMonth ?? selectedPestYearMonth) === item.year_month
                             ? 'bg-emerald-500/80 border-emerald-400 text-black'
                             : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
                         }`}
@@ -6385,15 +6798,9 @@ const App: React.FC = () => {
                       </button>
                     ))}
                   </div>
-                  
-                  {/* Right Arrow */}
                   <button
                     type="button"
-                    onClick={() => {
-                      if (timeSeriesScrollRef.current) {
-                        timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
-                      }
-                    }}
+                    onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
                     className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
                     title="Scroll right"
                   >
@@ -6404,7 +6811,694 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {/* Growth: Current + year/month list (show for district-only or district+subdistrict) */}
+          {!splitScreenMode && getActiveTab('left') === 'growth' && selectedDistrict && (growthStoredSeries && growthStoredSeries.length > 0) && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
+                  GROWTH - YEAR / MONTH SERIES
+                </div>
+                {growthStoredLoading && (
+                  <span className="text-[9px] text-amber-400">Loading year_month…</span>
+                )}
+                {!growthStoredLoading && growthStoredError && (
+                  <span className="text-[9px] text-red-400" title={growthStoredError}>Error</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (timeSeriesScrollRef.current) {
+                      timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
+                    }
+                  }}
+                  className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                  title="Scroll left to older dates"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <div
+                  ref={timeSeriesScrollRef}
+                  className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0"
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                >
+                  {/* Stored year_month – display only year-month */}
+                  {[...(growthStoredSeries || [])]
+                    .sort((a, b) => b.year_month.localeCompare(a.year_month))
+                    .map((item: GrowthStoredItem, idx: number) => (
+                    <button
+                      key={`${item.year_month}-${item.id ?? idx}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTimeSeriesYearMonth(item.year_month);
+                        setSelectedGrowthYearMonth(item.year_month);
+                        setGrowthChartViewMode('selected');
+                      }}
+                      title={item.year_month}
+                      className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${
+                        selectedTimeSeriesYearMonth === item.year_month
+                          ? 'bg-emerald-500/80 border-emerald-400 text-black'
+                          : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
+                      }`}
+                    >
+                      {item.year_month}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (timeSeriesScrollRef.current) {
+                      timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
+                    }
+                  }}
+                  className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                  title="Scroll right to older dates"
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGrowthChartViewMode('all')}
+                  className={`flex-shrink-0 px-2 py-1 rounded text-[9px] font-medium border ${growthChartViewMode === 'all' ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                  title="Show all dates on graph"
+                >
+                  View all
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Water Uptake: time series bar – year_month from analyze_wateruptakeclasswise */}
+          {!splitScreenMode && getActiveTab('left') === 'water' && selectedDistrict && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
+                  WATER UPTAKE · YEAR / MONTH SERIES
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronLeft size={14} /></button>
+                <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  {[...(waterStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
+                    <button key={`water-${item.year_month}-${idx}`} type="button" onClick={() => { setSelectedTimeSeriesYearMonth(item.year_month); setSelectedWaterYearMonth(item.year_month); }} className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedTimeSeriesYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}>{item.year_month}</button>
+                  ))}
+                </div>
+                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          )}
+
+          {/* Soil Moisture: time series bar – year_month from analyze_soilmoistureclasswise */}
+          {!splitScreenMode && getActiveTab('left') === 'soil' && selectedDistrict && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
+                  SOIL MOISTURE · YEAR / MONTH SERIES
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronLeft size={14} /></button>
+                <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  {[...(soilStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
+                    <button key={`soil-${item.year_month}-${idx}`} type="button" onClick={() => { setSelectedTimeSeriesYearMonth(item.year_month); setSelectedSoilYearMonth(item.year_month); }} className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedTimeSeriesYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}>{item.year_month}</button>
+                  ))}
+                </div>
+                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          )}
+
         </div>
+
+        {/* Two cards below map (non–split): Health Trends + Daily Weather */}
+        {!splitScreenMode && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 md:p-4 bg-gray-950 border-t border-gray-800 flex-shrink-0 min-h-0">
+            {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
+            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
+              <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
+                <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                  {getActiveTabDisplayName('left')}
+                </h3>
+              </div>
+              <div className="flex-1 p-4 min-h-0 flex flex-col">
+                {getActiveTab('left') === 'growth' && showGrowthSeries && (getCurrentPixelData('left')?.classwise?.length > 0 || growthStoredSeries?.length > 0) ? (
+                  (() => {
+                    const classNames = ['Weak', 'Stress', 'Moderate', 'Healthy'];
+                    const classColors: Record<string, string> = {
+                      Weak: '#bc1e29',
+                      Stress: '#58cf54',
+                      Moderate: '#28ae31',
+                      Healthy: '#00351d'
+                    };
+                    const getAreaForClass = (cw: any[], className: string) => {
+                      if (!Array.isArray(cw)) return 0;
+                      const c = cw.find((x: any) => (x.class_name || '').toString().toLowerCase() === className.toLowerCase());
+                      return Number(c?.area_hectares ?? (c as any)?.area_ha ?? 0);
+                    };
+                    const formatMonthLabel = (ym: string | null) => {
+                      if (!ym) return 'Current';
+                      const [y, m] = ym.split('-');
+                      if (!m) return ym;
+                      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                      const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                      return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
+                    };
+                    // Increase height for \"View all\" growth time-series chart so all dates are more readable
+                    const H = 340;
+                    const paddingLeft = 48;
+                    const paddingRight = 12;
+                    const paddingTop = 12;
+                    const paddingBottom = 32;
+                    // Increase base width so each bar group is wider
+                    const W = 800;
+                    const chartW = W - paddingLeft - paddingRight;
+                    const chartH = H - paddingTop - paddingBottom;
+                    const showAllDates = growthChartViewMode === 'all';
+
+                    if (showAllDates) {
+                      const storedSorted = [...(growthStoredSeries || [])].sort((a, b) => a.year_month.localeCompare(b.year_month));
+                      const periods: { label: string; yearMonth: string | null; classwise: any[] }[] = [
+                        { label: 'Current', yearMonth: null, classwise: growthCurrentData?.classwise || [] },
+                        ...storedSorted.map((item: GrowthStoredItem) => ({
+                          label: item.year_month,
+                          yearMonth: item.year_month,
+                          classwise: (item.response_data as any)?.classwise || []
+                        }))
+                      ].filter(p => p.classwise && p.classwise.length > 0);
+                      const allAreaValues = periods.map(p => classNames.map(cn => getAreaForClass(p.classwise, cn)));
+                      const maxVal = Math.max(1, ...allAreaValues.flat().filter(v => !Number.isNaN(v) && v >= 0));
+                      const paddedMax = maxVal * 1.1;
+                      const yTicks = [0, 0.25, 0.5, 0.75, 1].map(r => ({ ratio: r, value: paddedMax * r }));
+                      const numPeriods = periods.length;
+                      const groupGap = 4;
+                      const groupWidth = numPeriods > 0 ? (chartW - groupGap * (numPeriods - 1)) / numPeriods : 0;
+                      const barGap = 4;
+                      const barWidth = groupWidth > 0 ? (groupWidth - barGap * (classNames.length - 1)) / classNames.length : 0;
+                      const xLabelStep = numPeriods > 12 ? Math.max(1, Math.floor(numPeriods / 8)) : 1;
+
+                      return (
+                        <div className="w-full min-h-0 flex flex-col flex-1">
+                          <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class · all dates</div>
+                          <div className="flex-1 min-h-0 w-full overflow-x-auto">
+                            <svg width={Math.max(chartW + paddingLeft + paddingRight, 400)} height={H} className="w-full min-w-full" viewBox={`0 0 ${Math.max(W, paddingLeft + chartW + paddingRight)} ${H}`} preserveAspectRatio="xMidYMid meet">
+                              <defs><clipPath id="growth-chart-clip-all"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
+                              <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                              {yTicks.map(({ ratio, value }) => {
+                              const y = paddingTop + chartH - ratio * chartH;
+                              return (
+                              <g key={ratio}>
+                                <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                <text
+                                  x={paddingLeft - 6}
+                                  y={y + 4}
+                                  textAnchor="end"
+                                  className="fill-gray-200"
+                                  fontSize={11}
+                                  fontWeight="600"
+                                >
+                                  {value.toFixed(0)}
+                                </text>
+                              </g>
+                              );
+                              })}
+                              <g clipPath="url(#growth-chart-clip-all)">
+                                {periods.map((p, pi) => {
+                                  const areaValues = classNames.map(cn => getAreaForClass(p.classwise, cn));
+                                  const gx = paddingLeft + pi * (groupWidth + groupGap);
+                                  return classNames.map((cn, ci) => {
+                                    const val = areaValues[ci] ?? 0;
+                                    const h = paddedMax > 0 ? (val / paddedMax) * chartH : 0;
+                                    const y = paddingTop + chartH - h;
+                                    const x = gx + ci * (barWidth + barGap);
+                                    return <rect key={`${pi}-${cn}`} x={x} y={y} width={barWidth} height={h} fill={classColors[cn] || '#666'} rx={1} />;
+                                  });
+                                })}
+                              </g>
+                              {periods.map((p, pi) => {
+                              if (pi % xLabelStep !== 0) return null;
+                              const gx = paddingLeft + pi * (groupWidth + groupGap) + groupWidth / 2;
+                              return (
+                                <text
+                                  key={`label-${pi}`}
+                                  x={gx}
+                                  y={H - 10}
+                                  textAnchor="middle"
+                                  className="fill-gray-200"
+                                  fontSize={11}
+                                  fontWeight="600"
+                                >
+                                  {formatMonthLabel(p.yearMonth)}
+                                </text>
+                              );
+                              })}
+                            </svg>
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-2 flex-shrink-0">
+                            {classNames.map(cn => (
+                              <span key={cn} className="flex items-center gap-1 text-[9px]">
+                                <span className="w-2 h-2 rounded" style={{ backgroundColor: classColors[cn] }} />
+                                {cn}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Use same data as area cards so graph Y-axis matches card area (ha) when date changes
+                    const areaCardsForGrowth = calculateAreaCards('left').filter((ac) =>
+                      classNames.some((cn) => ac.label === cn)
+                    );
+                    const areaValues = classNames.map(
+                      (cn) => areaCardsForGrowth.find((ac) => ac.label === cn)?.value ?? 0
+                    );
+                    const maxVal = areaValues.length > 0 ? Math.max(...areaValues.filter(v => !Number.isNaN(v) && v >= 0)) : 1;
+                    const paddedMax = maxVal > 0 ? maxVal * 1.1 : 1;
+                    const numBars = classNames.length;
+                    const barGap = 8;
+                    const barWidth = (chartW - barGap * (numBars - 1)) / numBars;
+                    const yTicks = [0, 0.25, 0.5, 0.75, 1].map(r => ({ ratio: r, value: paddedMax * r }));
+                    const selectedLabel = formatMonthLabel(selectedGrowthYearMonth);
+                    return (
+                      <div className="w-full min-h-0 flex flex-col flex-1">
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class · {selectedLabel}</div>
+                        <div className="flex-1 min-h-0 w-full">
+                          <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+                            <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
+                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                            {yTicks.map(({ ratio, value }) => {
+                              const y = paddingTop + chartH - ratio * chartH;
+                              return (
+                                <g key={ratio}>
+                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                  <text
+                                    x={paddingLeft - 6}
+                                    y={y + 4}
+                                    textAnchor="end"
+                                    className="fill-gray-200"
+                                    fontSize={11}
+                                    fontWeight="600"
+                                  >
+                                    {value.toFixed(0)}
+                                  </text>
+                                </g>
+                              );
+                            })}
+                            <g clipPath="url(#growth-chart-clip)">
+                              {classNames.map((cn, ci) => {
+                                const val = areaValues[ci] ?? 0;
+                                const h = paddedMax > 0 ? (val / paddedMax) * chartH : 0;
+                                const y = paddingTop + chartH - h;
+                                const x = paddingLeft + ci * (barWidth + barGap);
+                                return (
+                                  <g key={cn}>
+                                    <rect x={x} y={y} width={barWidth} height={h} fill={classColors[cn] || '#666'} rx={1} />
+                                  </g>
+                                );
+                              })}
+                            </g>
+                            <text
+                              x={paddingLeft + chartW / 2}
+                              y={H - 10}
+                              textAnchor="middle"
+                              className="fill-gray-200"
+                              fontSize={11}
+                              fontWeight="600"
+                            >
+                              {selectedLabel}
+                            </text>
+                          </svg>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mt-2 flex-shrink-0">
+                          {classNames.map(cn => (
+                            <span key={cn} className="flex items-center gap-1 text-[9px]">
+                              <span className="w-2 h-2 rounded" style={{ backgroundColor: classColors[cn] }} />
+                              {cn}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : getActiveTab('left') === 'pest' && pestStoredSeries && pestStoredSeries.length > 0 && selectedPestCategory ? (
+                  (() => {
+                    const currentCategory = selectedPestCategory;
+                    const currentSeries = pestStoredSeries;
+                    const series = currentSeries
+                      .filter((item: PestStoredItem) => {
+                        const h = (item as any).response_data?.hierarchy || {};
+                        return h[currentCategory];
+                      })
+                      .sort((a: PestStoredItem, b: PestStoredItem) => a.year_month.localeCompare(b.year_month));
+                    if (!series.length) return <div className="text-gray-500 text-sm">No time series data for {currentCategory}.</div>;
+                    const labels = series.map(s => s.year_month);
+                    const areaValues = series.map(s => {
+                      const h = (s as any).response_data?.hierarchy?.[currentCategory] || {};
+                      return Number(h.total_area_ha ?? 0);
+                    });
+                    const firstCategory: any = (series[0] as any).response_data?.hierarchy?.[currentCategory] || {};
+                    const childKeys: string[] = firstCategory.children ? Object.keys(firstCategory.children) : [];
+                    const childrenSeries: number[][] = childKeys.map(childKey =>
+                      series.map(s => {
+                        const child = (s as any).response_data?.hierarchy?.[currentCategory]?.children?.[childKey] || {};
+                        return Number((child as any).area_ha ?? (child as any).total_area_ha ?? 0);
+                      })
+                    );
+                    const W = 400;
+                    const H = 220;
+                    const P = 40;
+                    const bottomPadding = 20;
+                    const topPadding = 16;
+                    const chartHeight = H - bottomPadding - topPadding;
+                    const showParent = true;
+                    const displayChildKeys = childKeys.sort();
+                    const displayChildrenSeries = childrenSeries;
+                    const numSeries = (showParent ? 1 : 0) + displayChildKeys.length;
+                    const barGroupWidth = labels.length > 0 ? (W - P * 2) / labels.length : 0;
+                    const barSpacing = 2;
+                    const barWidth = numSeries > 0 ? (barGroupWidth - barSpacing * (numSeries - 1)) / numSeries : 0;
+                    const allValues = [
+                      ...(showParent ? areaValues : []),
+                      ...displayChildrenSeries.reduce<number[]>((acc, arr) => acc.concat(arr), []),
+                    ].filter(v => !Number.isNaN(v) && v >= 0);
+                    const maxValue = allValues.length > 0 ? Math.max(...allValues) : 1;
+                    const paddedMaxValue = maxValue > 0 ? maxValue * 1.1 : 1;
+                    const yScale = (v: number) => (paddedMaxValue === 0 ? chartHeight : chartHeight - (v / paddedMaxValue) * chartHeight);
+                    // Same date format as Growth/Water/Soil: "Jan '25", "Feb '25"
+                    const formatMonthLabel = (ym: string | null) => {
+                      if (!ym || typeof ym !== 'string') return 'Current';
+                      const [y, m] = ym.split('-');
+                      if (!m) return ym;
+                      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                      const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                      return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
+                    };
+                    const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
+                    const parentColor = '#f97316';
+                    return (
+                      <div className="w-full min-h-0 flex flex-col flex-1 overflow-x-auto">
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) · {currentCategory.replace(/_/g, ' ')} time series</div>
+                        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block flex-shrink-0">
+                          <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#4b5563" strokeWidth={1} />
+                          <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#4b5563" strokeWidth={1} />
+                          {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                            const value = paddedMaxValue * ratio;
+                            const y = H - bottomPadding - (chartHeight * ratio);
+                            return (
+                              <g key={`y-${ratio}`}>
+                                <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                <text x={P - 8} y={y + 3} textAnchor="end" className="fill-gray-400 text-[9px]" fontSize={9}>
+                                  {value.toFixed(0)}
+                                </text>
+                              </g>
+                            );
+                          })}
+                          {labels.map((label, monthIdx) => {
+                            const groupX = P + monthIdx * barGroupWidth;
+                            let barIdx = 0;
+                            return (
+                              <g key={`month-${label}`}>
+                                {showParent && (() => {
+                                  const value = areaValues[monthIdx] || 0;
+                                  const barHeight = (value / paddedMaxValue) * chartHeight;
+                                  const x = groupX + barIdx * (barWidth + barSpacing);
+                                  barIdx++;
+                                  return <rect key={`p-${monthIdx}`} x={x} y={H - bottomPadding - barHeight} width={barWidth} height={barHeight} fill={parentColor} rx={2} />;
+                                })()}
+                                {displayChildrenSeries.map((values, childIdx) => {
+                                  const value = values[monthIdx] || 0;
+                                  const barHeight = (value / paddedMaxValue) * chartHeight;
+                                  const color = childColors[childIdx % childColors.length];
+                                  const x = groupX + barIdx * (barWidth + barSpacing);
+                                  barIdx++;
+                                  return <rect key={`c-${childIdx}-${monthIdx}`} x={x} y={H - bottomPadding - barHeight} width={barWidth} height={barHeight} fill={color} rx={2} />;
+                                })}
+                              </g>
+                            );
+                          })}
+                        </svg>
+                        <div className="overflow-x-auto mt-0.5 flex-shrink-0" style={{ paddingLeft: P, paddingRight: P }}>
+                          <div className="flex flex-nowrap gap-0" style={{ minWidth: labels.length * Math.max(barGroupWidth, 24) }}>
+                            {labels.map((label, i) => (
+                              <span key={label + i} className="whitespace-nowrap flex-shrink-0 text-center text-[9px] text-gray-500" style={{ width: `${Math.max(barGroupWidth, 24)}px` }} title={label}>{formatMonthLabel(label)}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-3 text-[9px] text-gray-400 flex-shrink-0">
+                          {showParent && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{ backgroundColor: parentColor }} /> Total</span>}
+                          {displayChildKeys.map((key, idx) => (
+                            <span key={key} className="flex items-center gap-1">
+                              <span className="w-2 h-2 rounded" style={{ backgroundColor: childColors[idx % childColors.length] }} />
+                              {key.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : getActiveTab('left') === 'water' && (getCurrentPixelData('left')?.classwise?.length > 0 || (waterStoredSeries && waterStoredSeries.length > 0)) ? (
+                  (() => {
+                    const waterClassNames = ['Deficient', 'Less', 'Adequat', 'Excellent', 'Excess'];
+                    const waterClassColors: Record<string, string> = {
+                      Deficient: '#EBFF34',
+                      Less: '#CC8213',
+                      Adequat: '#1348E8',
+                      Excellent: '#2E199A',
+                      Excess: '#060217'
+                    };
+                    const getAreaForClass = (cw: any[], className: string) => {
+                      if (!Array.isArray(cw)) return 0;
+                      const c = cw.find((x: any) => (x.class_name || '').toString().toLowerCase() === className.toLowerCase());
+                      return Number(c?.area_hectares ?? (c as any)?.area_ha ?? 0);
+                    };
+                    const formatMonthLabel = (ym: string | null) => {
+                      if (!ym) return 'Current';
+                      const [y, m] = ym.split('-');
+                      if (!m) return ym;
+                      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                      const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                      return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
+                    };
+                    const currentData = getCurrentPixelData('left');
+                    const classwise = selectedWaterYearMonth && waterStoredSeries?.length
+                      ? (waterStoredSeries.find((x: GrowthStoredItem) => x.year_month === selectedWaterYearMonth)?.response_data as any)?.classwise
+                      : currentData?.classwise;
+                    const areaCardsForWater = (classwise && Array.isArray(classwise) && classwise.length > 0)
+                      ? waterClassNames.map(cn => ({ label: cn, value: getAreaForClass(classwise, cn) }))
+                      : calculateAreaCards('left').filter((ac) => waterClassNames.some(cn => ac.label.toLowerCase() === cn.toLowerCase())).map(ac => ({ label: ac.label, value: ac.value }));
+                    const areaValues = waterClassNames.map(cn => areaCardsForWater.find(ac => ac.label.toLowerCase() === cn.toLowerCase())?.value ?? 0);
+                    const maxVal = areaValues.length > 0 ? Math.max(...areaValues.filter(v => !Number.isNaN(v) && v >= 0), 1) : 1;
+                    const paddedMax = maxVal * 1.1;
+                    const H = 240;
+                    const W = 400;
+                    const paddingLeft = 48;
+                    const paddingRight = 12;
+                    const paddingTop = 12;
+                    const paddingBottom = 28;
+                    const chartW = W - paddingLeft - paddingRight;
+                    const chartH = H - paddingTop - paddingBottom;
+                    const barGap = 6;
+                    const barWidth = (chartW - barGap * (waterClassNames.length - 1)) / waterClassNames.length;
+                    const selectedLabel = formatMonthLabel(selectedWaterYearMonth || null);
+                    return (
+                      <div className="w-full min-h-0 flex flex-col flex-1">
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by water uptake class · {selectedLabel}</div>
+                        <div className="flex-1 min-h-0 w-full">
+                          <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+                            <defs><clipPath id="water-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
+                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                            {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                              const value = paddedMax * ratio;
+                              const y = paddingTop + chartH - ratio * chartH;
+                              return (
+                                <g key={ratio}>
+                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                  <text x={paddingLeft - 6} y={y + 4} textAnchor="end" className="fill-gray-200" fontSize={10}>{value.toFixed(0)}</text>
+                                </g>
+                              );
+                            })}
+                            <g clipPath="url(#water-chart-clip)">
+                              {waterClassNames.map((cn, ci) => {
+                                const val = areaValues[ci] ?? 0;
+                                const h = paddedMax > 0 ? (val / paddedMax) * chartH : 0;
+                                const y = paddingTop + chartH - h;
+                                const x = paddingLeft + ci * (barWidth + barGap);
+                                return <rect key={cn} x={x} y={y} width={barWidth} height={h} fill={waterClassColors[cn] || '#666'} rx={2} />;
+                              })}
+                            </g>
+                            {waterClassNames.map((cn, ci) => (
+                              <text key={`l-${cn}`} x={paddingLeft + ci * (barWidth + barGap) + barWidth / 2} y={H - 8} textAnchor="middle" className="fill-gray-400" fontSize={9}>{cn}</text>
+                            ))}
+                          </svg>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mt-2 flex-shrink-0">
+                          {waterClassNames.map(cn => (
+                            <span key={cn} className="flex items-center gap-1 text-[9px]">
+                              <span className="w-2 h-2 rounded" style={{ backgroundColor: waterClassColors[cn] }} />
+                              {cn}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : getActiveTab('left') ? (
+                  <div className="flex items-center justify-center text-gray-500 text-sm text-center">
+                    {getActiveTabDisplayName('left')} graph and trends appear here when data is loaded.
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center text-gray-500 text-sm text-center">
+                    Select a tab above (Growth, Water, Soil, Pest, Water Source, Forest) to see graph.
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Daily Weather card – header shows selected district, subdistrict or village name */}
+            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
+              <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
+                <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                  Daily Weather {getWeatherCardLocationName('left') !== '—' ? `· ${getWeatherCardLocationName('left')}` : ''}
+                </h3>
+              </div>
+              <div className="flex-1 p-4 min-h-0">
+                {getWeatherCardLocationName('left') === '—' ? (
+                  <div className="h-full flex items-center justify-center text-gray-500 text-sm text-center">
+                    Select district, subdistrict or village to load daily weather graph here.
+                  </div>
+                ) : weatherDailyLoading ? (
+                  <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+                    Loading daily weather…
+                  </div>
+                ) : weatherDailyError ? (
+                  <div className="h-full flex items-center justify-center text-red-300 text-sm text-center">
+                    {weatherDailyError}
+                  </div>
+                ) : weatherDailyData?.daily?.length ? (
+                  (() => {
+                    const days = weatherDailyData.daily.slice(0, 7);
+                    const tempMax = days.map(d => Number(d.temp_max ?? 0));
+                    const rainfall = days.map(d => Number(d.rainfall ?? 0));
+                    const windMax = days.map(d => Number(d.wind_max ?? 0));
+
+                    const W = 560;
+                    const H = 180;
+                    const P = 24;
+                    const xStep = days.length > 1 ? (W - P * 2) / (days.length - 1) : 0;
+
+                    // Fixed y-axis scale from 0 to 100 (shared axis for mixed metrics)
+                    const yAxisMin = 0;
+                    const yAxisMax = 100;
+                    const scale = (v: number) => {
+                      const clamped = Math.max(yAxisMin, Math.min(yAxisMax, v));
+                      return H - P - ((clamped - yAxisMin) / (yAxisMax - yAxisMin)) * (H - P * 2);
+                    };
+                    const yTemp = scale;
+                    const yRain = scale;
+                    const yWind = scale;
+
+                    const pts = (arr: number[], yScale: (v: number) => number) =>
+                      arr.map((v, i) => `${P + i * xStep},${yScale(v)}`).join(' ');
+                    const fmtDay = (s: string) => {
+                      const parts = (s || '').split('-');
+                      return parts.length === 3 ? parts[2] : s;
+                    };
+
+                    return (
+                      <div
+                        id="weather-daily-chart"
+                        className="relative"
+                        onMouseLeave={() => setWeatherChartHoverDay(null)}
+                      >
+                        {weatherChartHoverDay !== null && days[weatherChartHoverDay] && (
+                          <div
+                            className="absolute z-10 px-2.5 py-2 rounded-lg bg-gray-900 border border-gray-600 shadow-lg text-xs text-left whitespace-nowrap"
+                            style={{
+                              left: P + weatherChartHoverDay * xStep - 50,
+                              bottom: H + 28,
+                            }}
+                          >
+                            <div className="font-semibold text-gray-200 mb-1">{days[weatherChartHoverDay].date}</div>
+                            <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> °C</div>
+                            <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[weatherChartHoverDay].rainfall}</span></div>
+                            <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[weatherChartHoverDay].wind_max}</span></div>
+                          </div>
+                        )}
+
+                        <svg viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto">
+                          <line x1={P} y1={P} x2={P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+                          <line x1={P} y1={H - P} x2={W - P} y2={H - P} stroke="rgba(148,163,184,0.25)" />
+
+                          {[0, 20, 40, 60, 80, 100].map((val) => {
+                            const y = H - P - ((val - yAxisMin) / (yAxisMax - yAxisMin)) * (H - P * 2);
+                            return (
+                              <g key={`y-label-card-${val}`}>
+                                <line x1={P - 6} y1={y} x2={P} y2={y} stroke="rgba(148,163,184,0.25)" />
+                                <text x={P - 10} y={y + 3} textAnchor="end" fontSize="10" fill="rgba(148,163,184,0.6)">{val}</text>
+                              </g>
+                            );
+                          })}
+
+                          <polyline points={pts(tempMax, yTemp)} fill="none" stroke="#f97316" strokeWidth="2.5" />
+                          <polyline points={pts(rainfall, yRain)} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+                          <polyline points={pts(windMax, yWind)} fill="none" stroke="#10b981" strokeWidth="2.5" />
+
+                          {tempMax.map((v, i) => (
+                            <circle key={`tm-card-${i}`} cx={P + i * xStep} cy={yTemp(v)} r="3" fill="#f97316" />
+                          ))}
+                          {rainfall.map((v, i) => (
+                            <circle key={`rf-card-${i}`} cx={P + i * xStep} cy={yRain(v)} r="3" fill="#3b82f6" />
+                          ))}
+                          {windMax.map((v, i) => (
+                            <circle key={`wm-card-${i}`} cx={P + i * xStep} cy={yWind(v)} r="3" fill="#10b981" />
+                          ))}
+
+                          {days.map((_, i) => (
+                            <rect
+                              key={`hover-card-${i}`}
+                              x={Math.max(0, P + (i - 0.5) * xStep)}
+                              y={0}
+                              width={xStep}
+                              height={H}
+                              fill="transparent"
+                              onMouseEnter={() => setWeatherChartHoverDay(i)}
+                            />
+                          ))}
+                        </svg>
+
+                        <div className="mt-2 flex justify-between text-[11px] text-gray-400 px-[24px]">
+                          {days.map((d, i) => (
+                            <span key={`d-card-${i}`} className="whitespace-nowrap">{fmtDay(d.date)}</span>
+                          ))}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-300">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f97316]" />
+                            <span>Temp max (°C)</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
+                            <span>Rainfall</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                            <span>Wind max</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+                    No daily data
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Second Map for Split Screen - Right Side */}
         {splitScreenMode && (
@@ -6710,22 +7804,7 @@ const App: React.FC = () => {
                 <span className="text-xl">🌧️</span>
               </button>
 
-              {getActiveTab('right') === 'pest' && (
-                <button
-                  type="button"
-                  onClick={() => setRightShowPestSeries(prev => !prev)}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center transition-colors ${
-                    rightShowPestSeries
-                      ? 'bg-rose-500 text-black hover:bg-rose-400'
-                      : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700'
-                  }`}
-                  title={rightShowPestSeries ? 'Hide pest time series' : 'Show pest time series'}
-                >
-                  <GoGraph />
-                </button>
-              )}
-
-              {/* Download Button - Right Side (Split Screen) - After graph icon */}
+              {/* Download Button - Right Side (Split Screen) */}
               {(getActiveTab('right') === 'pest' || (rightShowWeatherDaily && rightWeatherDailyData)) && (
                 <div className="relative">
                   <button
@@ -6816,7 +7895,7 @@ const App: React.FC = () => {
                 const W = Math.min(Math.max(pestGraphSize.width, defaultSplitScreenWidth), 600);
                 const H = Math.min(Math.max(pestGraphSize.height, defaultSplitScreenHeight), 300);
                 const P = 35; // padding
-                const bottomPadding = 30;
+                const bottomPadding = 18;
                 const topPadding = 15;
                 const chartHeight = H - bottomPadding - topPadding;
                 
@@ -6875,11 +7954,14 @@ const App: React.FC = () => {
                   return chartHeight - (v / paddedMaxValue) * chartHeight;
                 };
 
-                const fmtMonth = (ym: string) => {
-                  const parts = ym.split('-');
-                  if (parts.length !== 2) return ym;
-                  const [y, m] = parts;
-                  return `${m}-${y.slice(2)}`;
+                // Same date format as Growth/Water/Soil: "Jan '25", "Feb '25"
+                const formatMonthLabel = (ym: string | null) => {
+                  if (!ym || typeof ym !== 'string') return 'Current';
+                  const [y, m] = ym.split('-');
+                  if (!m) return ym;
+                  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                  const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                  return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
                 };
 
                 const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
@@ -6959,7 +8041,7 @@ const App: React.FC = () => {
                       {/* X-axis line */}
                       <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
                       
-                      {/* Y-axis labels */}
+                      {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                         const value = paddedMaxValue * ratio;
                         const y = H - bottomPadding - (chartHeight * ratio);
@@ -7041,27 +8123,39 @@ const App: React.FC = () => {
                       })}
                     </svg>
                     
-                    {/* X-axis labels */}
-                    <div className="flex justify-between text-[9px] px-[35px] font-semibold text-gray-700 mt-1">
-                      {labels.map((label, i) => {
-                        const isSelected = rightSelectedPestYearMonth === label;
-                        const opacity = rightShowAllTimeSeries 
-                          ? 1 
-                          : (rightSelectedPestYearMonth ? (isSelected ? 1 : 0.3) : 1);
-                        return (
-                          <span 
-                            key={`label-right-${label + i}`} 
-                            className="whitespace-nowrap" 
-                            style={{ 
-                              width: `${barGroupWidth}px`, 
-                              textAlign: 'center',
-                              opacity: opacity
-                            }}
-                          >
-                            {fmtMonth(label)}
-                          </span>
-                        );
-                      })}
+                    {/* X-axis labels - align with bars, no extra gap, scroll when narrow */}
+                    <div
+                      className="overflow-x-auto overflow-y-hidden mt-0.5 font-semibold text-gray-700"
+                      style={{ paddingLeft: P, paddingRight: P }}
+                    >
+                      <div
+                        className="flex flex-nowrap flex-shrink-0"
+                        style={{ minWidth: labels.length * barGroupWidth }}
+                      >
+                        {labels.map((label, i) => {
+                          const isSelected = rightSelectedPestYearMonth === label;
+                          const opacity = rightShowAllTimeSeries
+                            ? 1
+                            : (rightSelectedPestYearMonth ? (isSelected ? 1 : 0.3) : 1);
+                          const labelW = Math.max(barGroupWidth, 24);
+                          return (
+                            <span
+                              key={`label-right-${label + i}`}
+                              className="whitespace-nowrap flex-shrink-0 overflow-visible"
+                              style={{
+                                width: `${labelW}px`,
+                                minWidth: `${labelW}px`,
+                                textAlign: 'center',
+                                opacity,
+                                fontSize: barGroupWidth < 36 ? 8 : 9,
+                              }}
+                              title={label}
+                            >
+                              {formatMonthLabel(label)}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </div>
                     
                     {/* Legend */}
@@ -7316,6 +8410,9 @@ const App: React.FC = () => {
               <PlotsMap
                 plots={rightAllPlots}
                 selectedPlotId={selectedPlotId}
+                cropColor={predictAreaCropColor}
+                fieldAreaByFieldId={predictAreaFieldAreas}
+                hideFieldIdAreaCard={rightAllPlots.length === 1 && (rightAllPlots[0].id === rightSelectedDistrict || rightAllPlots[0].id === rightSelectedSubdistrict || rightAllPlots[0].id === rightSelectedVillage)}
                 onSelectPlot={async (id) => {
                   setSelectedPlotId(id);
                   const selectedPlot = rightAllPlots.find(p => p.id === id);
@@ -7578,6 +8675,9 @@ const App: React.FC = () => {
             </div>
           </div>
         </aside>
+      )}
+      </div>
+        </>
       )}
     </div>
   );

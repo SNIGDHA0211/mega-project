@@ -37,7 +37,11 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+          recharts: path.resolve(__dirname, 'node_modules/recharts'),
         }
-      }
+      },
+      optimizeDeps: {
+        include: ['recharts'],
+      },
     };
 });

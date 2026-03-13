@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { MapContainer, TileLayer, Polygon, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Popup, Tooltip, useMap } from 'react-leaflet';
 import { Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
 
@@ -20,6 +20,12 @@ interface PlotsMapProps {
   showTileLayers?: boolean;
   waterSources?: WaterSource[];
   onSelectWaterSource?: (id: string, data: WaterSource) => void;
+  /** When set (e.g. from predict-area for selected crop), plot boundaries use this color */
+  cropColor?: string | null;
+  /** field_id -> field_area_ha from predict-area; shown on hover and in popup */
+  fieldAreaByFieldId?: Record<string, number>;
+  /** When true, do not show Field ID / Area tooltip or popup (e.g. for district/subdistrict boundary only) */
+  hideFieldIdAreaCard?: boolean;
 }
 
 // Helper component to fit bounds when plots change (only on initial load, not after user interaction)
@@ -93,7 +99,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   allPlotsTileUrls = {},
   showTileLayers = true,
   waterSources = [],
-  onSelectWaterSource
+  onSelectWaterSource,
+  cropColor = null,
+  fieldAreaByFieldId = {},
+  hideFieldIdAreaCard = false
 }) => {
   // Default center (Nashik/Maharashtra area based on coordinates provided in prompt)
   const defaultCenter: LeafletCoordinate = [20.0130, 73.6620];
@@ -178,27 +187,53 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
 
         const isSelected = selectedPlotId === plot.id;
         const isWaterSource = plot.id.startsWith('water-source-');
+        // Only color fields that are in identified_field_boundaries (predict-area); others stay default
+        const isInIdentifiedBoundaries = plot.id in fieldAreaByFieldId;
+        const useCropColor = !isWaterSource && cropColor && isInIdentifiedBoundaries;
+        const displayAreaHa = fieldAreaByFieldId[plot.id] ?? (plot.area_ha ? Number(plot.area_ha) : undefined);
+        // When hideFieldIdAreaCard is true, this is a district/subdistrict boundary – use visible stroke and light fill
+        const isBoundaryOnly = hideFieldIdAreaCard && !isWaterSource;
 
         return (
           <Polygon
             key={plot.id}
             positions={polygonCoords}
             pathOptions={{
-              // Water sources: Blue, Regular plots: White/Yellow
-              color: isWaterSource 
-                ? (isSelected ? '#3b82f6' : '#3b82f6') 
-                : (isSelected ? '#FFD700' : '#FFFFFF'),
-              fillColor: isWaterSource
-                ? '#3b82f6'
-                : (isSelected ? '#FFD700' : '#FFFFFF'),
-              fillOpacity: isWaterSource ? 0.3 : 0, // Water sources have blue fill
-              weight: isSelected ? 4 : (isWaterSource ? 2 : 1),
-              opacity: 1
+              // Boundary-only (district/subdistrict): visible blue border + light fill so boundary shows on map
+              ...(isBoundaryOnly
+                ? {
+                    color: '#2563eb',
+                    fillColor: '#2563eb',
+                    fillOpacity: 0.12,
+                    weight: 3,
+                    opacity: 1,
+                  }
+                : {
+                    // Crop color from predict-area, or water sources: Blue, or regular: White/Yellow
+                    color: isWaterSource
+                      ? '#3b82f6'
+                      : (useCropColor ? cropColor! : (isSelected ? '#FFD700' : '#FFFFFF')),
+                    fillColor: isWaterSource
+                      ? '#3b82f6'
+                      : (useCropColor ? cropColor! : (isSelected ? '#FFD700' : '#FFFFFF')),
+                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.25 : 0),
+                    weight: isSelected ? 4 : (isWaterSource ? 2 : 1),
+                    opacity: 1,
+                  }),
             }}
             eventHandlers={{
               click: () => onSelectPlot(plot.id),
             }}
           >
+            {/* Hover tooltip: show plot area (ha) on boundary hover – hidden when hideFieldIdAreaCard (e.g. district/subdistrict) */}
+            {!plot.id.startsWith('water-source-') && !hideFieldIdAreaCard && (
+              <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent={false}>
+                <span className="font-medium">Field ID: {plot.id}</span>
+                <br />
+                <span className="text-emerald-600 font-semibold">Area: {(displayAreaHa != null ? displayAreaHa : Number(plot.area_ha) || 0).toFixed(2)} ha</span>
+              </Tooltip>
+            )}
+            {!hideFieldIdAreaCard && (
             <Popup className="font-sans font-medium text-sm">
               <div className="text-center">
                 {plot.id.startsWith('water-source-') ? (
@@ -226,14 +261,21 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     )}
                   </>
                 ) : (
-                  // Regular Plot Popup
+                  // Regular Plot Popup (click) – show Field ID and area (from predict-area or plot)
                   <>
-                    <span className="block font-bold text-gray-700 uppercase mb-1">Plot ID</span>
+                    <span className="block font-bold text-gray-700 uppercase mb-1">Field ID</span>
                     <span className="text-emerald-600 font-semibold">{plot.id}</span>
+                    {(displayAreaHa != null && displayAreaHa > 0) || (plot.area_ha && Number(plot.area_ha) > 0) ? (
+                      <div className="mt-2">
+                        <span className="text-xs text-gray-600">Area: </span>
+                        <span className="text-emerald-600 font-semibold">{(displayAreaHa != null ? displayAreaHa : Number(plot.area_ha)).toFixed(2)} ha</span>
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
             </Popup>
+            )}
           </Polygon>
         );
       }).filter((plot) => plot !== null)}

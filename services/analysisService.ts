@@ -147,6 +147,121 @@ export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]>
   }
 };
 
+// Field boundaries API response: district, subdistrict, village, count, fields[]
+export interface FieldBoundariesResponse {
+  district: string;
+  subdistrict: string;
+  village: string;
+  count: number;
+  fields: Array<{
+    id: number;
+    field_id: number;
+    village_id?: number;
+    village_name?: string;
+    sub_dist?: string;
+    district?: string;
+    state?: string;
+    area_ha: number;
+    geometry: {
+      type: string;
+      coordinates: number[][][]; // Polygon: [ ring ], ring = [ [lng, lat], ... ]
+    };
+  }>;
+}
+
+export type FieldBoundaryPlot = { id: string; area_ha: string; boundary: Coordinate[] };
+
+// Fetch field boundaries for a village (district + subdistrict + village)
+export const fetchFieldBoundaries = async (
+  district: string,
+  subdistrict: string,
+  village: string
+): Promise<FieldBoundaryPlot[]> => {
+  try {
+    const params = new URLSearchParams({
+      district,
+      subdistrict,
+      village
+    });
+    const url = `${BASE_URL}/field-boundaries?${params.toString()}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'accept': 'application/json' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const data: FieldBoundariesResponse = await response.json();
+    const fields = data.fields ?? [];
+    if (fields.length === 0) {
+      return [];
+    }
+
+    const plots: FieldBoundaryPlot[] = fields.map((field, index) => {
+      const geom = field.geometry;
+      if (!geom || !geom.coordinates || geom.type !== 'Polygon') {
+        return null;
+      }
+      const coords = geom.coordinates;
+      const outerRing = Array.isArray(coords[0]) ? (coords[0] as number[][]) : [];
+      const boundary: Coordinate[] = outerRing.map((c) => [c[0], c[1]] as Coordinate);
+      const id = String(field.field_id ?? field.id ?? `field-${index}`);
+      const areaHa = field.area_ha != null ? String(field.area_ha) : '0';
+      return { id, area_ha: areaHa, boundary };
+    }).filter((p): p is FieldBoundaryPlot => p !== null && p.boundary.length >= 3);
+
+    return plots;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/field-boundaries`);
+    }
+    throw error;
+  }
+};
+
+// Predict-area API response (POST): crop predictions per crop type with field_id and field_area_ha
+export interface PredictAreaCropData {
+  crop_name: string;
+  crop_area_ha: number;
+  color: string;
+  identified_field_boundaries: Record<string, { field_id: number; field_area_ha: number }>;
+}
+
+export interface PredictAreaResponse {
+  district: string;
+  subdistrict: string;
+  village: string;
+  month: string;
+  field_boundaries_geojson?: { type: string; features: unknown[]; note?: string };
+  [cropKey: string]: unknown; // e.g. "sugarcane": PredictAreaCropData
+}
+
+export const fetchPredictArea = async (
+  district: string,
+  subdistrict: string,
+  village: string,
+  month: string
+): Promise<PredictAreaResponse> => {
+  const params = new URLSearchParams({
+    district,
+    subdistrict,
+    village,
+    month
+  });
+  const url = `${BASE_URL}/predict-area?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'accept': 'application/json', 'Content-Type': 'application/json' },
+    body: ''
+  });
+  if (!response.ok) {
+    throw new Error(`Predict-area API Error: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+};
+
 // Fetch Growth Analysis for district/subdistrict/village
 export interface GrowthPlotData {
   type?: string; // "Feature" for GeoJSON format
@@ -194,13 +309,41 @@ export interface GrowthAnalysisResponse {
   [key: string]: any; // Allow additional properties
 }
 
+// Growth classwise API can return { current, stored } - current = latest analysis, stored = historical by year_month
+export interface GrowthClasswiseApiCurrent {
+  type?: string;
+  features?: GrowthPlotData[];
+  pixel_summary?: GrowthPixelSummary;
+  classwise?: Array<{ class_id?: number; class_name?: string; color?: string; percentage?: number; area_hectares?: number; tile_url?: string }>;
+  villages?: string[];
+}
+
+export interface GrowthClasswiseApiStoredItem {
+  id?: number;
+  district?: string;
+  subdistrict?: string;
+  village?: string | null;
+  year_month: string;
+  created_at?: string;
+  response_data?: {
+    type?: string;
+    features?: GrowthPlotData[];
+    pixel_summary?: GrowthPixelSummary & { area_hectares?: number };
+    classwise?: Array<{ class_id?: number; class_name?: string; color?: string; percentage?: number; area_hectares?: number; tile_url?: string }>;
+  };
+  request_params?: Record<string, unknown>;
+}
+
+export interface GrowthAnalysisWithStoredResponse extends GrowthAnalysisResponse {
+  stored?: GrowthStoredItem[];
+}
+
 export const fetchGrowthAnalysis1 = async (
   district: string,
   subdistrict?: string,
   village?: string
-): Promise<GrowthAnalysisResponse> => {
+): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
-    // Build URL with available parameters
     let url = `${BASE_URL}/analyze_Growthclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
@@ -208,7 +351,7 @@ export const fetchGrowthAnalysis1 = async (
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -216,13 +359,47 @@ export const fetchGrowthAnalysis1 = async (
       },
       body: ''
     });
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    const data: GrowthAnalysisResponse = await response.json();
-    return data;
+    const raw: { current?: GrowthClasswiseApiCurrent; stored?: GrowthClasswiseApiStoredItem[] } = await response.json();
+
+    // New format: { current, stored }
+    if (raw.current != null) {
+      const current = raw.current;
+      // Support both current.features (array) and current.feature (single Feature with geometry + tile_url)
+      const plots =
+        Array.isArray((current as any).features) && (current as any).features.length > 0
+          ? (current as any).features
+          : ((current as any).feature && (current as any).feature.type === 'Feature'
+              ? [(current as any).feature]
+              : []);
+      const result: GrowthAnalysisWithStoredResponse = {
+        plots,
+        pixel_summary: current.pixel_summary,
+        classwise: current.classwise,
+        villages: current.villages,
+        area_hectares: current.pixel_summary?.area_hectares
+      };
+      if (raw.stored && Array.isArray(raw.stored)) {
+        result.stored = raw.stored.map((item: GrowthClasswiseApiStoredItem) => ({
+          year_month: item.year_month,
+          id: item.id,
+          district: item.district,
+          subdistrict: item.subdistrict,
+          village: item.village,
+          created_at: item.created_at,
+          response_data: item.response_data,
+          request_params: item.request_params
+        })) as GrowthStoredItem[];
+      }
+      return result;
+    }
+
+    // Legacy: flat response (plots/pixel_summary at top level)
+    return raw as unknown as GrowthAnalysisWithStoredResponse;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/analyze_Growthclasswise`);
@@ -231,14 +408,13 @@ export const fetchGrowthAnalysis1 = async (
   }
 };
 
-// Fetch Water Uptake Analysis
+// Fetch Water Uptake Analysis (same API shape as Growth: { current, stored })
 export const fetchWaterUptakeAnalysis = async (
   district: string,
   subdistrict?: string,
   village?: string
-): Promise<GrowthAnalysisResponse> => {
+): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
-    // Endpoint: /wateruptakeclasswise?district=... (matches API response "classwise")
     let url = `${BASE_URL}/wateruptakeclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
@@ -246,21 +422,51 @@ export const fetchWaterUptakeAnalysis = async (
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'accept': 'application/json'
-      },
+      headers: { 'accept': 'application/json' },
       body: ''
     });
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    const data: GrowthAnalysisResponse = await response.json();
-    return data;
+    const raw: { current?: GrowthClasswiseApiCurrent; stored?: GrowthClasswiseApiStoredItem[] } = await response.json();
+
+    if (raw.current != null) {
+      const current = raw.current;
+      // Support both current.features (array) and current.feature (single Feature with geometry + properties.tile_url)
+      const plots =
+        Array.isArray((current as any).features) && (current as any).features.length > 0
+          ? (current as any).features
+          : ((current as any).feature && (current as any).feature.type === 'Feature'
+              ? [(current as any).feature]
+              : []);
+      const result: GrowthAnalysisWithStoredResponse = {
+        plots,
+        pixel_summary: current.pixel_summary,
+        classwise: current.classwise,
+        villages: current.villages,
+        area_hectares: current.pixel_summary?.area_hectares
+      };
+      if (raw.stored && Array.isArray(raw.stored)) {
+        result.stored = raw.stored.map((item: GrowthClasswiseApiStoredItem) => ({
+          year_month: item.year_month,
+          id: item.id,
+          district: item.district,
+          subdistrict: item.subdistrict,
+          village: item.village,
+          created_at: item.created_at,
+          response_data: item.response_data,
+          request_params: item.request_params
+        })) as GrowthStoredItem[];
+      }
+      return result;
+    }
+
+    return raw as unknown as GrowthAnalysisWithStoredResponse;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/wateruptakeclasswise`);
@@ -269,14 +475,13 @@ export const fetchWaterUptakeAnalysis = async (
   }
 };
 
-// Fetch Soil Moisture Analysis
+// Fetch Soil Moisture Analysis (same API shape as Growth: { current, stored })
 export const fetchSoilMoistureAnalysis = async (
   district: string,
   subdistrict?: string,
   village?: string
-): Promise<GrowthAnalysisResponse> => {
+): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
-    // Match Growth-style endpoint: /SoilMoistureclasswise?district=...
     let url = `${BASE_URL}/SoilMoistureclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
@@ -284,21 +489,51 @@ export const fetchSoilMoistureAnalysis = async (
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'accept': 'application/json'
-      },
+      headers: { 'accept': 'application/json' },
       body: ''
     });
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    const data: GrowthAnalysisResponse = await response.json();
-    return data;
+    const raw: { current?: GrowthClasswiseApiCurrent; stored?: GrowthClasswiseApiStoredItem[] } = await response.json();
+
+    if (raw.current != null) {
+      const current = raw.current;
+      // Support both current.features (array) and current.feature (single Feature)
+      const plots =
+        Array.isArray((current as any).features) && (current as any).features.length > 0
+          ? (current as any).features
+          : ((current as any).feature && (current as any).feature.type === 'Feature'
+              ? [(current as any).feature]
+              : []);
+      const result: GrowthAnalysisWithStoredResponse = {
+        plots,
+        pixel_summary: current.pixel_summary,
+        classwise: current.classwise,
+        villages: current.villages,
+        area_hectares: current.pixel_summary?.area_hectares
+      };
+      if (raw.stored && Array.isArray(raw.stored)) {
+        result.stored = raw.stored.map((item: GrowthClasswiseApiStoredItem) => ({
+          year_month: item.year_month,
+          id: item.id,
+          district: item.district,
+          subdistrict: item.subdistrict,
+          village: item.village,
+          created_at: item.created_at,
+          response_data: item.response_data,
+          request_params: item.request_params
+        })) as GrowthStoredItem[];
+      }
+      return result;
+    }
+
+    return raw as unknown as GrowthAnalysisWithStoredResponse;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/SoilMoistureclasswise`);
@@ -307,15 +542,14 @@ export const fetchSoilMoistureAnalysis = async (
   }
 };
 
-// Fetch Pest Detection Analysis (district/subdistrict/village)
+// Fetch Pest Detection Analysis – POST pest-detectionclasswise returns { current: { features, hierarchy }, stored: [{ year_month, response_data: { hierarchy, tile_url, total_area_ha } }] }
 export const fetchPestDetectionAnalysis = async (
   district: string,
   subdistrict?: string,
   village?: string,
   coordinates?: number[][]
-): Promise<GrowthAnalysisResponse> => {
+): Promise<GrowthAnalysisWithStoredResponse & { hierarchy?: Record<string, { total_area_ha?: number; percentage?: number; children?: Record<string, unknown>; tile_url?: string }>; total_area_ha?: number }> => {
   try {
-    // Endpoint: /pest-detectionclasswise?district=...&subdistrict=...&village=...
     let url = `${BASE_URL}/pest-detectionclasswise?district=${encodeURIComponent(district)}`;
     if (subdistrict) {
       url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
@@ -323,28 +557,55 @@ export const fetchPestDetectionAnalysis = async (
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
     }
-    
-    // If coordinates are provided (drawn plot), add them to the request body
+    // Request all stored results for time series (backend may support limit; default might return only a few)
+    url += '&limit=100';
+
     let body = '';
     if (coordinates && coordinates.length > 0) {
       body = JSON.stringify({ coordinates });
     }
-    
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: body
+      headers: { 'accept': 'application/json', 'Content-Type': 'application/json' },
+      body
     });
-    
+
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    const data: GrowthAnalysisResponse = await response.json();
-    return data;
+    const raw: { current?: GrowthClasswiseApiCurrent & { hierarchy?: Record<string, { total_area_ha?: number; percentage?: number; children?: Record<string, unknown>; tile_url?: string }> }; stored?: GrowthClasswiseApiStoredItem[] } = await response.json();
+
+    if (raw.current != null) {
+      const current = raw.current;
+      const firstFeature = current.features?.[0];
+      const totalAreaHa = (firstFeature as any)?.properties?.total_area_ha ?? (current as any).total_area_ha;
+      const result: GrowthAnalysisWithStoredResponse & { hierarchy?: Record<string, { total_area_ha?: number; percentage?: number; children?: Record<string, unknown>; tile_url?: string }>; total_area_ha?: number } = {
+        plots: current.features && current.features.length > 0 ? current.features : [],
+        pixel_summary: current.pixel_summary,
+        classwise: current.classwise,
+        villages: current.villages,
+        area_hectares: current.pixel_summary?.area_hectares,
+        hierarchy: (current as any).hierarchy,
+        total_area_ha: totalAreaHa
+      };
+      if (raw.stored && Array.isArray(raw.stored)) {
+        result.stored = raw.stored.map((item: GrowthClasswiseApiStoredItem) => ({
+          year_month: item.year_month,
+          id: item.id,
+          district: item.district,
+          subdistrict: item.subdistrict,
+          village: item.village,
+          created_at: item.created_at,
+          response_data: item.response_data,
+          request_params: item.request_params
+        })) as GrowthStoredItem[];
+      }
+      return result;
+    }
+
+    return raw as unknown as GrowthAnalysisWithStoredResponse;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/pest-detectionclasswise`);
@@ -386,6 +647,187 @@ export const fetchPestStoredSeries = async (
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/api-stored/pest-detection`);
+    }
+    throw error;
+  }
+};
+
+// Stored Growth (time series by year_month) - /api-stored/growth
+export interface GrowthStoredItem {
+  year_month: string;
+  request_params?: { start_date?: string; end_date?: string; [key: string]: unknown };
+  response_data?: {
+    total_area_ha?: number;
+    pixel_summary?: { area_hectares?: number; analysis_start_date?: string; analysis_end_date?: string };
+    classwise?: Array<{ area_hectares?: number }>;
+    features?: Array<{ properties?: { area_ha?: number; area?: number; area_acres?: number; start_date?: string; end_date?: string } }>;
+  };
+  [key: string]: any;
+}
+
+export type GrowthStoredResponse = GrowthStoredItem[];
+
+export const fetchGrowthStoredSeries = async (
+  district: string,
+  subdistrict: string,
+  limit: number = 50
+): Promise<GrowthStoredResponse> => {
+  try {
+    const url = `${BASE_URL}/api-stored/growth?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const raw = await response.json();
+    // API may return array directly or wrapped as { data }, { results }, etc.
+    const data: GrowthStoredResponse = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.data)
+        ? (raw as any).data
+        : Array.isArray((raw as any)?.results)
+          ? (raw as any).results
+          : [];
+    return data;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/api-stored/growth`);
+    }
+    throw error;
+  }
+};
+
+// Stored Water Uptake (time series by year_month) - /api-stored/water-uptake
+export interface WaterUptakeStoredItem {
+  year_month: string;
+  response_data?: {
+    total_area_ha?: number;
+    pixel_summary?: { area_hectares?: number };
+    classwise?: Array<{ area_hectares?: number; class_name?: string }>;
+    features?: Array<{ properties?: { area_ha?: number; area?: number; area_acres?: number } }>;
+  };
+  [key: string]: any;
+}
+export type WaterUptakeStoredResponse = WaterUptakeStoredItem[];
+
+export const fetchWaterUptakeStoredSeries = async (
+  district: string,
+  subdistrict: string,
+  limit: number = 50
+): Promise<WaterUptakeStoredResponse> => {
+  try {
+    const url = `${BASE_URL}/api-stored/water-uptake?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
+    const response = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    const raw = await response.json();
+    const data: WaterUptakeStoredResponse = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.data) ? (raw as any).data
+      : Array.isArray((raw as any)?.results) ? (raw as any).results
+      : [];
+    return data;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/api-stored/water-uptake`);
+    }
+    throw error;
+  }
+};
+
+// Stored Soil Moisture (time series by year_month) - /api-stored/soil-moisture
+export interface SoilMoistureStoredItem {
+  year_month: string;
+  response_data?: {
+    total_area_ha?: number;
+    pixel_summary?: { area_hectares?: number };
+    classwise?: Array<{ area_hectares?: number; class_name?: string }>;
+    features?: Array<{ properties?: { area_ha?: number; area?: number; area_acres?: number } }>;
+  };
+  [key: string]: any;
+}
+export type SoilMoistureStoredResponse = SoilMoistureStoredItem[];
+
+export const fetchSoilMoistureStoredSeries = async (
+  district: string,
+  subdistrict: string,
+  limit: number = 50
+): Promise<SoilMoistureStoredResponse> => {
+  try {
+    const url = `${BASE_URL}/api-stored/soil-moisture?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
+    const response = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    const raw = await response.json();
+    const data: SoilMoistureStoredResponse = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.data) ? (raw as any).data
+      : Array.isArray((raw as any)?.results) ? (raw as any).results
+      : [];
+    return data;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/api-stored/soil-moisture`);
+    }
+    throw error;
+  }
+};
+
+// Dashboard indices store - POST returns stored indices for the given district, subdistrict, frequency
+export type DashboardIndicesFrequency = 'weekly' | 'monthly' | 'yearly';
+
+export interface DashboardIndicesStoredItem {
+  index_name: string;
+  period_date: string;
+  frequency: string;
+  value: number;
+  created_at: string;
+}
+
+export interface DashboardIndicesStoreResponse {
+  current?: { status?: string; from_cache?: boolean };
+  stored?: DashboardIndicesStoredItem[];
+  indices?: string[];
+  data?: unknown;
+  [key: string]: unknown;
+}
+
+export const fetchDashboardIndicesStore = async (
+  district: string,
+  subdistrict: string,
+  frequency: DashboardIndicesFrequency
+): Promise<DashboardIndicesStoreResponse> => {
+  try {
+    const url = `${BASE_URL}/dashboard-indices?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&frequency=${encodeURIComponent(frequency)}&include_predictions=true`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    // GET /dashboard-indices returns { indices: [...] }; UI expects { stored: [...] }. Normalize.
+    const raw = data as { stored?: DashboardIndicesStoredItem[]; indices?: Array<Record<string, unknown>> };
+    if (Array.isArray(raw.indices) && !Array.isArray(raw.stored)) {
+      const stored = raw.indices.map((item: Record<string, unknown>) => ({
+        index_name: String(item.index_name ?? item.indexName ?? ''),
+        period_date: String(item.period_date ?? item.periodDate ?? ''),
+        frequency: String(item.frequency ?? frequency),
+        value: Number(item.value ?? 0),
+        created_at: String(item.created_at ?? item.createdAt ?? ''),
+      })) as DashboardIndicesStoredItem[];
+      return { ...data, stored } as DashboardIndicesStoreResponse;
+    }
+    return data as DashboardIndicesStoreResponse;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/dashboard-indices`);
     }
     throw error;
   }
@@ -767,6 +1209,34 @@ export interface TalukaPlotsResponse {
     }>;
   };
 }
+
+/** Fetch boundary (district or subdistrict) as single outer ring from get-geojson API. Use when /districts or /subdistricts do not return geometry. */
+export const fetchBoundaryGeoJSON = async (name: string): Promise<Coordinate[] | null> => {
+  try {
+    const url = isDevelopment
+      ? `/api/get-geojson/${encodeURIComponent(name)}`
+      : `${BASE_URL}/get-geojson/${encodeURIComponent(name)}`;
+    const response = await fetch(url, { headers: { accept: 'application/json' } });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const fc = data.geojson || data;
+    if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features) || fc.features.length === 0)
+      return null;
+    const feature = fc.features[0];
+    const geom = feature?.geometry;
+    if (!geom || !geom.coordinates) return null;
+    let outerRing: number[][] = [];
+    if (geom.type === 'Polygon' && Array.isArray(geom.coordinates[0])) {
+      outerRing = geom.coordinates[0];
+    } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates[0]?.[0])) {
+      outerRing = geom.coordinates[0][0];
+    }
+    if (outerRing.length < 3) return null;
+    return outerRing.map((c: number[]) => [c[0], c[1]] as Coordinate);
+  } catch {
+    return null;
+  }
+};
 
 export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: string; area_ha: string; boundary: Coordinate[]}>> => {
   try {
