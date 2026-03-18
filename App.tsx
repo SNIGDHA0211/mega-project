@@ -46,6 +46,22 @@ import * as XLSX from 'xlsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
 import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
 
+/** Merged into allPlotsTileUrls when user clicks a Water Uptake %/area card (classwise tile_url); drawn on top in PlotsMap */
+const WATER_UPTAKE_CLASS_TILE_KEY = 'waterUptakeClass';
+
+/** Build Leaflet tile URL map from wateruptakeclasswise classwise[] (each class may have tile_url). */
+function waterClasswiseToTileUrlMap(classwise: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!Array.isArray(classwise)) return out;
+  classwise.forEach((c: any) => {
+    const url = c?.tile_url;
+    if (!url || typeof url !== 'string' || !url.includes('earthengine.googleapis.com')) return;
+    const id = c.class_id != null ? String(c.class_id) : String(c.class_name || 'class').replace(/\s+/g, '-');
+    out[`wu-${id}`] = url.trim();
+  });
+  return out;
+}
+
 // Local Graph icon component (acts like GoGraph from react-icons/go)
 const GoGraph: React.FC<{ size?: number; className?: string }> = ({ size = 18, className }) => (
   <LineChartIcon size={size} className={className} />
@@ -190,6 +206,8 @@ const App: React.FC = () => {
   const [waterStoredSeries, setWaterStoredSeries] = useState<GrowthStoredResponse | null>(null);
   const [soilStoredSeries, setSoilStoredSeries] = useState<GrowthStoredResponse | null>(null);
   const [selectedWaterYearMonth, setSelectedWaterYearMonth] = useState<string | null>(null);
+  /** Latest POST wateruptakeclasswise "current" snapshot (classwise includes per-class tile_url). */
+  const [waterCurrentSnapshot, setWaterCurrentSnapshot] = useState<Record<string, unknown> | null>(null);
   const [selectedSoilYearMonth, setSelectedSoilYearMonth] = useState<string | null>(null);
 
   // Dashboard indices store (frequency dropdown: weekly | monthly | yearly; indices dropdown from API)
@@ -1264,8 +1282,7 @@ const App: React.FC = () => {
           );
           
           // Log the full response to debug
-          console.log('📊 Total Area API Response:', response);
-          console.log('📊 Response keys:', Object.keys(response));
+          // Debug: root-level area_hectares logging removed for production
           console.log('📊 area_hectares:', response.area_hectares);
           console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
           console.log('📊 area:', (response as any).area);
@@ -1415,8 +1432,7 @@ const App: React.FC = () => {
           );
           
           // Log the full response to debug
-          console.log('📊 Left Total Area API Response:', response);
-          console.log('📊 Response keys:', Object.keys(response));
+          // Debug: left total area logging removed for production
           console.log('📊 area_hectares:', response.area_hectares);
           console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
           console.log('📊 area:', (response as any).area);
@@ -1564,8 +1580,7 @@ const App: React.FC = () => {
           );
           
           // Log the full response to debug
-          console.log('📊 Right Total Area API Response:', response);
-          console.log('📊 Response keys:', Object.keys(response));
+          // Debug: right total area logging removed for production
           console.log('📊 area_hectares:', response.area_hectares);
           console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
           console.log('📊 area:', (response as any).area);
@@ -1734,10 +1749,7 @@ const App: React.FC = () => {
             return;
           }
 
-          console.log(`📦 Full API Response for ${activeTab}:`, JSON.stringify(response, null, 2));
-          console.log('📦 Response keys:', Object.keys(response));
-          console.log('📦 Response plots:', response.plots);
-          console.log('📦 Response plots count:', response.plots?.length);
+          // Debug logging for full API response removed for production
           
           // Handle different response formats
           let plotsArray: any[] = [];
@@ -2061,11 +2073,25 @@ const App: React.FC = () => {
             } else if (activeTab === 'water') {
               const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
               setWaterStoredSeries(wStored);
-              if (wStored.length > 0) {
-                const inList = selectedTimeSeriesYearMonth && wStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
-                setSelectedWaterYearMonth(inList ? selectedTimeSeriesYearMonth : wStored[0].year_month);
-                if (!inList) setSelectedTimeSeriesYearMonth(wStored[0].year_month);
-              } else setSelectedWaterYearMonth(null);
+              const inList = Boolean(
+                selectedTimeSeriesYearMonth && wStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth)
+              );
+              // Default to Current so sidebar + map use API current.classwise (includes tile_url per class).
+              // Auto-selecting first stored month overwrote that with response_data often missing tile_url.
+              setSelectedWaterYearMonth(inList ? selectedTimeSeriesYearMonth : null);
+              setWaterCurrentSnapshot({ ...tabData });
+              const wuTiles = waterClasswiseToTileUrlMap(tabData.classwise);
+              if (Object.keys(wuTiles).length > 0) {
+                setAllPlotsTileUrls((prev) => {
+                  const rest = Object.fromEntries(
+                    Object.entries(prev).filter(
+                      ([key]) => !key.startsWith('wu-') && key !== WATER_UPTAKE_CLASS_TILE_KEY
+                    )
+                  );
+                  return { ...rest, ...wuTiles };
+                });
+                setShowTileLayers(true);
+              }
             } else if (activeTab === 'soil') {
               const sStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
               setSoilStoredSeries(sStored);
@@ -4066,6 +4092,129 @@ const App: React.FC = () => {
     }
   }, [activeTab, growthStoredSeries, selectedGrowthYearMonth, growthCurrentData, selectedDistrict]);
 
+  // When Water tab: when a stored year_month is selected, update sidebar cards, map tile and boundary from stored.response_data
+  useEffect(() => {
+    if (splitScreenMode) return; // Left side only for now
+    if (getActiveTab('left') !== 'water') return;
+    if (!selectedWaterYearMonth || !waterStoredSeries || waterStoredSeries.length === 0) return;
+
+    const item = waterStoredSeries.find((it) => it.year_month === selectedWaterYearMonth);
+    if (!item?.response_data) return;
+
+    const rd: any = item.response_data;
+    const pixelSummary = rd.pixel_summary || {};
+    const classwise = rd.classwise;
+    const tabData = { ...pixelSummary, classwise: Array.isArray(classwise) ? classwise : [] };
+
+    // Update analysis data so percentage / area cards use stored month values
+    setAllPlotsAnalysisData((prev) => ({
+      growth: prev?.growth || null,
+      water: tabData,
+      soil: prev?.soil || null,
+      pest: prev?.pest || null,
+      waterSource: prev?.waterSource || null,
+    }));
+
+    // Build plots from stored response_data for map + tile_url
+    let plotsArray: any[] = [];
+    if (Array.isArray(rd.plots)) {
+      plotsArray = rd.plots;
+    } else if (Array.isArray(rd.features)) {
+      plotsArray = rd.features;
+    } else if (rd.feature && rd.feature.type === 'Feature' && rd.feature.geometry) {
+      plotsArray = [rd.feature];
+    }
+
+    const wuFromStored = waterClasswiseToTileUrlMap(rd.classwise);
+
+    const tileUrlsMap: Record<string, string> = {};
+    const plotsForMap: { id: string; area_ha: string; boundary: Coordinate[] }[] = [];
+
+    plotsArray.forEach((plot: any, index: number) => {
+      const plotId =
+        plot.properties?.plot_id ||
+        plot.plot_id ||
+        plot.properties?.plot_name ||
+        plot.plot_name ||
+        `plot-${index}`;
+      const tileUrl = plot.properties?.tile_url || plot.tile_url;
+
+      if (tileUrl && typeof tileUrl === 'string' && tileUrl.includes('earthengine.googleapis.com')) {
+        tileUrlsMap[String(plotId)] = tileUrl.trim();
+      }
+
+      // Geometry → boundary for map
+      let coordinates: number[][] = [];
+      if (plot.geometry && plot.geometry.coordinates) {
+        const geomCoords = plot.geometry.coordinates;
+        if (plot.geometry.type === 'Polygon' && Array.isArray(geomCoords) && geomCoords.length > 0) {
+          const firstRing = geomCoords[0];
+          if (Array.isArray(firstRing) && firstRing.length > 0 && Array.isArray(firstRing[0])) {
+            if (firstRing[0].length === 2 && typeof firstRing[0][0] === 'number') {
+              coordinates = firstRing as unknown as number[][];
+            }
+          }
+        } else if (Array.isArray(geomCoords) && geomCoords.length > 0) {
+          const firstItem = geomCoords[0];
+          if (Array.isArray(firstItem) && firstItem.length === 2 && typeof firstItem[0] === 'number') {
+            coordinates = geomCoords as unknown as number[][];
+          }
+        }
+      } else if (plot.coordinates && Array.isArray(plot.coordinates)) {
+        coordinates = plot.coordinates;
+      }
+
+      if (coordinates && coordinates.length >= 3) {
+        const boundary: Coordinate[] = coordinates
+          .filter((coord: any) => Array.isArray(coord) && coord.length >= 2)
+          .map((coord: any) => [coord[0], coord[1]] as Coordinate);
+        if (boundary.length >= 3 && plotId) {
+          plotsForMap.push({
+            id: String(plotId),
+            area_ha: String(plot.properties?.area_acres || plot.area_acres || 0),
+            boundary,
+          });
+        }
+      }
+    });
+
+    setAllPlotsTileUrls((prev) => {
+      const withoutWu = Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith('wu-')));
+      return { ...withoutWu, ...tileUrlsMap, ...wuFromStored };
+    });
+    if (Object.keys(tileUrlsMap).length > 0 || Object.keys(wuFromStored).length > 0) {
+      setShowTileLayers(true);
+    }
+    if (plotsForMap.length > 0) {
+      setAllPlots(plotsForMap);
+      const plotIds = plotsForMap.map((p) => p.id);
+      setAvailablePlots(plotIds);
+      setTotalPlotsCount(plotIds.length);
+    }
+  }, [splitScreenMode, selectedWaterYearMonth, waterStoredSeries, activeTab, selectedDistrict]);
+
+  // Water tab: returning to "Current" restores sidebar + class tiles from latest API snapshot
+  useEffect(() => {
+    if (splitScreenMode) return;
+    if (activeTab !== 'water') return;
+    if (selectedWaterYearMonth != null) return;
+    if (!waterCurrentSnapshot || !Array.isArray((waterCurrentSnapshot as any).classwise)) return;
+
+    setAllPlotsAnalysisData((prev) => ({
+      ...prev,
+      water: waterCurrentSnapshot as any,
+    }));
+    const wuTiles = waterClasswiseToTileUrlMap((waterCurrentSnapshot as any).classwise);
+    if (Object.keys(wuTiles).length === 0) return;
+    setAllPlotsTileUrls((prev) => {
+      const rest = Object.fromEntries(
+        Object.entries(prev).filter(([key]) => !key.startsWith('wu-') && key !== WATER_UPTAKE_CLASS_TILE_KEY)
+      );
+      return { ...rest, ...wuTiles };
+    });
+    setShowTileLayers(true);
+  }, [activeTab, selectedWaterYearMonth, waterCurrentSnapshot, splitScreenMode]);
+
   // When a stored pest year_month is selected for left side, update hierarchy, sidebar cards and map tile
   useEffect(() => {
     if (!splitScreenMode || getActiveTab('left') !== 'pest' || !leftPestStoredSeries || !leftSelectedPestYearMonth) return;
@@ -5077,7 +5226,22 @@ const App: React.FC = () => {
                         setShowPestChildren(!!children && Object.keys(children).length > 0);
                       }
                     } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                      if (splitScreenMode) {
+                      if (currentTab === 'water') {
+                        // Keep district/plot base tile; add class raster on top (replacing whole map dropped base layer)
+                        if (splitScreenMode) {
+                          setLeftAllPlotsTileUrls((prev) => ({
+                            ...prev,
+                            [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
+                          }));
+                          setLeftShowTileLayers(true);
+                        } else {
+                          setAllPlotsTileUrls((prev) => ({
+                            ...prev,
+                            [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
+                          }));
+                          setShowTileLayers(true);
+                        }
+                      } else if (splitScreenMode) {
                         setLeftAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
                         setLeftShowTileLayers(true);
                       } else {
@@ -6898,8 +7062,27 @@ const App: React.FC = () => {
               <div className="flex items-center gap-1">
                 <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronLeft size={14} /></button>
                 <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedWaterYearMonth(null);
+                    }}
+                    className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedWaterYearMonth == null ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                  >
+                    Current
+                  </button>
                   {[...(waterStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
-                    <button key={`water-${item.year_month}-${idx}`} type="button" onClick={() => { setSelectedTimeSeriesYearMonth(item.year_month); setSelectedWaterYearMonth(item.year_month); }} className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedTimeSeriesYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}>{item.year_month}</button>
+                    <button
+                      key={`water-${item.year_month}-${idx}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTimeSeriesYearMonth(item.year_month);
+                        setSelectedWaterYearMonth(item.year_month);
+                      }}
+                      className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedWaterYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                    >
+                      {item.year_month}
+                    </button>
                   ))}
                 </div>
                 <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronRight size={14} /></button>
@@ -8607,7 +8790,14 @@ const App: React.FC = () => {
                                 setShowPestChildren(!!children && Object.keys(children).length > 0);
                               }
                             } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                              setRightAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
+                              if (currentTab === 'water') {
+                                setRightAllPlotsTileUrls((prev) => ({
+                                  ...prev,
+                                  [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
+                                }));
+                              } else {
+                                setRightAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
+                              }
                               setRightShowTileLayers(true);
                             }
                           }}

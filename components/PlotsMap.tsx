@@ -149,14 +149,16 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               // Keep a single warning for malformed URLs, but avoid noisy logs for normal tiles
               console.warn(`Tile URL missing required placeholders for plot ${plotId}:`, url);
             }
+            // Water Uptake: classwise GEE tiles (wu-*) or single card overlay (waterUptakeClass)
+            const isWaterClassOverlay = plotId === 'waterUptakeClass' || plotId.startsWith('wu-');
             return (
               <TileLayer
-                key={`tile-${plotId}`}
+                key={isWaterClassOverlay ? `tile-water-class-${url.slice(-40)}` : `tile-${plotId}`}
                 url={url}
                 maxZoom={20}
                 minZoom={0}
-                opacity={0.6}
-                zIndex={1000}
+                opacity={isWaterClassOverlay ? 0.78 : 0.6}
+                zIndex={isWaterClassOverlay ? 2500 : 1000}
                 attribution="Google Earth Engine"
                 crossOrigin={true}
                 errorTileUrl=""
@@ -199,12 +201,12 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             key={plot.id}
             positions={polygonCoords}
             pathOptions={{
-              // Boundary-only (district/subdistrict): visible blue border + light fill so boundary shows on map
+              // Boundary-only (district/subdistrict): white outline (readable on satellite)
               ...(isBoundaryOnly
                 ? {
-                    color: '#2563eb',
-                    fillColor: '#2563eb',
-                    fillOpacity: 0.12,
+                    color: '#ffffff',
+                    fillColor: '#ffffff',
+                    fillOpacity: 0.08,
                     weight: 3,
                     opacity: 1,
                   }
