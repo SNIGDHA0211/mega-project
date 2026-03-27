@@ -45,6 +45,7 @@ import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
 import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
+import { MdFullscreen, MdFullscreenExit } from 'react-icons/md';
 
 /** Merged into allPlotsTileUrls when user clicks a Water Uptake %/area card (classwise tile_url); drawn on top in PlotsMap */
 const WATER_UPTAKE_CLASS_TILE_KEY = 'waterUptakeClass';
@@ -264,6 +265,8 @@ const App: React.FC = () => {
   // State for sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
   const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
+  const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
+  const [fullscreenIndexCard, setFullscreenIndexCard] = useState<string | null>(null);
   // State for sidebar expanded (full dropdowns + %/area) vs collapsed (icon-only); double-click toggles
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(false);
   // Which icon card is shown next to left sidebar (click icon = show card beside it, not full sidebar)
@@ -430,6 +433,11 @@ const App: React.FC = () => {
     if (!splitScreenMode) return error;
     return side === 'left' ? leftError : rightError;
   };
+
+  useEffect(() => {
+    const t = window.setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+    return () => window.clearTimeout(t);
+  }, [isMapFullscreen]);
 
   // Ref for time series scrollable container
   const timeSeriesScrollRef = useRef<HTMLDivElement>(null);
@@ -756,6 +764,7 @@ const App: React.FC = () => {
           subdistrict: selectedSubdistrict || '',
           village: selectedVillage || '',
           stored,
+          frequency: dashboardIndicesFrequency,
         },
         filename
       );
@@ -3836,11 +3845,11 @@ const App: React.FC = () => {
 
   // Growth/Water/Soil time series year_month come from analyze_* response (set in loadAnalysisData). No separate api-stored fetch.
 
-  // Fetch dashboard indices store when district, subdistrict and frequency are set
+  // Fetch dashboard indices store when district/frequency are set; optional subdistrict/village refine data
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (!selectedDistrict || !selectedSubdistrict) {
+      if (!selectedDistrict) {
         if (!cancelled) {
           setDashboardIndicesData(null);
           setDashboardIndicesError(null);
@@ -3851,7 +3860,12 @@ const App: React.FC = () => {
       try {
         setDashboardIndicesLoading(true);
         setDashboardIndicesError(null);
-        const data = await fetchDashboardIndicesStore(selectedDistrict, selectedSubdistrict, dashboardIndicesFrequency);
+        const data = await fetchDashboardIndicesStore(
+          selectedDistrict,
+          selectedSubdistrict || '',
+          dashboardIndicesFrequency,
+          selectedVillage || ''
+        );
         if (!cancelled) {
           setDashboardIndicesData(data);
           const raw = data as any;
@@ -3873,7 +3887,7 @@ const App: React.FC = () => {
     };
     run();
     return () => { cancelled = true; };
-  }, [selectedDistrict, selectedSubdistrict, dashboardIndicesFrequency]);
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage, dashboardIndicesFrequency]);
 
   // Fetch Pest stored time series for left side (split screen mode)
   useEffect(() => {
@@ -4659,17 +4673,6 @@ const App: React.FC = () => {
             <div className="flex flex-wrap items-end justify-between gap-3 px-4 md:px-6 pb-3">
               <div className="flex flex-wrap items-end gap-3">
               <div>
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Crops</label>
-                <select
-                  value={selectedCrop}
-                  onChange={(e) => { setSelectedCrop(e.target.value); setSelectedVillage(''); }}
-                  className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
-                >
-                  <option value="">-- Select Crop --</option>
-                  <option value="sugarcane">Sugarcane</option>
-                </select>
-              </div>
-              <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">District</label>
                 <select
                   value={selectedDistrict}
@@ -4723,7 +4726,7 @@ const App: React.FC = () => {
                   <option value="yearly">Yearly</option>
                 </select>
               </div>
-              {dashboardIndicesError && selectedDistrict && selectedSubdistrict && (
+              {dashboardIndicesError && selectedDistrict && (
                 <div className="text-[10px] text-red-400 flex items-center gap-1 w-full basis-full">
                   {dashboardIndicesError}
                 </div>
@@ -4763,9 +4766,9 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex-1 p-4 md:p-6 overflow-auto">
-            {!selectedDistrict || !selectedSubdistrict ? (
+            {!selectedDistrict ? (
               <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
-                <p className="text-gray-400">Select District and Subdistrict, then choose Frequency to load indices data.</p>
+                <p className="text-gray-400">Select District, then choose Frequency to load indices data. Subdistrict and Village are optional filters.</p>
               </div>
             ) : dashboardIndicesLoading ? (
               <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
@@ -4776,6 +4779,17 @@ const App: React.FC = () => {
               (() => {
                 const stored = (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored;
                 const INDEX_NAMES = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
+                const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_NAMES)[number], string> = {
+                  ndvi: 'Crop Health (NDVI)',
+                  evi: 'Plantation thickness (EVI)',
+                  gndvi: 'Fertilizer status (GNDVI)',
+                  lst: 'Heat Stress (LST)',
+                  ndbi: 'Non Farm Area (NDBI)',
+                  ndmi: 'Soil Moisture (NDMI)',
+                  ndre: 'Crop Stress (NDRE)',
+                  evi2: 'Crop Yield Potential (EVI2)',
+                  bsi: 'Bare Soil Index (BSI)',
+                };
                 const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
                 INDEX_NAMES.forEach(name => { byIndex[name] = []; });
                 stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
@@ -4794,78 +4808,168 @@ const App: React.FC = () => {
                 const yearPalette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444'];
                 return (
                   <div id="dashboard-indices-cards" className="w-full px-4 md:px-6 space-y-6">
+                    {fullscreenIndexCard && (
+                      <div
+                        className="fixed inset-0 z-[1190] bg-black/60"
+                        onClick={() => setFullscreenIndexCard(null)}
+                        aria-hidden="true"
+                      />
+                    )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
                       {INDEX_NAMES.map((indexName) => {
                         const points = byIndex[indexName] || [];
-                        const latest = points.length > 0 ? points[points.length - 1] : null;
                         const titleColor = cardColors[indexName] ?? '#6b7280';
 
-                        // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
-                        const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                        const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
-                        const yearsSet = new Set<number>();
+                        const isYearlyFreq = dashboardIndicesFrequency === 'yearly';
 
-                        points.forEach((p) => {
-                          const date = new Date(p.period_date);
-                          if (isNaN(date.getTime())) return;
-                          const year = date.getFullYear();
-                          const monthIndex = date.getMonth();
-                          const monthLabel = date.toLocaleString('en-US', { month: 'short' });
-                          const key = `${monthIndex}-${monthLabel}`;
-                          yearsSet.add(year);
-                          if (!monthMap[key]) {
-                            monthMap[key] = { month: monthLabel, monthIndex };
-                          }
-                          monthMap[key][String(year)] = p.value;
-                        });
-
-                        const years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
-                        // One row per month (12 rows); missing values are null so lines connect across gaps
-                        const chartData = MONTH_LABELS.map((month, monthIndex) => {
-                          const key = `${monthIndex}-${month}`;
-                          const entry = monthMap[key];
-                          const row: Record<string, string | number | null> = { month };
-                          years.forEach((y) => {
-                            const val = entry != null ? entry[y] : undefined;
-                            row[y] = typeof val === 'number' && !isNaN(val) ? val : null;
+                        // Yearly API: one value per calendar year — x-axis shows years, not months
+                        let chartData: Array<Record<string, string | number | null>>;
+                        let years: string[];
+                        const isWeeklyFreq = dashboardIndicesFrequency === 'weekly';
+                        if (isYearlyFreq) {
+                          const currentCalendarYear = new Date().getFullYear();
+                          const byYear = new Map<number, number>();
+                          points.forEach((p) => {
+                            const date = new Date(p.period_date);
+                            if (isNaN(date.getTime())) return;
+                            const y = date.getFullYear();
+                            if (y > currentCalendarYear) return;
+                            byYear.set(y, p.value);
                           });
-                          return row;
-                        });
+                          chartData = Array.from(byYear.entries())
+                            .sort((a, b) => a[0] - b[0])
+                            .map(([y, value]) => ({ year: String(y), value }));
+                          years = [];
+                        } else if (isWeeklyFreq) {
+                          // Weekly: keep all period_date points and place them between month ticks
+                          const yearsSet = new Set<number>();
+                          const xRows: Record<string, Record<string, string | number | null>> = {};
+                          points.forEach((p) => {
+                            const date = new Date(p.period_date);
+                            if (isNaN(date.getTime())) return;
+                            const year = date.getFullYear();
+                            yearsSet.add(year);
+                            const monthIndex = date.getMonth();
+                            const day = date.getDate();
+                            const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+                            const x = monthIndex + (Math.max(1, day) - 1) / Math.max(1, daysInMonth);
+                            const xKey = x.toFixed(4);
+                            if (!xRows[xKey]) {
+                              xRows[xKey] = { x };
+                            }
+                            xRows[xKey][String(year)] = p.value;
+                          });
+                          years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
+                          chartData = Object.values(xRows).sort((a, b) => Number(a.x) - Number(b.x));
+                        } else {
+                          // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
+                          const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                          const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
+                          const monthYearAgg: Record<string, Record<string, { sum: number; count: number }>> = {};
+                          const yearsSet = new Set<number>();
+
+                          points.forEach((p) => {
+                            const date = new Date(p.period_date);
+                            if (isNaN(date.getTime())) return;
+                            const year = date.getFullYear();
+                            const monthIndex = date.getMonth();
+                            const monthLabel = date.toLocaleString('en-US', { month: 'short' });
+                            const key = `${monthIndex}-${monthLabel}`;
+                            yearsSet.add(year);
+                            if (!monthMap[key]) {
+                              monthMap[key] = { month: monthLabel, monthIndex };
+                            }
+                            const yearKey = String(year);
+                            if (!monthYearAgg[key]) monthYearAgg[key] = {};
+                            if (!monthYearAgg[key][yearKey]) monthYearAgg[key][yearKey] = { sum: 0, count: 0 };
+                            monthYearAgg[key][yearKey].sum += p.value;
+                            monthYearAgg[key][yearKey].count += 1;
+                          });
+
+                          years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
+                          chartData = MONTH_LABELS.map((month, monthIndex) => {
+                            const key = `${monthIndex}-${month}`;
+                            const entry = monthMap[key];
+                            const row: Record<string, string | number | null> = { month };
+                            years.forEach((y) => {
+                              const agg = monthYearAgg[key]?.[y];
+                              const val = agg && agg.count > 0 ? agg.sum / agg.count : undefined;
+                              row[y] = typeof val === 'number' && !isNaN(val) ? val : null;
+                            });
+                            return row;
+                          });
+                        }
+
+                        const latestForHeader = (() => {
+                          if (isYearlyFreq) {
+                            if (chartData.length === 0) return null;
+                            const lastRow = chartData[chartData.length - 1];
+                            const v = lastRow.value;
+                            return typeof v === 'number' ? { value: v } : null;
+                          }
+                          return points.length > 0 ? points[points.length - 1] : null;
+                        })();
 
                         return (
                           <div
                             key={indexName}
-                            className="rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px]"
+                            className={`rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px] ${
+                              fullscreenIndexCard === indexName ? 'fixed inset-4 z-[1200] shadow-2xl bg-gray-900' : ''
+                            }`}
                           >
                             <div className="flex items-center justify-between mb-2">
-                              <span className="text-sm font-semibold text-gray-200 uppercase" style={{ color: titleColor }}>
-                                {indexName}
+                              <span className="text-sm font-semibold text-gray-200 leading-tight pr-2" style={{ color: titleColor }}>
+                                {INDEX_DISPLAY_LABELS[indexName] ?? indexName}
                               </span>
-                              {latest && (
-                                <span className="text-xs text-gray-400">
-                                  {typeof latest.value === 'number' && (latest.value > 1000 || latest.value < -1000)
-                                    ? latest.value.toExponential(2)
-                                    : typeof latest.value === 'number'
-                                      ? latest.value.toFixed(4)
-                                      : String(latest.value)}
-                                </span>
-                              )}
+                              <div className="flex items-center gap-2">
+                                {latestForHeader && (
+                                  <span className="text-xs text-gray-400">
+                                    {typeof latestForHeader.value === 'number' && (latestForHeader.value > 1000 || latestForHeader.value < -1000)
+                                      ? latestForHeader.value.toExponential(2)
+                                      : typeof latestForHeader.value === 'number'
+                                        ? latestForHeader.value.toFixed(4)
+                                        : String(latestForHeader.value)}
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setFullscreenIndexCard(fullscreenIndexCard === indexName ? null : indexName)}
+                                  className="p-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
+                                  title={fullscreenIndexCard === indexName ? 'Exit fullscreen' : 'Fullscreen'}
+                                >
+                                  {fullscreenIndexCard === indexName ? <MdFullscreenExit size={18} /> : <MdFullscreen size={18} />}
+                                </button>
+                              </div>
                             </div>
                             <div className="text-[10px] text-gray-500 mb-1">
-                              {points.length} points · {dashboardIndicesFrequency}
+                              {(isYearlyFreq ? chartData.length : points.length)} points · {dashboardIndicesFrequency}
                             </div>
                             {chartData.length > 0 ? (
-                              <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: '70vh' }}>
-                                <ResponsiveContainer width="100%" height={220}>
+                              <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: fullscreenIndexCard === indexName ? '85vh' : '70vh' }}>
+                                <ResponsiveContainer width="100%" height={fullscreenIndexCard === indexName ? 420 : 220}>
                                   <LineChart
                                     data={chartData}
-                                    margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                                    margin={{
+                                      top: 10,
+                                      right: 10,
+                                      left: 0,
+                                      bottom: isYearlyFreq && chartData.length > 10 ? 36 : 20,
+                                    }}
                                   >
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                     <XAxis
-                                      dataKey="month"
-                                      tick={{ fill: '#9ca3af', fontSize: 10 }}
-                                      interval="preserveStartEnd"
+                                      dataKey={isYearlyFreq ? 'year' : (isWeeklyFreq ? 'x' : 'month')}
+                                      type={isWeeklyFreq ? 'number' : 'category'}
+                                      domain={isWeeklyFreq ? [0, 11.999] : undefined}
+                                      ticks={isWeeklyFreq ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : undefined}
+                                      tickFormatter={isWeeklyFreq
+                                        ? (v: number) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Math.max(0, Math.min(11, Math.floor(v)))] ?? ''
+                                        : undefined}
+                                      tick={{ fill: '#9ca3af', fontSize: isYearlyFreq && chartData.length > 12 ? 9 : 10 }}
+                                      interval={isYearlyFreq || isWeeklyFreq ? 0 : 'preserveStartEnd'}
+                                      angle={isYearlyFreq && chartData.length > 10 ? -40 : 0}
+                                      textAnchor={isYearlyFreq && chartData.length > 10 ? 'end' : 'middle'}
+                                      height={isYearlyFreq && chartData.length > 10 ? 48 : 24}
                                     />
                                     <YAxis
                                       width={48}
@@ -4884,26 +4988,50 @@ const App: React.FC = () => {
                                         typeof value === 'number' ? value.toFixed(4) : value,
                                         name,
                                       ]}
-                                      labelFormatter={(label) => label}
+                                      labelFormatter={(label) => {
+                                        if (!isWeeklyFreq) return label;
+                                        const x = typeof label === 'number' ? label : Number(label);
+                                        if (!Number.isFinite(x)) return label;
+                                        const monthIdx = Math.max(0, Math.min(11, Math.floor(x)));
+                                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                        const approxDay = Math.max(1, Math.min(31, Math.round((x - monthIdx) * 31 + 1)));
+                                        return `${monthNames[monthIdx]} ${approxDay}`;
+                                      }}
                                     />
-                                    <Legend
-                                      verticalAlign="bottom"
-                                      height={20}
-                                      wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
-                                    />
-                                    {years.map((yearKey, idx) => (
+                                    {!isYearlyFreq && (
+                                      <Legend
+                                        verticalAlign="bottom"
+                                        height={20}
+                                        wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
+                                      />
+                                    )}
+                                    {isYearlyFreq ? (
                                       <Line
-                                        key={yearKey}
                                         type="monotone"
-                                        dataKey={yearKey}
-                                        stroke={yearPalette[idx % yearPalette.length]}
-                                        dot={{ r: 2 }}
-                                        strokeWidth={1.5}
+                                        dataKey="value"
+                                        name="Value"
+                                        stroke={titleColor}
+                                        dot={{ r: 3 }}
+                                        strokeWidth={2}
                                         connectNulls
                                         isAnimationActive
                                         animationDuration={600}
                                       />
-                                    ))}
+                                    ) : (
+                                      years.map((yearKey, idx) => (
+                                        <Line
+                                          key={yearKey}
+                                          type="monotone"
+                                          dataKey={yearKey}
+                                          stroke={yearPalette[idx % yearPalette.length]}
+                                          dot={{ r: 2 }}
+                                          strokeWidth={1.5}
+                                          connectNulls
+                                          isAnimationActive
+                                          animationDuration={600}
+                                        />
+                                      ))
+                                    )}
                                   </LineChart>
                                 </ResponsiveContainer>
                               </div>
@@ -4919,16 +5047,16 @@ const App: React.FC = () => {
               })()
             ) : (
               <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
-                <p className="text-gray-400">Select District, Subdistrict and Frequency to load indices. Data will appear here after selection.</p>
+                <p className="text-gray-400">Select District and Frequency to load indices. Subdistrict and Village can be selected to further filter data.</p>
               </div>
             )}
           </div>
         </div>
       ) : (
         <>
-      {/* Header bar - Home + Split (left), title, Download + Logout (right) */}
-      <header className="flex-shrink-0 grid grid-cols-[1fr_auto_1fr] items-center gap-2 md:gap-3 px-4 md:px-6 py-3 border-b border-gray-700 bg-gray-800 z-20">
-        <div className="flex items-center gap-1.5 md:gap-2 justify-self-start">
+      {/* Header: left = nav + title, center = analysis tabs (normal screen), right = actions */}
+      <header className="flex-shrink-0 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 md:gap-3 px-4 md:px-6 py-2 border-b border-gray-700 bg-gray-800 z-20">
+        <div className="flex items-center gap-2 md:gap-3 justify-self-start min-w-0">
           <button
             onClick={() => setSidebarVisible(!sidebarVisible)}
             className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
@@ -4948,7 +5076,6 @@ const App: React.FC = () => {
           >
             {splitScreenMode ? <Maximize2 size={16} className="md:w-[18px] md:h-[18px]" /> : <Columns size={16} className="md:w-[18px] md:h-[18px]" />}
           </button>
-          {/* Bar Graph - opens new page */}
           <button
             type="button"
             onClick={() => setShowGraphPage(true)}
@@ -4957,16 +5084,194 @@ const App: React.FC = () => {
           >
             <TrendingUp size={18} />
           </button>
+          <h1 className="text-sm md:text-base font-bold text-green-400 truncate min-w-0">
+            <BlurText
+              text="Nearlive Crop Monitoring"
+              animateBy="words"
+              direction="top"
+              delay={100}
+              className="text-green-400"
+            />
+          </h1>
         </div>
-        <h1 className="text-lg md:text-xl font-bold text-green-400 shrink-0 justify-self-center">
-          <BlurText 
-            text="Nearlive Crop Monitoring" 
-            animateBy="words"
-            direction="top"
-            delay={100}
-            className="text-green-400"
-          />
-        </h1>
+
+        <div className="justify-self-center min-w-0 max-w-[min(100vw-12rem,52rem)] flex justify-center">
+          {!splitScreenMode && (
+            <div className="flex gap-1 md:gap-1.5 bg-black/40 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto scrollbar-hide">
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('growth', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Growth (double-click when active to close)"
+              >
+                <Sprout size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('water', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Water Uptake (double-click when active to close)"
+              >
+                <Droplets size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('soil', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Soil Moisture (double-click when active to close)"
+              >
+                <Droplet size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('pest', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Pest (double-click when active to close)"
+              >
+                <Bug size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('waterSource', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Water Source (double-click when active to close)"
+              >
+                <Waves size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTabForSide('forest', 'left')}
+                onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Forest (double-click when active to close)"
+              >
+                <Trees size={16} />
+              </button>
+              <div
+                onClick={async () => {
+                  if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
+                  if (lstLoading || loading || !selectedDistrict) return;
+                  setMethaneTileUrl(null);
+                  setMethaneEnabled(false);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  lstClosedByUserRef.current = false;
+                  try {
+                    setLstLoading(true);
+                    setError(null);
+                    const response = await fetchLandSurfaceTemperature(selectedDistrict);
+                    if (lstClosedByUserRef.current) return;
+                    if (response.tile_url) {
+                      setLstTileUrl(response.tile_url);
+                      setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
+                      setShowTileLayers(true);
+                    } else {
+                      throw new Error('No tile_url in response');
+                    }
+                  } catch (err) {
+                    if (lstClosedByUserRef.current) return;
+                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                    setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
+                    setLstTileUrl(null);
+                  } finally {
+                    setLstLoading(false);
+                  }
+                }}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!lstTileUrl) return;
+                  lstClosedByUserRef.current = true;
+                  lastLstDoubleClickRef.current = Date.now();
+                  setLstTileUrl(null);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                }}
+                role="button"
+                tabIndex={0}
+                className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center shrink-0 ${
+                  selectedDistrict && !lstLoading && !loading
+                    ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600'
+                    : 'cursor-not-allowed opacity-50'
+                } ${lstTileUrl ? 'bg-green-600/20 border-green-500' : 'bg-gray-700 border-gray-600'}`}
+                title="Land Surface Temperature (double-click when active to close)"
+              >
+                <span className="text-base">🌡️</span>
+              </div>
+              <div
+                onClick={async () => {
+                  if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
+                  if (methaneLoading || loading || !selectedDistrict) return;
+                  setLstTileUrl(null);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
+                  methaneClosedByUserRef.current = false;
+                  try {
+                    setMethaneLoading(true);
+                    setError(null);
+                    const response = await fetchMethane(selectedDistrict, selectedSubdistrict || undefined);
+                    if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
+                    if (response.tile_url) {
+                      setMethaneTileUrl(response.tile_url);
+                      setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
+                      setShowTileLayers(true);
+                      setMethaneEnabled(true);
+                    } else {
+                      throw new Error('No tile_url in response');
+                    }
+                  } catch (err) {
+                    if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
+                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                    setError(`Failed to load Methane Concentration: ${errorMessage}`);
+                    setMethaneTileUrl(null);
+                    setMethaneEnabled(true);
+                  } finally {
+                    setMethaneLoading(false);
+                  }
+                }}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!methaneTileUrl) return;
+                  methaneClosedByUserRef.current = true;
+                  lastMethaneDoubleClickRef.current = Date.now();
+                  setMethaneTileUrl(null);
+                  setMethaneEnabled(false);
+                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
+                }}
+                role="button"
+                tabIndex={0}
+                className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center shrink-0 ${
+                  methaneEnabled && !methaneLoading && !loading
+                    ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600'
+                    : 'cursor-pointer opacity-50'
+                } ${methaneTileUrl ? 'bg-blue-600/20 border-blue-500' : 'bg-gray-700 border-gray-600'}`}
+                title="Methane Concentration (double-click when active to close)"
+              >
+                <span className="text-base">💨</span>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center gap-1.5 md:gap-2 justify-self-end">
           {/* Download - right side */}
           <div className="relative">
@@ -5389,224 +5694,44 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Top Navigation Tabs and Legend - Centered (only show when NOT in split screen mode) */}
-        {!splitScreenMode && (
-        <div className="absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 w-auto px-2 md:px-0">
-          {/* Active Tab Buttons - icons only */}
-          <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto w-auto">
+          {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
+        <div
+          className={`relative min-h-[min(320px,40vh)] ${
+            splitScreenMode
+              ? 'flex-1 w-1/2 border-r border-gray-700'
+              : isMapFullscreen
+                ? 'w-full flex-1 min-h-[calc(100vh-140px)]'
+                : 'flex-1 max-h-[55vh] min-h-[280px]'
+          }`}
+        >
+          {!splitScreenMode && (
             <button
-              onClick={() => setActiveTabForSide('growth', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Growth (double-click when active to close)"
+              type="button"
+              onClick={() => setIsMapFullScreen((p) => !p)}
+              className="absolute top-4 left-4 z-[1100] p-2 rounded-lg bg-black/60 border border-gray-700 text-gray-200 hover:bg-black/75 transition-colors flex items-center justify-center"
+              title={isMapFullscreen ? 'Exit fullscreen map' : 'Fullscreen map'}
             >
-              <Sprout size={18} />
+              {isMapFullscreen ? <MdFullscreenExit size={22} /> : <MdFullscreen size={22} />}
             </button>
-            <button
-              onClick={() => setActiveTabForSide('water', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Water Uptake (double-click when active to close)"
-            >
-              <Droplets size={18} />
-            </button>
-            <button
-              onClick={() => setActiveTabForSide('soil', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Soil Moisture (double-click when active to close)"
-            >
-              <Droplet size={18} />
-            </button>
-            <button
-              onClick={() => setActiveTabForSide('pest', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Pest (double-click when active to close)"
-            >
-              <Bug size={18} />
-            </button>
-            <button
-              onClick={() => setActiveTabForSide('waterSource', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Water Source (double-click when active to close)"
-            >
-              <Waves size={18} />
-            </button>
-            <button
-              onClick={() => setActiveTabForSide('forest', 'left')}
-              onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center ${
-                getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-              }`}
-              title="Forest (double-click when active to close)"
-            >
-              <Trees size={18} />
-            </button>
-
-            {/* Land Surface Temperature Card - Inline; double-click when active to close (same as Pest/Water etc) */}
-            <div 
-              onClick={async () => {
-                if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
-                if (lstLoading || loading || !selectedDistrict) return;
-                // Only one of Land Surface or Methane at a time: turn off Methane when opening Land Surface
-                setMethaneTileUrl(null);
-                setMethaneEnabled(false);
-                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                lstClosedByUserRef.current = false;
-                try {
-                  setLstLoading(true);
-                  setError(null);
-                  
-                  const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                  
-                  if (lstClosedByUserRef.current) return;
-                  if (response.tile_url) {
-                    setLstTileUrl(response.tile_url);
-                    setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                    setShowTileLayers(true);
-                  } else {
-                    throw new Error('No tile_url in response');
-                  }
-                } catch (err) {
-                  if (lstClosedByUserRef.current) return;
-                  const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                  setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                  setLstTileUrl(null);
-                } finally {
-                  setLstLoading(false);
-                }
-              }}
-              onDoubleClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (!lstTileUrl) return;
-                lstClosedByUserRef.current = true;
-                lastLstDoubleClickRef.current = Date.now();
-                setLstTileUrl(null);
-                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-              }}
-              role="button"
-              tabIndex={0}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                selectedDistrict && !lstLoading && !loading
-                  ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
-                  : 'cursor-not-allowed opacity-50'
-              } ${
-                lstTileUrl 
-                  ? 'bg-green-600/20 border-green-500' 
-                  : 'bg-gray-700 border-gray-600'
-              }`}
-              title="Land Surface Temperature (double-click when active to close)"
-            >
-              <span className="text-lg">🌡️</span>
-            </div>
-
-            {/* Methane Concentration Card - Inline; double-click when active to close (same as Pest/Water etc) */}
-            <div 
-              onClick={async () => {
-                if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
-                if (methaneLoading || loading || !selectedDistrict) return;
-                // Only one of Land Surface or Methane at a time: turn off Land Surface when opening Methane
-                setLstTileUrl(null);
-                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                methaneClosedByUserRef.current = false;
-                try {
-                  setMethaneLoading(true);
-                  setError(null);
-                  
-                  const response = await fetchMethane(
-                    selectedDistrict,
-                    selectedSubdistrict || undefined
-                  );
-                  
-                  if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
-                  if (response.tile_url) {
-                    setMethaneTileUrl(response.tile_url);
-                    setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
-                    setShowTileLayers(true);
-                    setMethaneEnabled(true);
-                  } else {
-                    throw new Error('No tile_url in response');
-                  }
-                } catch (err) {
-                  if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
-                  const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                  setError(`Failed to load Methane Concentration: ${errorMessage}`);
-                  setMethaneTileUrl(null);
-                  setMethaneEnabled(true);
-                } finally {
-                  setMethaneLoading(false);
-                }
-              }}
-              onDoubleClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (!methaneTileUrl) return;
-                methaneClosedByUserRef.current = true;
-                lastMethaneDoubleClickRef.current = Date.now();
-                setMethaneTileUrl(null);
-                setMethaneEnabled(false);
-                setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-              }}
-              role="button"
-              tabIndex={0}
-              className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                methaneEnabled && !methaneLoading && !loading
-                  ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
-                  : 'cursor-pointer opacity-50'
-              } ${
-                methaneTileUrl 
-                  ? 'bg-blue-600/20 border-blue-500' 
-                  : 'bg-gray-700 border-gray-600'
-              }`}
-              title="Methane Concentration (double-click when active to close)"
-            >
-              <span className="text-lg">💨</span>
-            </div>
-
-          </div>
-
-          {/* Legend circles only for waterSource and forest; pest uses sidebar cards with click-to-show on map */}
-          {getActiveTab('left') && (getActiveTab('left') === 'waterSource' || getActiveTab('left') === 'forest') && (
-            <LegendCircles
-              type={getActiveTab('left')!}
-              data={currentPixelData}
-              onForestAgeClassClick={(ageClass, tileUrl, areaHa) => {
-                setSelectedForestAgeClass(ageClass);
-                setForestTileUrl(tileUrl);
-                setForestAreaHa(areaHa);
-                if (splitScreenMode) {
-                  setLeftAllPlotsTileUrls({ 'forest': tileUrl });
-                  setLeftShowTileLayers(true);
-                } else {
+          )}
+          {/* Water / Forest legend (normal mode only — tabs moved to header) */}
+          {!splitScreenMode && !isMapFullscreen && getActiveTab('left') && (getActiveTab('left') === 'waterSource' || getActiveTab('left') === 'forest') && (
+            <div className="absolute top-28 md:top-20 left-1/2 -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 w-auto max-w-[calc(100vw-2rem)]">
+              <LegendCircles
+                type={getActiveTab('left')!}
+                data={currentPixelData}
+                onForestAgeClassClick={(ageClass, tileUrl, areaHa) => {
+                  setSelectedForestAgeClass(ageClass);
+                  setForestTileUrl(tileUrl);
+                  setForestAreaHa(areaHa);
                   setAllPlotsTileUrls({ 'forest': tileUrl });
                   setShowTileLayers(true);
-                }
-              }}
-            />
+                }}
+              />
+            </div>
           )}
-        </div>
-        )}
-
-          {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
-        <div className={`relative min-h-[min(320px,40vh)] ${splitScreenMode ? 'flex-1 w-1/2 border-r border-gray-700' : 'flex-1 max-h-[55vh] min-h-[280px]'}`}>
-          {/* Top Navigation Tabs and Legend - Centered within this map container */}
+          {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
+          {splitScreenMode && (
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
             {/* Active Tab Buttons - icons only */}
             <div className={`flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto ${splitScreenMode ? 'max-w-full' : 'w-auto'}`}>
@@ -5795,6 +5920,7 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
+          )}
 
           {/* Timeseries Tabs - Separate container in splitscreen (80% width) */}
           {splitScreenMode && getActiveTab('left') === 'pest' && (leftPestStoredSeries && leftPestStoredSeries.length > 0) && (
@@ -7113,7 +7239,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Two cards below map (non–split): Health Trends + Daily Weather */}
-        {!splitScreenMode && (
+        {!splitScreenMode && !isMapFullscreen && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 md:p-4 bg-gray-950 border-t border-gray-800 flex-shrink-0 min-h-0">
             {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
             <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">

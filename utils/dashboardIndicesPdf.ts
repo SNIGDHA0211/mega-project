@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf';
+import type { DashboardIndicesFrequency } from '../services/analysisService';
 
 export interface DashboardIndicesPdfItem {
   index_name: string;
@@ -11,9 +12,23 @@ export interface DashboardIndicesPdfOptions {
   subdistrict: string;
   village: string;
   stored: DashboardIndicesPdfItem[];
+  /** When yearly, x-axis uses calendar years from period_date (not months). */
+  frequency?: DashboardIndicesFrequency;
 }
 
 const INDEX_ORDER = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
+
+const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_ORDER)[number], string> = {
+  ndvi: 'Crop Health (NDVI)',
+  evi: 'Plantation thickness (EVI)',
+  gndvi: 'Fertilizer status (GNDVI)',
+  lst: 'Heat Stress (LST)',
+  ndbi: 'Non Farm Area (NDBI)',
+  ndmi: 'Soil Moisture (NDMI)',
+  ndre: 'Crop Stress (NDRE)',
+  evi2: 'Crop Yield Potential (EVI2)',
+  bsi: 'Bare Soil Index (BSI)',
+};
 
 const CARD_COLORS: Record<string, [number, number, number]> = {
   evi: [34, 197, 94],      // green
@@ -55,7 +70,8 @@ function formatYLabel(value: number): string {
 
 /**
  * Draw one multi-year line chart in the given rectangle (x, y, w, h in mm).
- * X-axis: months, multiple colored lines: one per year with legend.
+ * Weekly/monthly: X-axis months, one line per year with legend.
+ * Yearly: X-axis calendar years from API, single line.
  */
 function drawChart(
   pdf: jsPDF,
@@ -65,14 +81,15 @@ function drawChart(
   h: number,
   cardName: string,
   points: Array<{ period_date: string; value: number }>,
-  color: [number, number, number]
+  color: [number, number, number],
+  frequency: DashboardIndicesFrequency = 'monthly'
 ): void {
   const pad = 2;
   const titleH = 6;
   const subtitleH = 4;
   const yAxisW = 14;
   const xAxisLabelH = 5;
-  const legendH = 6;
+  const legendH = frequency === 'yearly' ? 0 : 6;
   const xAxisH = xAxisLabelH + legendH; // space for x-axis labels + legend below (no overlap)
   const plotLeft = x + pad + yAxisW;
   const plotRight = x + w - pad;
@@ -90,7 +107,7 @@ function drawChart(
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(9);
   pdf.setTextColor(...color);
-  pdf.text(cardName.toUpperCase(), x + pad, y + pad + 4);
+  pdf.text(cardName, x + pad, y + pad + 4);
 
   // Subtitle and latest value
   pdf.setFont('helvetica', 'normal');
@@ -112,9 +129,78 @@ function drawChart(
     return;
   }
 
+  // Yearly: one point per calendar year from period_date; x-axis = years, single series (no future years)
+  if (frequency === 'yearly') {
+    const currentCalendarYear = new Date().getFullYear();
+    const byYear = new Map<number, number>();
+    points.forEach((p) => {
+      const d = new Date(p.period_date);
+      if (isNaN(d.getTime())) return;
+      const y = d.getFullYear();
+      if (y > currentCalendarYear) return;
+      byYear.set(y, p.value);
+    });
+    const yearEntries = Array.from(byYear.entries()).sort((a, b) => a[0] - b[0]);
+    if (yearEntries.length < 1) {
+      pdf.setFontSize(8);
+      pdf.setTextColor(120, 120, 120);
+      pdf.text('No data', plotLeft + plotW / 2 - 5, plotTop + plotH / 2 - 2);
+      return;
+    }
+    const vals = yearEntries.map(([, v]) => v);
+    const minVal = Math.min(...vals);
+    const maxVal = Math.max(...vals);
+    const range = maxVal - minVal || 1;
+    const n = yearEntries.length;
+    const yTickCount = 5;
+    const yTicks: number[] = [];
+    for (let i = 0; i < yTickCount; i++) {
+      yTicks.push(minVal + (i / (yTickCount - 1)) * range);
+    }
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(6);
+    pdf.setTextColor(60, 60, 60);
+    yTicks.forEach((val, i) => {
+      const py = plotBottom - (i / (yTickCount - 1)) * plotH;
+      pdf.text(formatYLabel(val), plotLeft - 1, py + 1, { align: 'right' });
+    });
+    const xAxisY = plotBottom + 3;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(n > 14 ? 4.5 : 5.5);
+    pdf.setTextColor(70, 70, 70);
+    const getX = (i: number) => plotLeft + (i / Math.max(1, n - 1)) * plotW;
+    yearEntries.forEach((entry, idx) => {
+      if (n > 18 && idx % 2 === 1) return;
+      const px = getX(idx);
+      pdf.text(String(entry[0]), px, xAxisY, { align: 'center' });
+    });
+    pdf.setDrawColor(220, 220, 220);
+    pdf.setLineWidth(0.1);
+    for (let i = 0; i < yTickCount; i++) {
+      const py = plotBottom - (i / (yTickCount - 1)) * plotH;
+      pdf.line(plotLeft, py, plotRight, py);
+    }
+    for (let i = 0; i < n; i++) {
+      const px = getX(i);
+      pdf.line(px, plotTop, px, plotBottom);
+    }
+    const getY = (v: number) => plotBottom - ((v - minVal) / range) * plotH;
+    pdf.setDrawColor(...color);
+    pdf.setLineWidth(0.5);
+    let prev: { x: number; y: number } | null = null;
+    yearEntries.forEach(([, v], idx) => {
+      const xPos = getX(idx);
+      const yPos = getY(v);
+      if (prev) pdf.line(prev.x, prev.y, xPos, yPos);
+      prev = { x: xPos, y: yPos };
+    });
+    return;
+  }
+
   // Fixed 12 months (Jan–Dec) so each year draws one continuous line across the chart
   const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const monthMap: Record<string, { month: string; monthIndex: number; values: Record<string, number> }> = {};
+  const monthYearAgg: Record<string, Record<string, { sum: number; count: number }>> = {};
   const yearsSet = new Set<number>();
 
   points.forEach((p) => {
@@ -128,17 +214,26 @@ function drawChart(
     if (!monthMap[key]) {
       monthMap[key] = { month: monthLabel, monthIndex, values: {} };
     }
-    monthMap[key].values[String(year)] = p.value;
+    const yearKey = String(year);
+    if (!monthYearAgg[key]) monthYearAgg[key] = {};
+    if (!monthYearAgg[key][yearKey]) monthYearAgg[key][yearKey] = { sum: 0, count: 0 };
+    monthYearAgg[key][yearKey].sum += p.value;
+    monthYearAgg[key][yearKey].count += 1;
   });
 
   const years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
   const months = MONTH_LABELS.map((month, monthIndex) => {
     const key = `${monthIndex}-${month}`;
     const existing = monthMap[key];
+    const values: Record<string, number> = {};
+    years.forEach((yKey) => {
+      const agg = monthYearAgg[key]?.[yKey];
+      if (agg && agg.count > 0) values[yKey] = agg.sum / agg.count;
+    });
     return {
       month,
       monthIndex,
-      values: existing ? existing.values : {},
+      values: existing ? values : {},
     };
   });
 
@@ -295,7 +390,7 @@ function addWrappedText(
  * All pages A4 landscape.
  */
 export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions, filename: string): void {
-  const { district, subdistrict, village, stored } = options;
+  const { district, subdistrict, village, stored, frequency = 'monthly' } = options;
   const pdf = new jsPDF('landscape', 'mm', 'a4');
   const pageWidth = A4_LANDSCAPE_WIDTH;
   const pageHeight = A4_LANDSCAPE_HEIGHT;
@@ -351,7 +446,7 @@ export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions,
     const y = gridTop + row * (cardH + gap);
     const points = byIndex[indexName] || [];
     const color = CARD_COLORS[indexName] ?? [100, 100, 100];
-    drawChart(pdf, x, y, cardW, cardH, indexName, points, color);
+    drawChart(pdf, x, y, cardW, cardH, INDEX_DISPLAY_LABELS[indexName] ?? indexName, points, color, frequency);
   });
 
   pdf.save(filename);

@@ -800,10 +800,17 @@ export interface DashboardIndicesStoreResponse {
 export const fetchDashboardIndicesStore = async (
   district: string,
   subdistrict: string,
-  frequency: DashboardIndicesFrequency
+  frequency: DashboardIndicesFrequency,
+  village?: string
 ): Promise<DashboardIndicesStoreResponse> => {
   try {
-    const url = `${BASE_URL}/dashboard-indices?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&frequency=${encodeURIComponent(frequency)}&include_predictions=true`;
+    const params = new URLSearchParams();
+    params.set('district', district);
+    if (subdistrict) params.set('subdistrict', subdistrict);
+    if (village) params.set('village', village);
+    params.set('frequency', frequency);
+    params.set('include_predictions', 'true');
+    const url = `${BASE_URL}/dashboard-indices?${params.toString()}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: { accept: 'application/json' },
