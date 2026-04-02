@@ -42,6 +42,67 @@ html, body {
   }
 }
 
+/* Light theme override (white UI) */
+.theme-white .bg-gray-900 {
+  background-color: #ffffff !important;
+}
+.theme-white .bg-gray-950 {
+  background-color: #ffffff !important;
+}
+.theme-white .bg-gray-800 {
+  background-color: #f9fafb !important;
+}
+.theme-white .bg-gray-700 {
+  background-color: #ffffff !important;
+}
+
+/* Opacity variants (tailwind uses class names with `/` so use attribute selectors) */
+.theme-white [class*="bg-gray-900/80"] {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+}
+.theme-white [class*="bg-gray-900/50"] {
+  background-color: rgba(255, 255, 255, 0.8) !important;
+}
+.theme-white [class*="bg-gray-800/80"] {
+  background-color: rgba(249, 250, 251, 0.95) !important;
+}
+.theme-white [class*="bg-gray-800/90"] {
+  background-color: rgba(249, 250, 251, 0.95) !important;
+}
+.theme-white [class*="bg-gray-800/50"] {
+  background-color: rgba(249, 250, 251, 0.9) !important;
+}
+
+.theme-white .border-gray-700 {
+  border-color: #e5e7eb !important;
+}
+.theme-white .border-gray-600 {
+  border-color: #e5e7eb !important;
+}
+.theme-white .border-gray-800 {
+  border-color: #e5e7eb !important;
+}
+
+/* Text colors used across panels in dark mode */
+.theme-white .text-white {
+  color: #111827 !important;
+}
+.theme-white .text-gray-200 {
+  color: #374151 !important;
+}
+.theme-white .text-gray-300 {
+  color: #4b5563 !important;
+}
+.theme-white .text-gray-400 {
+  color: #6b7280 !important;
+}
+.theme-white .text-slate-200 {
+  color: #111827 !important;
+}
+.theme-white .text-slate-400 {
+  color: #6b7280 !important;
+}
+
 /* Hide scrollbar for webkit browsers */
 .scrollbar-hide::-webkit-scrollbar {
   display: none;

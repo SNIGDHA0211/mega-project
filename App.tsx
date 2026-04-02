@@ -45,7 +45,8 @@ import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
 import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
-import { MdFullscreen, MdFullscreenExit } from 'react-icons/md';
+import { MdFullscreen, MdFullscreenExit, MdModeNight, MdLightMode } from 'react-icons/md';
+// GiUpgrade icon removed (no auto-open pest)
 
 /** Merged into allPlotsTileUrls when user clicks a Water Uptake %/area card (classwise tile_url); drawn on top in PlotsMap */
 const WATER_UPTAKE_CLASS_TILE_KEY = 'waterUptakeClass';
@@ -202,6 +203,9 @@ const App: React.FC = () => {
   const [showGrowthSeries, setShowGrowthSeries] = useState<boolean>(true);
   const [showAllGrowthTimeSeries, setShowAllGrowthTimeSeries] = useState<boolean>(false);
   const [growthChartViewMode, setGrowthChartViewMode] = useState<'all' | 'selected'>('all');
+  const [waterChartViewMode, setWaterChartViewMode] = useState<'all' | 'selected'>('all');
+  const [soilChartViewMode, setSoilChartViewMode] = useState<'all' | 'selected'>('all');
+  const [pestChartViewMode, setPestChartViewMode] = useState<'all' | 'selected'>('all');
 
   // State for Water/Soil stored time series (year_month from analyze_wateruptakeclasswise / analyze_soilmoistureclasswise)
   const [waterStoredSeries, setWaterStoredSeries] = useState<GrowthStoredResponse | null>(null);
@@ -265,8 +269,17 @@ const App: React.FC = () => {
   // State for sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
   const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
+  const [showGraphFrequencyDropdown, setShowGraphFrequencyDropdown] = useState<boolean>(false);
   const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
   const [fullscreenIndexCard, setFullscreenIndexCard] = useState<string | null>(null);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const saved = localStorage.getItem('ui-theme-mode');
+      // Default to light theme (white UI) when nothing is saved yet
+      return saved === 'dark';
+    }
+    return false;
+  });
   // State for sidebar expanded (full dropdowns + %/area) vs collapsed (icon-only); double-click toggles
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(false);
   // Which icon card is shown next to left sidebar (click icon = show card beside it, not full sidebar)
@@ -284,6 +297,36 @@ const App: React.FC = () => {
 
   // State for split screen mode
   const [splitScreenMode, setSplitScreenMode] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem('ui-theme-mode', isDarkMode ? 'dark' : 'light');
+    }
+  }, [isDarkMode]);
+
+  // When switching to graph mode, reset scroll so sidebar + graph area are visible.
+  useEffect(() => {
+    if (!showGraphPage) return;
+    // Run after layout so overflow-y containers have correct scrollHeight.
+    const t = window.setTimeout(() => {
+      try {
+        sidebarScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+      } catch {
+        // ignore
+      }
+      try {
+        mainScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+      } catch {
+        // ignore
+      }
+      try {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [showGraphPage]);
 
   // Separate state for left and right sides in split screen mode - Location selections
   const [leftSelectedDistrict, setLeftSelectedDistrict] = useState<string>('');
@@ -347,6 +390,16 @@ const App: React.FC = () => {
   const [weatherCardPosition, setWeatherCardPosition] = useState<{ left: number; bottom: number } | null>(null);
   const pestDragStartRef = useRef<{ x: number; y: number; left: number; bottom: number } | null>(null);
   const weatherDragStartRef = useRef<{ x: number; y: number; left: number; bottom: number } | null>(null);
+  const bottomCardsRef = useRef<HTMLDivElement | null>(null);
+  const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToBottomCards = () => {
+    // Let React paint the card content before scrolling.
+    window.requestAnimationFrame(() => {
+      bottomCardsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
 
   // Refs to ignore stray second click when user double-taps Land Surface or Methane (so the second tap doesn't open the other)
   const lastLstDoubleClickRef = useRef(0);
@@ -479,13 +532,19 @@ const App: React.FC = () => {
     return y;
   };
 
-  const downloadPestGraphPDF = async () => {
+  const downloadChartPDF = async () => {
     try {
-      const graphElement = document.getElementById('pest-time-series-graph');
+      const graphElement =
+        document.getElementById('health-trends-chart') ||
+        document.getElementById('pest-time-series-graph') ||
+        document.getElementById('pest-time-series-graph-right');
       const weatherElement = document.getElementById('weather-daily-chart');
-      
+      const exportTab = splitScreenMode ? leftActiveTab : activeTab;
+
       if (!graphElement) {
-        alert('Pest graph not found');
+        alert(
+          'Chart not found. Open the Growth, Water, Soil, or Pest tab and scroll so the graph below the map is visible, then try again.'
+        );
         return;
       }
 
@@ -508,27 +567,37 @@ const App: React.FC = () => {
       pdf.setFont('helvetica', 'normal');
       yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6, margin);
       yPos += 2;
-      
-      // Add pest info with text wrapping - ensure full text display
-      if (selectedPestCategory) {
-        yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
+
+      const pestCat = splitScreenMode ? leftSelectedPestCategory : selectedPestCategory;
+      if (exportTab === 'pest' && pestCat) {
+        yPos = addWrappedText(pdf, `Pest: ${pestCat.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
+        yPos += 2;
+      } else if (exportTab) {
+        yPos = addWrappedText(
+          pdf,
+          `View: ${String(exportTab).replace(/_/g, ' ')}`,
+          margin,
+          yPos,
+          contentWidth,
+          6,
+          margin
+        );
         yPos += 2;
       }
       
-      // Capture pest graph
-      const pestCanvas = await html2canvas(graphElement, { 
+      // Capture chart (health trends card or floating pest graph)
+      const chartCanvas = await html2canvas(graphElement, { 
         scale: 2,
         backgroundColor: '#f3f4f6',
         logging: false
       });
-      const pestImgData = pestCanvas.toDataURL('image/png');
-      const pestImgHeight = (pestCanvas.height * contentWidth) / pestCanvas.width;
+      const chartImgData = chartCanvas.toDataURL('image/png');
+      const chartImgHeight = (chartCanvas.height * contentWidth) / chartCanvas.width;
       
-      // Add pest graph - ensure it doesn't push content off page
-      const maxPestHeight = pageHeight - yPos - 30; // Leave 30mm for bottom margin and any text
-      const actualPestHeight = Math.min(pestImgHeight, maxPestHeight);
-      pdf.addImage(pestImgData, 'PNG', margin, yPos, contentWidth, actualPestHeight);
-      yPos += actualPestHeight + 10;
+      const maxChartHeight = pageHeight - yPos - 30;
+      const actualChartHeight = Math.min(chartImgHeight, maxChartHeight);
+      pdf.addImage(chartImgData, 'PNG', margin, yPos, contentWidth, actualChartHeight);
+      yPos += actualChartHeight + 10;
       
       // Add weather graph if available
       if (weatherElement && showWeatherDaily && weatherDailyData?.daily?.length) {
@@ -558,67 +627,137 @@ const App: React.FC = () => {
         pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, maxWeatherHeight));
       }
       
-      pdf.save(`nearlive-crop-monitoring-${selectedPestCategory || 'data'}-${Date.now()}.pdf`);
+      const fileSlug =
+        exportTab === 'pest' && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory)
+          ? (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory) || 'data'
+          : exportTab || 'chart';
+      pdf.save(`nearlive-crop-monitoring-${fileSlug}-${Date.now()}.pdf`);
     } catch (error) {
       console.error('Error generating PDF:', error);
       alert('Failed to generate PDF');
     }
   };
 
-  const downloadPestGraphExcel = () => {
+  const downloadPestTimeSeriesExcel = (series: PestStoredResponse | null, category: string | null) => {
+    if (!series || !category) {
+      alert('No pest time series data. Select a pest category and load stored months.');
+      return;
+    }
+    const filtered = series
+      .filter((item: PestStoredItem) => {
+        const h = (item as any).response_data?.hierarchy || {};
+        return h[category];
+      })
+      .sort((a: PestStoredItem, b: PestStoredItem) => a.year_month.localeCompare(b.year_month));
+
+    if (!filtered.length) {
+      alert('No rows to export for this category.');
+      return;
+    }
+
+    const labels = filtered.map(s => s.year_month);
+    const areaValues = filtered.map(s => {
+      const h = (s as any).response_data?.hierarchy?.[category] || {};
+      return Number(h.total_area_ha ?? 0);
+    });
+
+    const firstCategory: any = (filtered[0] as any).response_data?.hierarchy?.[category] || {};
+    const childKeys: string[] = firstCategory.children ? Object.keys(firstCategory.children).sort() : [];
+
+    const childrenData: { [key: string]: number[] } = {};
+    childKeys.forEach(childKey => {
+      childrenData[childKey] = filtered.map(s => {
+        const child = (s as any).response_data?.hierarchy?.[category]?.children?.[childKey] || {};
+        return Number((child as any).area_ha ?? (child as any).total_area_ha ?? 0);
+      });
+    });
+
+    const worksheetData: any[] = [];
+    worksheetData.push(['Nearlive Crop Monitoring']);
+    worksheetData.push([getLocationString()]);
+    worksheetData.push([`Pest: ${category.replace(/_/g, ' ')}`]);
+    worksheetData.push([]);
+
+    const headers = ['Year-Month', 'Parent (ha)', ...childKeys.map(k => k.replace(/_/g, ' ') + ' (ha)')];
+    worksheetData.push(headers);
+
+    labels.forEach((label, idx) => {
+      const row = [label, areaValues[idx], ...childKeys.map(k => childrenData[k][idx])];
+      worksheetData.push(row);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Pest Data');
+    XLSX.writeFile(wb, `pest-data-${category}-${Date.now()}.xlsx`);
+  };
+
+  const downloadGrowthStoredExcel = () => {
+    if (!growthStoredSeries?.length) {
+      alert('No growth time series to export. Run analysis with stored history first.');
+      return;
+    }
+    const classNames = ['Weak', 'Stress', 'Moderate', 'Healthy'];
+    const rows: any[] = [['Nearlive Crop Monitoring'], [getLocationString()], ['Growth'], []];
+    rows.push(['Year-Month', ...classNames.map((c) => `${c} (ha)`), ...classNames.map((c) => `${c} (%)`)]);
+    [...growthStoredSeries]
+      .sort((a, b) => a.year_month.localeCompare(b.year_month))
+      .forEach((item) => {
+        const cw = (item.response_data as any)?.classwise || [];
+        const byClass = (name: string) =>
+          cw.find((x: any) => (x.class_name || '').toString().toLowerCase() === name.toLowerCase());
+        const ha = classNames.map((cn) => Number(byClass(cn)?.area_hectares ?? (byClass(cn) as any)?.area_ha ?? 0));
+        const pct = classNames.map((cn) => Number(byClass(cn)?.percentage ?? 0));
+        rows.push([item.year_month, ...ha, ...pct]);
+      });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Growth');
+    XLSX.writeFile(wb, `growth-data-${Date.now()}.xlsx`);
+  };
+
+  const downloadWaterStoredExcel = () => {
+    if (!waterStoredSeries?.length) {
+      alert('No water uptake time series to export.');
+      return;
+    }
+    const classNames = ['Deficient', 'Less', 'Adequat', 'Excellent', 'Excess'];
+    const rows: any[] = [['Nearlive Crop Monitoring'], [getLocationString()], ['Water uptake'], []];
+    rows.push(['Year-Month', ...classNames.map((c) => `${c} (ha)`), ...classNames.map((c) => `${c} (%)`)]);
+    [...waterStoredSeries]
+      .sort((a, b) => a.year_month.localeCompare(b.year_month))
+      .forEach((item) => {
+        const cw = (item.response_data as any)?.classwise || [];
+        const byClass = (name: string) =>
+          cw.find((x: any) => (x.class_name || '').toString().toLowerCase() === name.toLowerCase());
+        const ha = classNames.map((cn) => Number(byClass(cn)?.area_hectares ?? (byClass(cn) as any)?.area_ha ?? 0));
+        const pct = classNames.map((cn) => Number(byClass(cn)?.percentage ?? 0));
+        rows.push([item.year_month, ...ha, ...pct]);
+      });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Water');
+    XLSX.writeFile(wb, `water-uptake-data-${Date.now()}.xlsx`);
+  };
+
+  const downloadChartExcel = () => {
     try {
-      if (!pestStoredSeries || !selectedPestCategory) {
-        alert('No data available');
+      const tab = splitScreenMode ? leftActiveTab : activeTab;
+      if (tab === 'pest') {
+        const series = splitScreenMode ? leftPestStoredSeries : pestStoredSeries;
+        const category = splitScreenMode ? leftSelectedPestCategory : selectedPestCategory;
+        downloadPestTimeSeriesExcel(series, category);
         return;
       }
-
-      const series = pestStoredSeries
-        .filter((item: PestStoredItem) => {
-          const h = (item as any).response_data?.hierarchy || {};
-          return h[selectedPestCategory];
-        })
-        .sort((a: PestStoredItem, b: PestStoredItem) => a.year_month.localeCompare(b.year_month));
-
-      if (!series.length) {
-        alert('No data available');
+      if (tab === 'growth') {
+        downloadGrowthStoredExcel();
         return;
       }
-
-      const labels = series.map(s => s.year_month);
-      const areaValues = series.map(s => {
-        const h = (s as any).response_data?.hierarchy?.[selectedPestCategory] || {};
-        return Number(h.total_area_ha ?? 0);
-      });
-
-      const firstCategory: any = (series[0] as any).response_data?.hierarchy?.[selectedPestCategory] || {};
-      const childKeys: string[] = firstCategory.children ? Object.keys(firstCategory.children).sort() : [];
-
-      const childrenData: { [key: string]: number[] } = {};
-      childKeys.forEach(childKey => {
-        childrenData[childKey] = series.map(s => {
-          const child = (s as any).response_data?.hierarchy?.[selectedPestCategory]?.children?.[childKey] || {};
-          return Number((child as any).area_ha ?? (child as any).total_area_ha ?? 0);
-        });
-      });
-
-      const worksheetData: any[] = [];
-      worksheetData.push(['Nearlive Crop Monitoring']);
-      worksheetData.push([getLocationString()]);
-      worksheetData.push([`Pest: ${selectedPestCategory.replace(/_/g, ' ')}`]);
-      worksheetData.push([]);
-      
-      const headers = ['Year-Month', 'Parent (ha)', ...childKeys.map(k => k.replace(/_/g, ' ') + ' (ha)')];
-      worksheetData.push(headers);
-
-      labels.forEach((label, idx) => {
-        const row = [label, areaValues[idx], ...childKeys.map(k => childrenData[k][idx])];
-        worksheetData.push(row);
-      });
-
-      const ws = XLSX.utils.aoa_to_sheet(worksheetData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Pest Data');
-      XLSX.writeFile(wb, `pest-data-${selectedPestCategory}-${Date.now()}.xlsx`);
+      if (tab === 'water') {
+        downloadWaterStoredExcel();
+        return;
+      }
+      alert('Excel export is available on Growth, Water, and Pest tabs when time series data is loaded.');
     } catch (error) {
       console.error('Error generating Excel:', error);
       alert('Failed to generate Excel file');
@@ -4513,6 +4652,47 @@ const App: React.FC = () => {
     soilborne: '#6b7280',
   };
 
+  /** Growth class colors when API does not send per-class color (matches chart legend). */
+  const GROWTH_CLASS_COLORS: Record<string, string> = {
+    weak: '#bc1e29',
+    stress: '#58cf54',
+    moderate: '#28ae31',
+    healthy: '#00351d',
+  };
+
+  /** Water uptake class colors — same as bottom chart; used before load and when API omits `color`. */
+  const WATER_CLASS_COLORS: Record<string, string> = {
+    deficient: '#EBFF34',
+    less: '#CC8213',
+    adequat: '#1348E8',
+    adequate: '#1348E8',
+    excellent: '#2E199A',
+    excess: '#060217',
+  };
+
+  const waterColorForLabel = (label: string): string => {
+    const k = (label || '').toLowerCase().replace(/\s+/g, '');
+    return WATER_CLASS_COLORS[k] ?? '#CC8213';
+  };
+
+  /** Readable text (black or white) on top of arbitrary hex background. */
+  const textColorOnBackground = (hex: string | undefined): string => {
+    const raw = (hex || '#888888').replace(/^#/, '');
+    const full =
+      raw.length === 3
+        ? raw
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : raw.padEnd(6, '0').slice(0, 6);
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return '#111827';
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.55 ? '#111827' : '#ffffff';
+  };
+
   // Format percentage for display (small values show 2 decimals)
   const formatPct = (p: number) =>
     p > 0 && p < 1 ? p.toFixed(2) : String(Math.round(p));
@@ -4557,28 +4737,43 @@ const App: React.FC = () => {
     const classwise = ps.classwise;
     if ((sideActiveTab === 'growth' || sideActiveTab === 'water' || sideActiveTab === 'soil') && classwise && Array.isArray(classwise) && classwise.length > 0) {
       classwise.forEach((c: any) => {
+        const lbl = formatClassLabel(c.class_name || '');
+        const rawColor = c.color != null && String(c.color).trim() !== '' ? String(c.color).trim() : null;
+        const fallback =
+          sideActiveTab === 'water'
+            ? waterColorForLabel(lbl)
+            : sideActiveTab === 'growth'
+              ? (() => {
+                  const lk = lbl.toLowerCase();
+                  if (lk.includes('weak')) return GROWTH_CLASS_COLORS.weak;
+                  if (lk.includes('stress')) return GROWTH_CLASS_COLORS.stress;
+                  if (lk.includes('moderate')) return GROWTH_CLASS_COLORS.moderate;
+                  if (lk.includes('healthy')) return GROWTH_CLASS_COLORS.healthy;
+                  return '#f97316';
+                })()
+              : '#f97316';
         areaCards.push({
-          label: formatClassLabel(c.class_name || ''),
+          label: lbl,
           value: Number(c.area_hectares ?? 0),
           percentage: Number(c.percentage ?? 0),
-          color: c.color || '#f97316',
+          color: rawColor || fallback,
           tileUrl: c.tile_url ?? undefined,
         });
       });
     } else if (sideActiveTab === 'growth') {
       areaCards.push(
-        { label: 'Weak', value: Number(ps.weak_area_hectares || 0), percentage: Number(ps.weak_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Stress', value: Number(ps.stress_area_hectares || 0), percentage: Number(ps.stress_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Moderate', value: Number(ps.moderate_area_hectares || 0), percentage: Number(ps.moderate_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Healthy', value: Number(ps.healthy_area_hectares || 0), percentage: Number(ps.healthy_pixel_percentage ?? 0), color: '#f97316' },
+        { label: 'Weak', value: Number(ps.weak_area_hectares || 0), percentage: Number(ps.weak_pixel_percentage ?? 0), color: GROWTH_CLASS_COLORS.weak },
+        { label: 'Stress', value: Number(ps.stress_area_hectares || 0), percentage: Number(ps.stress_pixel_percentage ?? 0), color: GROWTH_CLASS_COLORS.stress },
+        { label: 'Moderate', value: Number(ps.moderate_area_hectares || 0), percentage: Number(ps.moderate_pixel_percentage ?? 0), color: GROWTH_CLASS_COLORS.moderate },
+        { label: 'Healthy', value: Number(ps.healthy_area_hectares || 0), percentage: Number(ps.healthy_pixel_percentage ?? 0), color: GROWTH_CLASS_COLORS.healthy },
       );
     } else if (sideActiveTab === 'water') {
       areaCards.push(
-        { label: 'Deficient', value: Number(ps.deficient_area_hectare || 0), percentage: Number(ps.deficient_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Less', value: Number(ps.less_area_hectare || 0), percentage: Number(ps.less_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Adequate', value: Number(ps.adequat_area_hectare || 0), percentage: Number(ps.adequate_pixel_percentage ?? ps.adequat_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0), percentage: Number(ps.excellent_pixel_percentage ?? 0), color: '#f97316' },
-        { label: 'Excess', value: Number(ps.excess_area_hectare || 0), percentage: Number(ps.excess_pixel_percentage ?? 0), color: '#f97316' },
+        { label: 'Deficient', value: Number(ps.deficient_area_hectare || 0), percentage: Number(ps.deficient_pixel_percentage ?? 0), color: WATER_CLASS_COLORS.deficient },
+        { label: 'Less', value: Number(ps.less_area_hectare || 0), percentage: Number(ps.less_pixel_percentage ?? 0), color: WATER_CLASS_COLORS.less },
+        { label: 'Adequate', value: Number(ps.adequat_area_hectare || 0), percentage: Number(ps.adequate_pixel_percentage ?? ps.adequat_pixel_percentage ?? 0), color: WATER_CLASS_COLORS.adequate },
+        { label: 'Excellent', value: Number(ps.excellent_area_hectare || 0), percentage: Number(ps.excellent_pixel_percentage ?? 0), color: WATER_CLASS_COLORS.excellent },
+        { label: 'Excess', value: Number(ps.excess_area_hectare || 0), percentage: Number(ps.excess_pixel_percentage ?? 0), color: WATER_CLASS_COLORS.excess },
       );
     } else if (sideActiveTab === 'soil') {
       areaCards.push(
@@ -4590,7 +4785,7 @@ const App: React.FC = () => {
       );
     } else if (sideActiveTab === 'pest') {
       if (sidePestHierarchy?.hierarchy) {
-        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+        const order = ['chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
         order.forEach(k => {
           const node = sidePestHierarchy.hierarchy[k];
           if (node == null) return;
@@ -4644,11 +4839,11 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen w-full bg-gray-900 text-gray-100 font-sans overflow-hidden relative">
+    <div className={`flex flex-col h-screen w-full font-sans overflow-hidden relative ${isDarkMode ? 'bg-gray-900 text-gray-100' : 'bg-[#eaf6f0] text-gray-900'} ${!isDarkMode ? 'theme-white' : ''}`}>
       {/* Bar Graph page - full screen when opened from header icon */}
-      {showGraphPage ? (
-        <div className="flex-1 flex flex-col bg-gray-900 overflow-auto">
-          <div className="flex-shrink-0 border-b border-gray-700 bg-gray-800">
+      {false ? (
+        <div className={`flex-1 flex flex-col overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}>
+          <div className={`flex-shrink-0 border-b ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-emerald-100 bg-[#eaf6f0]'}`}>
             <div className="flex items-center gap-3 px-4 md:px-6 py-3">
               <button
                 type="button"
@@ -5054,46 +5249,10 @@ const App: React.FC = () => {
         </div>
       ) : (
         <>
-      {/* Header: left = nav + title, center = analysis tabs (normal screen), right = actions */}
-      <header className="flex-shrink-0 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 md:gap-3 px-4 md:px-6 py-2 border-b border-gray-700 bg-gray-800 z-20">
-        <div className="flex items-center gap-2 md:gap-3 justify-self-start min-w-0">
-          <button
-            onClick={() => setSidebarVisible(!sidebarVisible)}
-            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
-            title={sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'}
-          >
-            <Home size={16} className="md:w-[18px] md:h-[18px]" />
-          </button>
-          <button
-            onClick={() => setSplitScreenMode(!splitScreenMode)}
-            onDoubleClick={() => setSplitScreenMode(false)}
-            className={`p-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
-              splitScreenMode
-                ? 'bg-purple-600 text-white hover:bg-purple-700 border border-transparent'
-                : 'bg-gray-800 border border-white/40 text-white hover:bg-gray-700'
-            }`}
-            title={splitScreenMode ? 'Double-click to exit split screen' : 'Split Screen'}
-          >
-            {splitScreenMode ? <Maximize2 size={16} className="md:w-[18px] md:h-[18px]" /> : <Columns size={16} className="md:w-[18px] md:h-[18px]" />}
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowGraphPage(true)}
-            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
-            title="Bar Graph"
-          >
-            <TrendingUp size={18} />
-          </button>
-          <h1 className="text-sm md:text-base font-bold text-green-400 truncate min-w-0">
-            <BlurText
-              text="Nearlive Crop Monitoring"
-              animateBy="words"
-              direction="top"
-              delay={100}
-              className="text-green-400"
-            />
-          </h1>
-        </div>
+      {/* Top strip: dark mode header; white mode thin border only */}
+      {isDarkMode ? (
+      <header className={`flex-shrink-0 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 md:gap-3 px-4 md:px-6 py-2 border-b z-20 ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-emerald-100 bg-[#eaf6f0]'}`}>
+        <div className="justify-self-start min-w-0" />
 
         <div className="justify-self-center min-w-0 max-w-[min(100vw-12rem,52rem)] flex justify-center">
           {!splitScreenMode && (
@@ -5273,6 +5432,18 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-1.5 md:gap-2 justify-self-end">
+          <button
+            type="button"
+            onClick={() => setIsDarkMode((prev) => !prev)}
+            className={`p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
+              isDarkMode
+                ? 'bg-gray-800 border-white/40 text-white hover:bg-gray-700'
+                : 'bg-white border-gray-300 text-gray-800 hover:bg-gray-100'
+            }`}
+            title={isDarkMode ? 'Switch to White Mode' : 'Switch to Dark Mode'}
+          >
+            {isDarkMode ? <MdLightMode size={18} /> : <MdModeNight size={18} />}
+          </button>
           {/* Download - right side */}
           <div className="relative">
             <button
@@ -5289,7 +5460,7 @@ const App: React.FC = () => {
                 <div className="absolute right-0 top-full mt-2 bg-black/90 backdrop-blur-sm rounded-md border border-gray-600 shadow-xl overflow-hidden z-[1000] min-w-[120px]">
                   <button
                     type="button"
-                    onClick={() => { setShowDownloadMenu(false); downloadPestGraphPDF(); }}
+                    onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
                     className="w-full px-3 py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-2 transition-colors"
                   >
                     <FileText size={16} />
@@ -5297,7 +5468,7 @@ const App: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setShowDownloadMenu(false); downloadPestGraphExcel(); }}
+                    onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
                     className="w-full px-3 py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-2 transition-colors border-t border-gray-600/50"
                   >
                     <FileSpreadsheet size={16} />
@@ -5318,6 +5489,9 @@ const App: React.FC = () => {
           </button>
         </div>
       </header>
+      ) : (
+        <div className="flex-shrink-0 h-2 bg-emerald-100 w-full" />
+      )}
 
       <div className="flex flex-1 min-h-0 relative">
         {/* Mobile Overlay when sidebar is visible */}
@@ -5333,20 +5507,154 @@ const App: React.FC = () => {
           <aside 
             className="w-full md:w-64 flex-shrink-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
             style={{
-              backgroundImage: `url(${backgroundImages[currentBgImageIndex]})`,
+              // White mode: mint canvas behind the configuration card (like your screenshot)
+              backgroundColor: isDarkMode ? '#0f172a' : '#eaf6f0',
+              backgroundImage: 'none',
               backgroundSize: 'cover',
               backgroundPosition: 'center',
               backgroundRepeat: 'no-repeat'
             }}
           >
             {/* Overlay for better text readability */}
-            <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>
+            {isDarkMode && <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>}
             
-            <div className="relative z-10 flex flex-col h-full flex-1 overflow-y-auto p-4 space-y-4 pt-4">
-              <div className="text-xs font-semibold text-white uppercase tracking-wider mb-3">CONFIGURATION</div>
-              {/* Crops Dropdown - before District, independent */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            <div ref={sidebarScrollRef} className="relative z-10 flex flex-col h-full flex-1 overflow-y-auto p-4 space-y-4 pt-4">
+              {/* Sidebar branding (Type-2) */}
+              {!isDarkMode && (
+                <div className="px-1">
+                  <div className="leading-none font-extrabold text-[28px] tracking-tight">
+                    <span className="text-emerald-800">Nearlive</span>
+                    <br />
+                    <span className="text-emerald-500">Crop</span>
+                    <br />
+                    <span className="text-emerald-400">Monitoring</span>
+                  </div>
+                  <div className="mt-2 text-[10px] tracking-[0.35em] font-semibold text-slate-500">
+                    PRECISION INTELLIGENCE
+                  </div>
+                </div>
+              )}
+
+              {/* Sidebar nav (icon-only): split-screen, dashboard, download, 9-graphs */}
+              <div className={`${!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-2' : ''}`}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setSplitScreenMode((p) => !p)}
+                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
+                      isDarkMode
+                        ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                        : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+                    }`}
+                    title="Split screen"
+                  >
+                    <Columns size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGraphPage(false);
+                      setShowGraphFrequencyDropdown(false);
+                    }}
+                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
+                      isDarkMode
+                        ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                        : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+                    }`}
+                    title="Dashboard"
+                  >
+                    <Home size={18} />
+                  </button>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                      className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
+                        isDarkMode
+                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+                      }`}
+                      title="Download"
+                    >
+                      <Download size={18} />
+                    </button>
+                    {showDownloadMenu && (
+                      <>
+                        <div className="fixed inset-0 z-[1199]" onClick={() => setShowDownloadMenu(false)} />
+                        <div className="absolute left-0 top-full mt-2 bg-white rounded-xl border border-emerald-100 shadow-xl overflow-hidden z-[1200] min-w-[140px]">
+                          <button
+                            type="button"
+                            onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
+                            className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors"
+                          >
+                            <FileText size={16} />
+                            <span className="text-xs">PDF</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
+                            className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors border-t border-emerald-100"
+                          >
+                            <FileSpreadsheet size={16} />
+                            <span className="text-xs">Excel</span>
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGraphPage(true);
+                      setShowGraphFrequencyDropdown(true);
+                    }}
+                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
+                      showGraphFrequencyDropdown
+                        ? isDarkMode
+                          ? 'bg-emerald-900/40 border-emerald-600 text-emerald-200'
+                          : 'bg-emerald-100 border-emerald-300 text-emerald-900'
+                        : isDarkMode
+                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+                    }`}
+                    title="9 graphs dashboard"
+                  >
+                    <LineChartIcon size={18} />
+                  </button>
+                </div>
+              </div>
+
+              <div className={!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-4' : ''}>
+                {showGraphPage && showGraphFrequencyDropdown && (
+                  <div className={`${isDarkMode ? 'bg-gray-800/60' : 'bg-white'} rounded-xl border ${isDarkMode ? 'border-gray-700' : 'border-emerald-100'} p-3 mb-3`}>
+                    <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white' : 'text-slate-700'}`}>
+                      Frequency
+                    </div>
+                    <select
+                      value={dashboardIndicesFrequency}
+                      onChange={(e) => setDashboardIndicesFrequency(e.target.value as DashboardIndicesFrequency)}
+                      className={`mt-2 w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                        isDarkMode
+                          ? 'bg-gray-700 border border-gray-600 text-white'
+                          : 'bg-white border border-emerald-100 text-slate-800'
+                      }`}
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                    <div className={`mt-2 text-[10px] ${isDarkMode ? 'text-gray-300' : 'text-slate-500'}`}>
+                      (Graphs will update for this frequency.)
+                    </div>
+                  </div>
+                )}
+                <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
+                  CONFIGURATION
+                </div>
+          {/* Crops Dropdown - before District, independent */}
+          {!showGraphPage && (
+            <div>
+            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
               Crops
             </label>
             <select
@@ -5356,16 +5664,21 @@ const App: React.FC = () => {
                 setSelectedVillage('');
                 if (splitScreenMode) setLeftSelectedVillage('');
               }}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                isDarkMode
+                  ? 'bg-gray-700 border border-gray-600 text-white'
+                  : 'bg-white border border-emerald-100 text-slate-800'
+              }`}
             >
               <option value="">-- Select Crop --</option>
               <option value="sugarcane">Sugarcane</option>
             </select>
           </div>
+          )}
 
           {/* District Dropdown */}
           <div>
-            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
               Select District
             </label>
             <select
@@ -5381,7 +5694,11 @@ const App: React.FC = () => {
                   setSelectedVillage('');
                 }
               }}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                isDarkMode
+                  ? 'bg-gray-700 border border-gray-600 text-white'
+                  : 'bg-white border border-emerald-100 text-slate-800'
+              }`}
             >
               <option value="">-- Select District --</option>
               {districts.map((district) => (
@@ -5395,7 +5712,7 @@ const App: React.FC = () => {
           {/* Subdistrict Dropdown */}
           {getSelectedDistrict('left') && (
             <div>
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
                 Select Subdistrict
               </label>
               <select
@@ -5409,7 +5726,11 @@ const App: React.FC = () => {
                     setSelectedVillage('');
                   }
                 }}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                  isDarkMode
+                    ? 'bg-gray-700 border border-gray-600 text-white'
+                    : 'bg-white border border-emerald-100 text-slate-800'
+                }`}
                 disabled={getSubdistricts('left').length === 0}
               >
                 <option value="">-- Select Subdistrict --</option>
@@ -5425,7 +5746,7 @@ const App: React.FC = () => {
           {/* Village Dropdown */}
           {getSelectedSubdistrict('left') && (
             <div>
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
                 Select Village
               </label>
               <select
@@ -5437,7 +5758,11 @@ const App: React.FC = () => {
                     setSelectedVillage(e.target.value);
                   }
                 }}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                  isDarkMode
+                    ? 'bg-gray-700 border border-gray-600 text-white'
+                    : 'bg-white border border-emerald-100 text-slate-800'
+                }`}
                 disabled={getVillages('left').length === 0}
               >
                 <option value="">-- Select Village --</option>
@@ -5449,6 +5774,7 @@ const App: React.FC = () => {
               </select>
             </div>
           )}
+              </div>
 
           {/* Total Area Card */}
           {getSelectedDistrict('left') && (
@@ -5504,6 +5830,8 @@ const App: React.FC = () => {
               <div className="grid grid-cols-2 gap-2">
               {calculateAreaCards('left').map((item, idx) => {
                 const currentTab = getActiveTab('left');
+                const cardBg = item.color || '#f97316';
+                const cardFg = textColorOnBackground(cardBg);
                 return (
                 <div
                   key={`pct-${item.label}-${idx}`}
@@ -5561,20 +5889,23 @@ const App: React.FC = () => {
                         e.currentTarget.click();
                     }
                   }}
-                  className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex flex-col items-center text-center gap-1.5 min-w-0 ${(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                  style={{ backgroundColor: cardBg, color: cardFg }}
+                  className={`p-3 rounded-xl border border-black/15 flex flex-col items-center text-center gap-1.5 min-w-0 ${
+                    ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
+                      ? 'cursor-pointer hover:brightness-95 transition-all'
+                      : ''
+                  }`}
                 >
-                  <div className="flex items-center gap-1.5 justify-center w-full min-w-0">
-                    <span
-                      className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: item.color || '#f97316' }}
-                    />
-                    <span className="text-xs text-gray-200 truncate w-full">{item.label}</span>
+                  <div className="flex items-center justify-center w-full min-w-0">
+                    <span className="text-xs font-medium truncate w-full" style={{ color: cardFg }}>
+                      {item.label}
+                    </span>
                   </div>
                   <div className="flex flex-col gap-0.5 mt-1 w-full">
-                    <span className="font-semibold text-green-400 text-xs md:text-sm break-words">
+                    <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
                       {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                     </span>
-                    <span className="font-semibold text-green-400 text-xs md:text-sm break-words">
+                    <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
                       {item.value.toFixed(2)} ha
                     </span>
                   </div>
@@ -5629,91 +5960,370 @@ const App: React.FC = () => {
       </aside>
       )}
 
-      {/* Home Icon Toggle Button - Only show when sidebar is hidden */}
-      {!sidebarVisible && (
-        <button
-          onClick={() => setSidebarVisible(!sidebarVisible)}
-          className="fixed z-[1001] top-4 left-4 p-2 md:p-3 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 text-white hover:bg-gray-800 transition-all duration-300 shadow-lg"
-          title="Show Sidebar"
-        >
-          <Home size={18} className="md:w-5 md:h-5" />
-        </button>
-      )}
+      {/* Home Icon Toggle Button removed (do not display) */}
 
       {/* Main Map Area - Shows two maps in split screen mode; scroll at 1440/1024 so map is viewable */}
-      <main className={`flex-1 min-h-0 relative bg-gray-950 overflow-y-auto ${splitScreenMode ? 'flex' : 'flex flex-col'}`}>
-        {/* Download Button - Single icon with dropdown menu - Outside tabs with transparent background */}
-        {!splitScreenMode && ((getActiveTab('left') === 'pest' && (splitScreenMode ? leftShowPestSeries : showPestSeries)) || ((splitScreenMode ? leftShowWeatherDaily : showWeatherDaily) && (splitScreenMode ? leftWeatherDailyData : weatherDailyData))) && (
-          <div className="absolute top-12 md:top-4 right-4 md:right-4 z-[1000]">
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                className="px-2 md:px-3 py-1.5 md:py-2 rounded-md bg-black/40 hover:bg-black/60 backdrop-blur-sm text-white border border-gray-600/50 hover:border-gray-500 flex items-center justify-center transition-colors"
-                title="Download Data"
-              >
-                <Download size={18} />
-              </button>
-              
-              {/* Dropdown Menu */}
-              {showDownloadMenu && (
-                <>
-                  {/* Backdrop to close menu on outside click */}
-                  <div 
-                    className="fixed inset-0 z-[999]" 
-                    onClick={() => setShowDownloadMenu(false)}
-                  />
-                  {/* Menu */}
-                  <div className="absolute top-full right-0 mt-2 bg-black/80 backdrop-blur-sm rounded-md border border-gray-600/50 shadow-xl overflow-hidden z-[1000]">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowDownloadMenu(false);
-                        downloadPestGraphPDF();
-                      }}
-                      className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-1.5 transition-colors"
-                    >
-                      <FileText size={18} />
-                      <span className="text-xs md:text-sm">PDF</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowDownloadMenu(false);
-                        downloadPestGraphExcel();
-                      }}
-                      className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-1.5 transition-colors border-t border-gray-600/50"
-                    >
-                      <FileSpreadsheet size={18} />
-                      <span className="text-xs md:text-sm">Excel</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
+      <main ref={mainScrollRef} className={`flex-1 w-full min-h-0 relative bg-gray-950 overflow-y-auto ${splitScreenMode ? 'flex' : 'flex flex-col'}`}>
+        {/* Pest graph PDF/Excel: use Download in sidebar only (no floating control on map) */}
 
           {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
         <div
-          className={`relative min-h-[min(320px,40vh)] ${
+          className={`relative w-full min-h-[min(320px,40vh)] ${
             splitScreenMode
               ? 'flex-1 w-1/2 border-r border-gray-700'
               : isMapFullscreen
-                ? 'w-full flex-1 min-h-[calc(100vh-140px)]'
-                : 'flex-1 max-h-[55vh] min-h-[280px]'
+                ? 'flex-1 min-h-[calc(100vh-140px)]'
+                : showGraphPage
+                  ? 'flex-1 min-h-[calc(100vh-140px)]'
+                  : 'flex-none h-[80vh] min-h-[520px]'
           }`}
         >
+          {showGraphPage && (
+            <div
+              className={`absolute inset-0 z-[1200] overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}
+            >
+              <div className="min-h-[100%]">
+                <div className="flex-1 p-4 md:p-6 overflow-auto">
+                  {!selectedDistrict ? (
+                    <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
+                      <p className="text-gray-400">Select District, then choose Frequency to load indices data. Subdistrict and Village are optional filters.</p>
+                    </div>
+                  ) : dashboardIndicesLoading ? (
+                    <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
+                      <Loader2 className="animate-spin text-green-400" size={32} />
+                      <p className="text-gray-400">Loading indices data…</p>
+                    </div>
+                  ) : dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored) ? (
+                    (() => {
+                      const stored = (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored;
+                      const INDEX_NAMES = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
+                      const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_NAMES)[number], string> = {
+                        ndvi: 'Crop Health (NDVI)',
+                        evi: 'Plantation thickness (EVI)',
+                        gndvi: 'Fertilizer status (GNDVI)',
+                        lst: 'Heat Stress (LST)',
+                        ndbi: 'Non Farm Area (NDBI)',
+                        ndmi: 'Soil Moisture (NDMI)',
+                        ndre: 'Crop Stress (NDRE)',
+                        evi2: 'Crop Yield Potential (EVI2)',
+                        bsi: 'Bare Soil Index (BSI)',
+                      };
+                      const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
+                      INDEX_NAMES.forEach((name) => {
+                        byIndex[name] = [];
+                      });
+                      stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
+                        const key = item.index_name.toLowerCase();
+                        if (byIndex[key]) {
+                          byIndex[key].push({ period_date: item.period_date, value: item.value });
+                        }
+                      });
+                      INDEX_NAMES.forEach((name) => {
+                        byIndex[name].sort((a, b) => a.period_date.localeCompare(b.period_date));
+                      });
+                      const cardColors: Record<string, string> = {
+                        evi: '#22c55e',
+                        bsi: '#f59e0b',
+                        gndvi: '#06b6d4',
+                        lst: '#ef4444',
+                        ndbi: '#8b5cf6',
+                        ndmi: '#ec4899',
+                        ndre: '#14b8a6',
+                        ndvi: '#3b82f6',
+                        evi2: '#84cc16',
+                      };
+                      const yearPalette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444'];
+                      return (
+                        <div id="dashboard-indices-cards" className="w-full px-4 md:px-6 space-y-6">
+                          {fullscreenIndexCard && (
+                            <div
+                              className="fixed inset-0 z-[1190] bg-black/60"
+                              onClick={() => setFullscreenIndexCard(null)}
+                              aria-hidden="true"
+                            />
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
+                            {INDEX_NAMES.map((indexName) => {
+                              const points = byIndex[indexName] || [];
+                              const titleColor = cardColors[indexName] ?? '#6b7280';
+
+                              const isYearlyFreq = dashboardIndicesFrequency === 'yearly';
+                              const isWeeklyFreq = dashboardIndicesFrequency === 'weekly';
+
+                              // Yearly API: one value per calendar year — x-axis shows years, not months
+                              let chartData: Array<Record<string, string | number | null>>;
+                              let years: string[];
+
+                              if (isYearlyFreq) {
+                                const currentCalendarYear = new Date().getFullYear();
+                                const byYear = new Map<number, number>();
+                                points.forEach((p) => {
+                                  const date = new Date(p.period_date);
+                                  if (isNaN(date.getTime())) return;
+                                  const y = date.getFullYear();
+                                  if (y > currentCalendarYear) return;
+                                  byYear.set(y, p.value);
+                                });
+                                chartData = Array.from(byYear.entries())
+                                  .sort((a, b) => a[0] - b[0])
+                                  .map(([y, value]) => ({ year: String(y), value }));
+                                years = [];
+                              } else if (isWeeklyFreq) {
+                                // Weekly: keep all period_date points and place them between month ticks
+                                const yearsSet = new Set<number>();
+                                const xRows: Record<string, Record<string, string | number | null>> = {};
+                                points.forEach((p) => {
+                                  const date = new Date(p.period_date);
+                                  if (isNaN(date.getTime())) return;
+                                  const year = date.getFullYear();
+                                  yearsSet.add(year);
+                                  const monthIndex = date.getMonth();
+                                  const day = date.getDate();
+                                  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+                                  const x = monthIndex + (Math.max(1, day) - 1) / Math.max(1, daysInMonth);
+                                  const xKey = x.toFixed(4);
+                                  if (!xRows[xKey]) {
+                                    xRows[xKey] = { x };
+                                  }
+                                  xRows[xKey][String(year)] = p.value;
+                                });
+                                years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
+                                chartData = Object.values(xRows).sort((a, b) => Number(a.x) - Number(b.x));
+                              } else {
+                                // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
+                                const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
+                                const monthYearAgg: Record<string, Record<string, { sum: number; count: number }>> = {};
+                                const yearsSet = new Set<number>();
+
+                                points.forEach((p) => {
+                                  const date = new Date(p.period_date);
+                                  if (isNaN(date.getTime())) return;
+                                  const year = date.getFullYear();
+                                  const monthIndex = date.getMonth();
+                                  const monthLabel = date.toLocaleString('en-US', { month: 'short' });
+                                  const key = `${monthIndex}-${monthLabel}`;
+                                  yearsSet.add(year);
+                                  if (!monthMap[key]) {
+                                    monthMap[key] = { month: monthLabel, monthIndex };
+                                  }
+                                  const yearKey = String(year);
+                                  if (!monthYearAgg[key]) monthYearAgg[key] = {};
+                                  if (!monthYearAgg[key][yearKey]) monthYearAgg[key][yearKey] = { sum: 0, count: 0 };
+                                  monthYearAgg[key][yearKey].sum += p.value;
+                                  monthYearAgg[key][yearKey].count += 1;
+                                });
+
+                                years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
+                                chartData = MONTH_LABELS.map((month, monthIndex) => {
+                                  const key = `${monthIndex}-${month}`;
+                                  const entry = monthMap[key];
+                                  const row: Record<string, string | number | null> = { month };
+                                  years.forEach((y) => {
+                                    const agg = monthYearAgg[key]?.[y];
+                                    const val = agg && agg.count > 0 ? agg.sum / agg.count : undefined;
+                                    row[y] = typeof val === 'number' && !isNaN(val) ? val : null;
+                                  });
+                                  return row;
+                                });
+                              }
+
+                              const latestForHeader = (() => {
+                                if (isYearlyFreq) {
+                                  if (chartData.length === 0) return null;
+                                  const lastRow = chartData[chartData.length - 1];
+                                  const v = lastRow.value;
+                                  return typeof v === 'number' ? { value: v } : null;
+                                }
+                                return points.length > 0 ? points[points.length - 1] : null;
+                              })();
+
+                              return (
+                                <div
+                                  key={indexName}
+                                  className={`rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px] ${
+                                    fullscreenIndexCard === indexName ? 'fixed inset-4 z-[1200] shadow-2xl bg-gray-900' : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span className="text-sm font-semibold text-gray-200 leading-tight pr-2" style={{ color: titleColor }}>
+                                      {INDEX_DISPLAY_LABELS[indexName] ?? indexName}
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      {latestForHeader && (
+                                        <span className="text-xs text-gray-400">
+                                          {typeof latestForHeader.value === 'number' && (latestForHeader.value > 1000 || latestForHeader.value < -1000)
+                                            ? latestForHeader.value.toExponential(2)
+                                            : typeof latestForHeader.value === 'number'
+                                              ? latestForHeader.value.toFixed(4)
+                                              : String(latestForHeader.value)}
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => setFullscreenIndexCard(fullscreenIndexCard === indexName ? null : indexName)}
+                                        className="p-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
+                                        title={fullscreenIndexCard === indexName ? 'Exit fullscreen' : 'Fullscreen'}
+                                      >
+                                        {fullscreenIndexCard === indexName ? <MdFullscreenExit size={18} /> : <MdFullscreen size={18} />}
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="text-[10px] text-gray-500 mb-1">
+                                    {(isYearlyFreq ? chartData.length : points.length)} points · {dashboardIndicesFrequency}
+                                  </div>
+                                  {chartData.length > 0 ? (
+                                    <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: fullscreenIndexCard === indexName ? '85vh' : '70vh' }}>
+                                      <ResponsiveContainer width="100%" height={fullscreenIndexCard === indexName ? 420 : 220}>
+                                        <LineChart
+                                          data={chartData}
+                                          margin={{
+                                            top: 10,
+                                            right: 10,
+                                            left: 0,
+                                            bottom: isYearlyFreq && chartData.length > 10 ? 36 : 20,
+                                          }}
+                                        >
+                                          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                          <XAxis
+                                            dataKey={isYearlyFreq ? 'year' : isWeeklyFreq ? 'x' : 'month'}
+                                            type={isYearlyFreq ? 'number' : 'category'}
+                                            domain={isWeeklyFreq ? [0, 11.999] : undefined}
+                                            ticks={isWeeklyFreq ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : undefined}
+                                            tickFormatter={
+                                              isWeeklyFreq
+                                                ? (v: number) =>
+                                                    ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Math.max(0, Math.min(11, Math.floor(v)))] ?? ''
+                                                : undefined
+                                            }
+                                            tick={{ fill: '#9ca3af', fontSize: isYearlyFreq && chartData.length > 12 ? 9 : 10 }}
+                                            interval={isYearlyFreq || isWeeklyFreq ? 0 : 'preserveStartEnd'}
+                                            angle={isYearlyFreq && chartData.length > 10 ? -40 : 0}
+                                            textAnchor={isYearlyFreq && chartData.length > 10 ? 'end' : 'middle'}
+                                            height={isYearlyFreq && chartData.length > 10 ? 48 : 24}
+                                          />
+                                          <YAxis
+                                            width={48}
+                                            tick={{ fill: '#9ca3af', fontSize: 10 }}
+                                            tickFormatter={(v) => {
+                                              if (v === 0) return '0';
+                                              if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.0001 && v !== 0)) return (v as number).toExponential(1);
+                                              if (Math.abs(v) < 1) return (v as number).toFixed(3);
+                                              return (v as number).toFixed(2);
+                                            }}
+                                          />
+                                          <Tooltip
+                                            contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: 6 }}
+                                            labelStyle={{ color: '#d1d5db' }}
+                                            formatter={(value: number, name: string) => [typeof value === 'number' ? value.toFixed(4) : value, name]}
+                                            labelFormatter={(label) => {
+                                              if (!isWeeklyFreq) return label;
+                                              const x = typeof label === 'number' ? label : Number(label);
+                                              if (!Number.isFinite(x)) return label;
+                                              const monthIdx = Math.max(0, Math.min(11, Math.floor(x)));
+                                              const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                              const approxDay = Math.max(1, Math.min(31, Math.round((x - monthIdx) * 31 + 1)));
+                                              return `${monthNames[monthIdx]} ${approxDay}`;
+                                            }}
+                                          />
+                                          {!isYearlyFreq && (
+                                            <Legend verticalAlign="bottom" height={20} wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
+                                          )}
+                                          {isYearlyFreq ? (
+                                            <Line
+                                              type="monotone"
+                                              dataKey="value"
+                                              name="Value"
+                                              stroke={titleColor}
+                                              dot={{ r: 3 }}
+                                              strokeWidth={2}
+                                              connectNulls
+                                              isAnimationActive
+                                              animationDuration={600}
+                                            />
+                                          ) : (
+                                            years.map((yearKey, idx) => (
+                                              <Line
+                                                key={yearKey}
+                                                type="monotone"
+                                                dataKey={yearKey}
+                                                stroke={yearPalette[idx % yearPalette.length]}
+                                                dot={{ r: 2 }}
+                                                strokeWidth={1.5}
+                                                connectNulls
+                                                isAnimationActive
+                                                animationDuration={600}
+                                              />
+                                            ))
+                                          )}
+                                        </LineChart>
+                                      </ResponsiveContainer>
+                                    </div>
+                                  ) : (
+                                    <div className="min-h-[220px] flex items-center justify-center text-gray-500 text-xs">No data</div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
+                      <p className="text-gray-400">Select District and Frequency to load indices. Subdistrict and Village can be selected to further filter data.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {!splitScreenMode && (
             <button
               type="button"
               onClick={() => setIsMapFullScreen((p) => !p)}
-              className="absolute top-4 left-4 z-[1100] p-2 rounded-lg bg-black/60 border border-gray-700 text-gray-200 hover:bg-black/75 transition-colors flex items-center justify-center"
+              className={`absolute top-4 left-4 z-[1100] p-2 rounded-lg border transition-colors flex items-center justify-center ${
+                isDarkMode
+                  ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
+                  : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
+              }`}
               title={isMapFullscreen ? 'Exit fullscreen map' : 'Fullscreen map'}
             >
               {isMapFullscreen ? <MdFullscreenExit size={22} /> : <MdFullscreen size={22} />}
             </button>
           )}
+
+          {/* White mode: left-side analysis tabs (icon-only) */}
+          {!isDarkMode && !splitScreenMode && !isMapFullscreen && (
+            <div className="absolute top-16 left-4 z-[1100] flex flex-col gap-2">
+              {([
+                ['growth', <Sprout size={16} />],
+                ['water', <Droplets size={16} />],
+                ['soil', <Droplet size={16} />],
+                ['pest', <Bug size={16} />],
+                ['waterSource', <Waves size={16} />],
+                ['forest', <Trees size={16} />],
+              ] as Array<[AnalysisType, JSX.Element]>).map(([tab, icon]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTabForSide(tab, 'left')}
+                  onDoubleClick={() => { if (getActiveTab('left') === tab) setActiveTabForSide(null, 'left'); }}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                    getActiveTab('left') === tab
+                      ? 'bg-emerald-500 text-black border-emerald-300'
+                      : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
+                  }`}
+                  title={String(tab)}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Removed: "slider" button that auto-opened Pest tab */}
           {/* Water / Forest legend (normal mode only — tabs moved to header) */}
           {!splitScreenMode && !isMapFullscreen && getActiveTab('left') && (getActiveTab('left') === 'waterSource' || getActiveTab('left') === 'forest') && (
             <div className="absolute top-28 md:top-20 left-1/2 -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 w-auto max-w-[calc(100vw-2rem)]">
@@ -6124,7 +6734,7 @@ const App: React.FC = () => {
 
               return (
                 <div 
-                  className={`absolute z-[1000] bg-gray-100 rounded-lg border border-gray-300 shadow-xl ${splitScreenMode ? 'px-3 py-2' : 'px-4 py-3'} ${pestCardPosition ? '' : (splitScreenMode ? 'bottom-4 left-4' : (showWeatherDaily ? 'bottom-4 left-[340px]' : 'bottom-4 right-4'))}`}
+                  className={`absolute z-[1000] bg-gray-100 rounded-lg border border-gray-300 shadow-xl ${splitScreenMode ? 'px-3 py-2' : 'px-4 py-3'} ${pestCardPosition ? '' : (splitScreenMode ? 'bottom-4 left-4' : 'bottom-4 right-4')}`}
                   style={{
                     ...(splitScreenMode ? { width: `${W}px`, maxWidth: 'calc(50vw - 120px)' } : { width: `${pestGraphSize.width}px`, maxWidth: 'calc(100vw - 2rem)' }),
                     ...(pestCardPosition ? { left: pestCardPosition.left, bottom: pestCardPosition.bottom, right: 'auto' } : {})
@@ -6242,9 +6852,9 @@ const App: React.FC = () => {
                   <div id="pest-time-series-graph">
                   <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
                     {/* Y-axis line */}
-                    <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
+                    <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                     {/* X-axis line */}
-                    <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
+                    <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                     
                     {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -6252,7 +6862,7 @@ const App: React.FC = () => {
                       const y = H - bottomPadding - (chartHeight * ratio);
                       return (
                         <g key={`y-label-${ratio}`}>
-                          <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                          <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#111827" strokeWidth={1} />
                           <text x={P - 10} y={y + 4} textAnchor="end" fontSize={splitScreenMode ? "8" : "10"} fill="#6b7280">
                             {value.toFixed(0)}
                           </text>
@@ -6390,9 +7000,9 @@ const App: React.FC = () => {
               );
             })()
           )}
-          {/* Pest children panel: on map in top-left area (user-marked red zone), shows child breakdown e.g. Leaf Eating Caterpillar */}
+          {/* Pest children panel: bottom-left on map over basemap (Thrips, Mealybug, etc.) */}
           {!splitScreenMode && activeTab === 'pest' && selectedPestCategory && pestHierarchy?.hierarchy[selectedPestCategory]?.children && Object.keys(pestHierarchy.hierarchy[selectedPestCategory].children).length > 0 && (
-            <div className="absolute top-4 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
+            <div className="absolute bottom-4 left-4 z-[1000] w-[320px] max-w-[calc(100vw-4rem)] px-3 py-2 bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl">
               <div className="flex items-center justify-between mb-2 max-[1024px]:mb-1">
                 <span className="text-xs font-semibold text-gray-300 uppercase max-[1024px]:text-[10px]">
                   {selectedPestCategory.replace(/_/g, ' ')}
@@ -6508,100 +7118,8 @@ const App: React.FC = () => {
           })()}
 
 
-          {/* Controls - Right Side (floating over map) - Moved down to avoid overlap with download dropdown */}
-          <div className="absolute top-36 md:top-32 right-4 z-[1000] flex flex-col gap-2">
-            {/* Tile Layer Toggle Button */}
-            <button
-              onClick={() => {
-                const currentState = splitScreenMode ? leftShowTileLayers : showTileLayers;
-                console.log('👁️ Toggling tile layers, current state:', currentState);
-                if (splitScreenMode) {
-                  setLeftShowTileLayers(!leftShowTileLayers);
-                } else {
-                  setShowTileLayers(!showTileLayers);
-                }
-              }}
-              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center ${
-                (splitScreenMode ? leftShowTileLayers : showTileLayers)
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
-              }`}
-              title={(splitScreenMode ? leftShowTileLayers : showTileLayers) ? 'Hide tile layers' : 'Show tile layers'}
-            >
-              {(splitScreenMode ? leftShowTileLayers : showTileLayers) ? <Eye size={18} /> : <EyeOff size={18} />}
-            </button>
-
-            {/* Daily Weather Icon - only in split screen (left map) */}
-            {splitScreenMode && (
-            <button
-              type="button"
-              onClick={() => {
-                setLeftShowWeatherDaily(prev => !prev);
-              }}
-              className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center transition-colors ${
-                leftShowWeatherDaily
-                  ? 'bg-sky-500 text-black hover:bg-sky-400'
-                  : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700'
-              }`}
-              title={leftShowWeatherDaily ? 'Hide daily weather' : 'Show daily weather'}
-            >
-              <span className="text-xl">🌧️</span>
-            </button>
-            )}
-
-            {/* Download Button - Left Side (Split Screen) */}
-            {splitScreenMode && (getActiveTab('left') === 'pest' || (leftShowWeatherDaily && leftWeatherDailyData)) && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700 flex items-center justify-center transition-colors"
-                  title="Download Data"
-                >
-                  <Download size={18} />
-                </button>
-                
-                {/* Dropdown Menu */}
-                {showDownloadMenu && (
-                  <>
-                    {/* Backdrop to close menu on outside click */}
-                    <div 
-                      className="fixed inset-0 z-[999]" 
-                      onClick={() => setShowDownloadMenu(false)}
-                    />
-                    {/* Menu */}
-                    <div className="absolute top-full right-0 mt-2 bg-black/80 backdrop-blur-sm rounded-md border border-gray-600/50 shadow-xl overflow-hidden z-[1000]">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDownloadMenu(false);
-                          downloadPestGraphPDF();
-                        }}
-                        className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <FileText size={18} />
-                        <span className="text-xs md:text-sm">PDF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDownloadMenu(false);
-                          downloadPestGraphExcel();
-                        }}
-                        className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-1.5 transition-colors border-t border-gray-600/50"
-                      >
-                        <FileSpreadsheet size={18} />
-                        <span className="text-xs md:text-sm">Excel</span>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Daily weather line chart (bottom-right) - opened via WiDayRain icon */}
-          {splitScreenMode && leftShowWeatherDaily && leftWeatherDailyData?.daily?.length && (
+          {/* Daily weather line chart removed */}
+          {false && (
           <div className={`absolute ${getActiveTab('left') === 'pest' && leftShowPestSeries && leftSelectedPestCategory && leftPestStoredSeries && leftPestStoredSeries.length > 0 ? 'bottom-4 left-4' : 'bottom-4 right-4'} z-[1000] w-[280px] max-w-[calc(50vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3`}>
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -6751,7 +7269,7 @@ const App: React.FC = () => {
           </div>
           )}
 
-          {!splitScreenMode && showWeatherDaily && (
+          {false && (
           <div
             className={`absolute z-[1000] w-[320px] max-w-[calc(100vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3 ${weatherCardPosition ? '' : 'bottom-4 left-4'}`}
             style={weatherCardPosition ? { left: weatherCardPosition.left, bottom: weatherCardPosition.bottom, right: 'auto' } : {}}
@@ -7045,23 +7563,23 @@ const App: React.FC = () => {
           {/* Time series year-month tabs: show for Growth, Water, Soil, Pest (same bar style, shared selection) */}
           {/* Pest: year/month list */}
           {!splitScreenMode && getActiveTab('left') === 'pest' && pestStoredSeries && pestStoredSeries.length >= 0 && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                  PEST · Year / Month Series
+                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
+                  PEST - YEAR / MONTH SERIES
                 </div>
                 {pestStoredLoading && (
-                  <div className="text-[9px] text-gray-400">Loading…</div>
+                  <div className="text-[9px] text-gray-600">Loading…</div>
                 )}
               </div>
               {pestStoredError ? (
-                <div className="text-[9px] text-red-300">{pestStoredError}</div>
+                <div className="text-[9px] text-red-600">{pestStoredError}</div>
               ) : (
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
                     onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
-                    className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                    className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
                     title="Scroll left"
                   >
                     <ChevronLeft size={14} />
@@ -7072,13 +7590,14 @@ const App: React.FC = () => {
                         key={`${item.year_month}-${idx}`}
                         type="button"
                         onClick={() => {
+                          setPestChartViewMode('selected');
                           setSelectedTimeSeriesYearMonth(item.year_month);
                           setSelectedPestYearMonth(item.year_month);
                         }}
-                        className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${
+                        className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
                           (selectedTimeSeriesYearMonth ?? selectedPestYearMonth) === item.year_month
-                            ? 'bg-emerald-500/80 border-emerald-400 text-black'
-                            : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
+                            ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
+                            : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                         }`}
                       >
                         {item.year_month}
@@ -7088,10 +7607,26 @@ const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
-                    className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                    className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
                     title="Scroll right"
                   >
                     <ChevronRight size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPestChartViewMode('all');
+                      setSelectedPestYearMonth(null);
+                      setSelectedTimeSeriesYearMonth(null);
+                    }}
+                    className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
+                      pestChartViewMode === 'all' && selectedPestYearMonth == null
+                        ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
+                        : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                    }`}
+                    title="Show full time series context"
+                  >
+                    View all
                   </button>
                 </div>
               )}
@@ -7100,16 +7635,16 @@ const App: React.FC = () => {
 
           {/* Growth: Current + year/month list (show for district-only or district+subdistrict) */}
           {!splitScreenMode && getActiveTab('left') === 'growth' && selectedDistrict && (growthStoredSeries && growthStoredSeries.length > 0) && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
+                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
                   GROWTH - YEAR / MONTH SERIES
                 </div>
                 {growthStoredLoading && (
-                  <span className="text-[9px] text-amber-400">Loading year_month…</span>
+                  <span className="text-[9px] text-amber-700">Loading year_month…</span>
                 )}
                 {!growthStoredLoading && growthStoredError && (
-                  <span className="text-[9px] text-red-400" title={growthStoredError}>Error</span>
+                  <span className="text-[9px] text-red-600" title={growthStoredError}>Error</span>
                 )}
               </div>
               <div className="flex items-center gap-1">
@@ -7120,7 +7655,7 @@ const App: React.FC = () => {
                       timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
                     }
                   }}
-                  className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
                   title="Scroll left to older dates"
                 >
                   <ChevronLeft size={14} />
@@ -7143,10 +7678,10 @@ const App: React.FC = () => {
                         setGrowthChartViewMode('selected');
                       }}
                       title={item.year_month}
-                      className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${
-                        selectedTimeSeriesYearMonth === item.year_month
-                          ? 'bg-emerald-500/80 border-emerald-400 text-black'
-                          : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
+                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
+                        growthChartViewMode === 'selected' && selectedTimeSeriesYearMonth === item.year_month
+                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
+                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                       }`}
                     >
                       {item.year_month}
@@ -7160,7 +7695,7 @@ const App: React.FC = () => {
                       timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
                     }
                   }}
-                  className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
                   title="Scroll right to older dates"
                 >
                   <ChevronRight size={14} />
@@ -7168,7 +7703,11 @@ const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setGrowthChartViewMode('all')}
-                  className={`flex-shrink-0 px-2 py-1 rounded text-[9px] font-medium border ${growthChartViewMode === 'all' ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
+                    growthChartViewMode === 'all'
+                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
+                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                  }`}
                   title="Show all dates on graph"
                 >
                   View all
@@ -7179,21 +7718,33 @@ const App: React.FC = () => {
 
           {/* Water Uptake: time series bar – year_month from analyze_wateruptakeclasswise */}
           {!splitScreenMode && getActiveTab('left') === 'water' && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                  WATER UPTAKE · YEAR / MONTH SERIES
+                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
+                  WATER UPTAKE - YEAR / MONTH SERIES
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronLeft size={14} /></button>
+                <button
+                  type="button"
+                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
+                  title="Scroll left"
+                >
+                  <ChevronLeft size={14} />
+                </button>
                 <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                   <button
                     type="button"
                     onClick={() => {
+                      setWaterChartViewMode('all');
                       setSelectedWaterYearMonth(null);
                     }}
-                    className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedWaterYearMonth == null ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                    className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
+                      waterChartViewMode === 'all' && selectedWaterYearMonth == null
+                        ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
+                        : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                    }`}
                   >
                     Current
                   </button>
@@ -7202,36 +7753,108 @@ const App: React.FC = () => {
                       key={`water-${item.year_month}-${idx}`}
                       type="button"
                       onClick={() => {
+                        setWaterChartViewMode('selected');
                         setSelectedTimeSeriesYearMonth(item.year_month);
                         setSelectedWaterYearMonth(item.year_month);
                       }}
-                      className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedWaterYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}
+                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
+                        selectedWaterYearMonth === item.year_month
+                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
+                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                      }`}
                     >
                       {item.year_month}
                     </button>
                   ))}
                 </div>
-                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronRight size={14} /></button>
+                <button
+                  type="button"
+                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
+                  title="Scroll right"
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWaterChartViewMode('all');
+                    setSelectedWaterYearMonth(null);
+                  }}
+                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
+                    waterChartViewMode === 'all' && selectedWaterYearMonth == null
+                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
+                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                  }`}
+                  title="Use current snapshot / full series context"
+                >
+                  View all
+                </button>
               </div>
             </div>
           )}
 
           {/* Soil Moisture: time series bar – year_month from analyze_soilmoistureclasswise */}
           {!splitScreenMode && getActiveTab('left') === 'soil' && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[85vw] md:max-w-[600px] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl px-2 py-1.5">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                  SOIL MOISTURE · YEAR / MONTH SERIES
+                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
+                  SOIL MOISTURE - YEAR / MONTH SERIES
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronLeft size={14} /></button>
+                <button
+                  type="button"
+                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
+                  title="Scroll left"
+                >
+                  <ChevronLeft size={14} />
+                </button>
                 <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                   {[...(soilStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
-                    <button key={`soil-${item.year_month}-${idx}`} type="button" onClick={() => { setSelectedTimeSeriesYearMonth(item.year_month); setSelectedSoilYearMonth(item.year_month); }} className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 whitespace-nowrap ${selectedTimeSeriesYearMonth === item.year_month ? 'bg-emerald-500/80 border-emerald-400 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'}`}>{item.year_month}</button>
+                    <button
+                      key={`soil-${item.year_month}-${idx}`}
+                      type="button"
+                      onClick={() => {
+                        setSoilChartViewMode('selected');
+                        setSelectedTimeSeriesYearMonth(item.year_month);
+                        setSelectedSoilYearMonth(item.year_month);
+                      }}
+                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
+                        selectedSoilYearMonth === item.year_month
+                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
+                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                      }`}
+                    >
+                      {item.year_month}
+                    </button>
                   ))}
                 </div>
-                <button type="button" onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }} className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300"><ChevronRight size={14} /></button>
+                <button
+                  type="button"
+                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
+                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
+                  title="Scroll right"
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSoilChartViewMode('all');
+                    setSelectedSoilYearMonth(null);
+                    setSelectedTimeSeriesYearMonth(null);
+                  }}
+                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
+                    soilChartViewMode === 'all' && selectedSoilYearMonth == null
+                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
+                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
+                  }`}
+                  title="Full soil moisture series context"
+                >
+                  View all
+                </button>
               </div>
             </div>
           )}
@@ -7239,16 +7862,20 @@ const App: React.FC = () => {
         </div>
 
         {/* Two cards below map (non–split): Health Trends + Daily Weather */}
-        {!splitScreenMode && !isMapFullscreen && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 md:p-4 bg-gray-950 border-t border-gray-800 flex-shrink-0 min-h-0">
+      {!splitScreenMode && !isMapFullscreen && !showGraphPage && (
+          <div
+            ref={bottomCardsRef}
+            className={`grid w-full grid-cols-1 ${['growth','water','soil','pest'].includes(getActiveTab('left') || '') ? 'md:grid-cols-1' : 'md:grid-cols-2'} gap-3 bg-gray-950 border-t border-gray-800 flex-shrink-0 min-h-0`}
+            style={{ scrollMarginTop: 96 }}
+          >
             {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
-            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
+            <div className={`bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px] ${['growth','water','soil','pest'].includes(getActiveTab('left') || '') ? 'md:col-span-2' : ''}`}>
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
                 <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
                   {getActiveTabDisplayName('left')}
                 </h3>
               </div>
-              <div className="flex-1 p-4 min-h-0 flex flex-col">
+              <div id="health-trends-chart" className="flex-1 p-4 min-h-0 flex flex-col">
                 {getActiveTab('left') === 'growth' && showGrowthSeries && (getCurrentPixelData('left')?.classwise?.length > 0 || growthStoredSeries?.length > 0) ? (
                   (() => {
                     const classNames = ['Weak', 'Stress', 'Moderate', 'Healthy'];
@@ -7277,11 +7904,16 @@ const App: React.FC = () => {
                     const paddingRight = 12;
                     const paddingTop = 12;
                     const paddingBottom = 32;
-                    // Increase base width so each bar group is wider
-                    const W = 800;
+                    // Base width: scale with number of periods to reduce crowding
+                    // (also helps fill the card width so the chart doesn't look "stuck" to the left)
+                    const baseW = 900;
+                    const perPeriodPx = 56;
+                    const W = Math.max(baseW, ((growthStoredSeries?.length ?? 0) + 1) * perPeriodPx + paddingLeft + paddingRight);
                     const chartW = W - paddingLeft - paddingRight;
                     const chartH = H - paddingTop - paddingBottom;
                     const showAllDates = growthChartViewMode === 'all';
+                    const growthAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
+                    const growthAxisTick = isDarkMode ? '#d1d5db' : '#111827';
 
                     if (showAllDates) {
                       const storedSorted = [...(growthStoredSeries || [])].sort((a, b) => a.year_month.localeCompare(b.year_month));
@@ -7308,19 +7940,20 @@ const App: React.FC = () => {
                         <div className="w-full min-h-0 flex flex-col flex-1">
                           <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class · all dates</div>
                           <div className="flex-1 min-h-0 w-full overflow-x-auto">
-                            <svg width={Math.max(chartW + paddingLeft + paddingRight, 400)} height={H} className="w-full min-w-full" viewBox={`0 0 ${Math.max(W, paddingLeft + chartW + paddingRight)} ${H}`} preserveAspectRatio="xMidYMid meet">
+                            <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${Math.max(W, paddingLeft + chartW + paddingRight)} ${H}`} preserveAspectRatio="none">
                               <defs><clipPath id="growth-chart-clip-all"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
-                              <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                              <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
+                              <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
                               {yTicks.map(({ ratio, value }) => {
                               const y = paddingTop + chartH - ratio * chartH;
                               return (
                               <g key={ratio}>
-                                <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke={growthAxisTick} strokeWidth={1} />
                                 <text
                                   x={paddingLeft - 6}
                                   y={y + 4}
                                   textAnchor="end"
-                                  className="fill-gray-200"
+                                  className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
                                   fontSize={11}
                                   fontWeight="600"
                                 >
@@ -7351,7 +7984,7 @@ const App: React.FC = () => {
                                   x={gx}
                                   y={H - 10}
                                   textAnchor="middle"
-                                  className="fill-gray-200"
+                                  className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
                                   fontSize={11}
                                   fontWeight="600"
                                 >
@@ -7393,17 +8026,18 @@ const App: React.FC = () => {
                         <div className="flex-1 min-h-0 w-full">
                           <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
                             <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
-                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
+                            <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
                             {yTicks.map(({ ratio, value }) => {
                               const y = paddingTop + chartH - ratio * chartH;
                               return (
                                 <g key={ratio}>
-                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
+                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke={growthAxisTick} strokeWidth={1} />
                                   <text
                                     x={paddingLeft - 6}
                                     y={y + 4}
                                     textAnchor="end"
-                                    className="fill-gray-200"
+                                    className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
                                     fontSize={11}
                                     fontWeight="600"
                                   >
@@ -7429,7 +8063,7 @@ const App: React.FC = () => {
                               x={paddingLeft + chartW / 2}
                               y={H - 10}
                               textAnchor="middle"
-                              className="fill-gray-200"
+                              className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
                               fontSize={11}
                               fontWeight="600"
                             >
@@ -7472,7 +8106,7 @@ const App: React.FC = () => {
                         return Number((child as any).area_ha ?? (child as any).total_area_ha ?? 0);
                       })
                     );
-                    const W = 400;
+                    const W = 920;
                     const H = 220;
                     const P = 40;
                     const bottomPadding = 20;
@@ -7503,19 +8137,22 @@ const App: React.FC = () => {
                     };
                     const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
                     const parentColor = '#f97316';
+                    const pestAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
+                    const pestAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
-                      <div className="w-full min-h-0 flex flex-col flex-1 overflow-x-auto">
+                      <div className="w-full min-h-0 flex flex-col flex-1">
                         <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) · {currentCategory.replace(/_/g, ' ')} time series</div>
-                        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block flex-shrink-0">
-                          <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#4b5563" strokeWidth={1} />
-                          <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#4b5563" strokeWidth={1} />
+                        <div className="w-full overflow-x-auto">
+                          <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
+                          <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke={pestAxisMain} strokeWidth={1} />
+                          <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke={pestAxisMain} strokeWidth={1} />
                           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                             const value = paddedMaxValue * ratio;
                             const y = H - bottomPadding - (chartHeight * ratio);
                             return (
                               <g key={`y-${ratio}`}>
-                                <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#6b7280" strokeWidth={1} />
-                                <text x={P - 8} y={y + 3} textAnchor="end" className="fill-gray-400 text-[9px]" fontSize={9}>
+                                <line x1={P - 5} y1={y} x2={P} y2={y} stroke={pestAxisTick} strokeWidth={1} />
+                                <text x={P - 8} y={y + 3} textAnchor="end" className={isDarkMode ? 'fill-gray-400 text-[9px]' : 'fill-gray-800 text-[9px]'} fontSize={9}>
                                   {value.toFixed(0)}
                                 </text>
                               </g>
@@ -7544,7 +8181,8 @@ const App: React.FC = () => {
                               </g>
                             );
                           })}
-                        </svg>
+                          </svg>
+                        </div>
                         <div className="overflow-x-auto mt-0.5 flex-shrink-0" style={{ paddingLeft: P, paddingRight: P }}>
                           <div className="flex flex-nowrap gap-0" style={{ minWidth: labels.length * Math.max(barGroupWidth, 24) }}>
                             {labels.map((label, i) => (
@@ -7608,20 +8246,23 @@ const App: React.FC = () => {
                     const barGap = 6;
                     const barWidth = (chartW - barGap * (waterClassNames.length - 1)) / waterClassNames.length;
                     const selectedLabel = formatMonthLabel(selectedWaterYearMonth || null);
+                    const waterAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
+                    const waterAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
                       <div className="w-full min-h-0 flex flex-col flex-1">
                         <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by water uptake class · {selectedLabel}</div>
                         <div className="flex-1 min-h-0 w-full">
                           <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
                             <defs><clipPath id="water-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
-                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke="#4b5563" strokeWidth={1} />
+                            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
+                            <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
                             {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                               const value = paddedMax * ratio;
                               const y = paddingTop + chartH - ratio * chartH;
                               return (
                                 <g key={ratio}>
-                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke="#6b7280" strokeWidth={1} />
-                                  <text x={paddingLeft - 6} y={y + 4} textAnchor="end" className="fill-gray-200" fontSize={10}>{value.toFixed(0)}</text>
+                                  <line x1={paddingLeft} y1={y} x2={paddingLeft - 4} y2={y} stroke={waterAxisTick} strokeWidth={1} />
+                                  <text x={paddingLeft - 6} y={y + 4} textAnchor="end" className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'} fontSize={10}>{value.toFixed(0)}</text>
                                 </g>
                               );
                             })}
@@ -7635,7 +8276,7 @@ const App: React.FC = () => {
                               })}
                             </g>
                             {waterClassNames.map((cn, ci) => (
-                              <text key={`l-${cn}`} x={paddingLeft + ci * (barWidth + barGap) + barWidth / 2} y={H - 8} textAnchor="middle" className="fill-gray-400" fontSize={9}>{cn}</text>
+                              <text key={`l-${cn}`} x={paddingLeft + ci * (barWidth + barGap) + barWidth / 2} y={H - 8} textAnchor="middle" className={isDarkMode ? 'fill-gray-400' : 'fill-gray-800'} fontSize={9}>{cn}</text>
                             ))}
                           </svg>
                         </div>
@@ -7661,8 +8302,8 @@ const App: React.FC = () => {
                 )}
               </div>
             </div>
-            {/* Daily Weather card – header shows selected district, subdistrict or village name */}
-            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
+            {/* Daily Weather card removed */}
+            {false && <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
                 <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
                   Daily Weather {getWeatherCardLocationName('left') !== '—' ? `· ${getWeatherCardLocationName('left')}` : ''}
@@ -7802,7 +8443,7 @@ const App: React.FC = () => {
                   </div>
                 )}
               </div>
-            </div>
+            </div>}
           </div>
         )}
 
@@ -8083,81 +8724,6 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Controls - Right Side */}
-            <div className="absolute top-36 md:top-32 right-4 z-[1000] flex flex-col gap-2">
-              <button
-                onClick={() => setRightShowTileLayers(!rightShowTileLayers)}
-                className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center ${
-                  rightShowTileLayers
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-300 hover:bg-gray-700'
-                }`}
-                title={rightShowTileLayers ? 'Hide tile layers' : 'Show tile layers'}
-              >
-                {rightShowTileLayers ? <Eye size={18} /> : <EyeOff size={18} />}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setRightShowWeatherDaily(prev => !prev)}
-                className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center transition-colors ${
-                  rightShowWeatherDaily
-                    ? 'bg-sky-500 text-black hover:bg-sky-400'
-                    : 'bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700'
-                }`}
-                title={rightShowWeatherDaily ? 'Hide daily weather' : 'Show daily weather'}
-              >
-                <span className="text-xl">🌧️</span>
-              </button>
-
-              {/* Download Button - Right Side (Split Screen) */}
-              {(getActiveTab('right') === 'pest' || (rightShowWeatherDaily && rightWeatherDailyData)) && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                    className="px-3 py-2 rounded-lg text-sm font-medium bg-black/60 backdrop-blur-sm border border-gray-700 text-gray-100 hover:bg-gray-700 flex items-center justify-center transition-colors"
-                    title="Download Data"
-                  >
-                    <Download size={18} />
-                  </button>
-                  
-                  {showDownloadMenu && (
-                    <>
-                      <div 
-                        className="fixed inset-0 z-[999]" 
-                        onClick={() => setShowDownloadMenu(false)}
-                      />
-                      <div className="absolute top-full right-0 mt-2 bg-black/80 backdrop-blur-sm rounded-md border border-gray-600/50 shadow-xl overflow-hidden z-[1000]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowDownloadMenu(false);
-                            downloadPestGraphPDF();
-                          }}
-                          className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-1.5 transition-colors"
-                        >
-                          <FileText size={18} />
-                          <span className="text-xs md:text-sm">PDF</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowDownloadMenu(false);
-                            downloadPestGraphExcel();
-                          }}
-                          className="w-full px-2 md:px-3 py-1.5 md:py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-1.5 transition-colors border-t border-gray-600/50"
-                        >
-                          <FileSpreadsheet size={18} />
-                          <span className="text-xs md:text-sm">Excel</span>
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-
             {/* Pest Time Series Graph - Right Side */}
             {getActiveTab('right') === 'pest' && rightPestStoredSeries && rightPestStoredSeries.length > 0 && rightSelectedPestCategory && rightShowPestSeries && (
               (() => {
@@ -8343,9 +8909,9 @@ const App: React.FC = () => {
                     <div id="pest-time-series-graph-right">
                     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
                       {/* Y-axis line */}
-                      <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
+                      <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                       {/* X-axis line */}
-                      <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#e5e7eb" strokeWidth={1} />
+                      <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                       
                       {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -8353,7 +8919,7 @@ const App: React.FC = () => {
                         const y = H - bottomPadding - (chartHeight * ratio);
                         return (
                           <g key={`y-label-right-${ratio}`}>
-                            <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                            <line x1={P - 5} y1={y} x2={P} y2={y} stroke="#111827" strokeWidth={1} />
                             <text x={P - 10} y={y + 4} textAnchor="end" fontSize="8" fill="#6b7280">
                               {value.toFixed(0)}
                             </text>
@@ -8555,8 +9121,8 @@ const App: React.FC = () => {
               );
             })()}
 
-            {/* Weather Chart - Right Side */}
-            {rightShowWeatherDaily && rightWeatherDailyData?.daily?.length && (
+            {/* Weather Chart - Right Side removed */}
+            {false && (
               <div className="absolute bottom-4 left-4 z-[1000] w-[280px] max-w-[calc(50vw-2rem)] bg-black/70 backdrop-blur-sm rounded-lg border border-gray-600 shadow-xl p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div>
@@ -8746,7 +9312,8 @@ const App: React.FC = () => {
         <aside 
           className="w-full md:w-48 flex-shrink-0 border-l border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
           style={{
-            backgroundImage: `url(${backgroundImages[currentBgImageIndex]})`,
+            backgroundColor: isDarkMode ? '#0f172a' : '#ffffff',
+            backgroundImage: 'none',
             backgroundSize: 'cover',
             backgroundPosition: 'center',
             backgroundRepeat: 'no-repeat'
@@ -8761,6 +9328,7 @@ const App: React.FC = () => {
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {/* Crops Dropdown - before District, independent */}
+              {!showGraphPage && (
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                   Crops
@@ -8778,6 +9346,7 @@ const App: React.FC = () => {
                   <option value="sugarcane">Sugarcane</option>
                 </select>
               </div>
+              )}
 
               {/* District Dropdown */}
               <div>
@@ -8898,6 +9467,8 @@ const App: React.FC = () => {
                   <div className="grid grid-cols-2 gap-2">
                     {calculateAreaCards('right').map((item, idx) => {
                       const currentTab = getActiveTab('right');
+                      const cardBg = item.color || '#f97316';
+                      const cardFg = textColorOnBackground(cardBg);
                       return (
                         <div
                           key={`right-pct-${item.label}-${idx}`}
@@ -8933,20 +9504,24 @@ const App: React.FC = () => {
                                 e.currentTarget.click();
                             }
                           }}
-                          className={`p-3 bg-gray-700 rounded-lg border border-gray-600 flex flex-col items-center text-center gap-1.5 min-w-0 ${(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`}
+                          style={{ backgroundColor: cardBg, color: cardFg }}
+                          className={`p-3 rounded-xl border border-black/15 flex flex-col items-center text-center gap-1.5 min-w-0 ${
+                            (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
+                            (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null)
+                              ? 'cursor-pointer hover:brightness-95 transition-all'
+                              : ''
+                          }`}
                         >
-                          <div className="flex items-center gap-1.5 justify-center w-full min-w-0">
-                            <span
-                              className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
-                              style={{ backgroundColor: item.color || '#f97316' }}
-                            />
-                            <span className="text-xs text-gray-200 truncate w-full">{item.label}</span>
+                          <div className="flex items-center justify-center w-full min-w-0">
+                            <span className="text-xs font-medium truncate w-full" style={{ color: cardFg }}>
+                              {item.label}
+                            </span>
                           </div>
                           <div className="flex flex-col gap-0.5 mt-1 w-full">
-                            <span className="font-semibold text-green-400 text-xs md:text-sm break-words">
+                            <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
                               {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                             </span>
-                            <span className="font-semibold text-green-400 text-xs md:text-sm break-words">
+                            <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
                               {item.value.toFixed(2)} ha
                             </span>
                           </div>
