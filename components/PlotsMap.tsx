@@ -2,6 +2,8 @@ import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Polygon, Popup, Tooltip, useMap } from 'react-leaflet';
 import { Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
+import type { WindDirectResponse } from '../services/analysisService';
+import WindFlowOverlay from './WindFlowOverlay';
 
 interface WaterSource {
   id: string;
@@ -26,6 +28,9 @@ interface PlotsMapProps {
   fieldAreaByFieldId?: Record<string, number>;
   /** When true, do not show Field ID / Area tooltip or popup (e.g. for district/subdistrict boundary only) */
   hideFieldIdAreaCard?: boolean;
+  /** Open-Meteo wind AOI payload; when set with showWindFlowLayer, draws particles + markers on the map */
+  windDirectPayload?: WindDirectResponse | null;
+  showWindFlowLayer?: boolean;
 }
 
 // Helper component to fit bounds when plots change (only on initial load, not after user interaction)
@@ -102,7 +107,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   onSelectWaterSource,
   cropColor = null,
   fieldAreaByFieldId = {},
-  hideFieldIdAreaCard = false
+  hideFieldIdAreaCard = false,
+  windDirectPayload = null,
+  showWindFlowLayer = false
 }) => {
   // Default center (Nashik/Maharashtra area based on coordinates provided in prompt)
   const defaultCenter: LeafletCoordinate = [20.0130, 73.6620];
@@ -339,6 +346,12 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           </Polygon>
         );
       }).filter((source) => source !== null)}
+
+      {windDirectPayload &&
+        showWindFlowLayer &&
+        (windDirectPayload.points_weather?.length ?? 0) > 0 && (
+          <WindFlowOverlay payload={windDirectPayload} particleCount={480} showMarkers />
+        )}
     </MapContainer>
   );
 };

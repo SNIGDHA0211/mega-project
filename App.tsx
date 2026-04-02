@@ -16,13 +16,13 @@ import {
   fetchNDWIDetection,
   fetchNDVISugarcaneDetection,
   fetchLandSurfaceTemperature,
-  fetchMethane,
   fetchForestCanopy,
   fetchET,
   fetchWeather,
   fetchPestStoredSeries,
   fetchDashboardIndicesStore,
   fetchWeatherDaily,
+  fetchWindDirect,
   GrowthAnalysisResponse,
   type DashboardIndicesStoreResponse,
   type DashboardIndicesFrequency,
@@ -33,13 +33,14 @@ import {
   ETResponse,
   WeatherResponse,
   WeatherDailyResponse,
+  WindDirectResponse,
   PestHierarchyResponse,
   PestHierarchyChild,
   PestStoredResponse,
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
@@ -146,10 +147,6 @@ const App: React.FC = () => {
   const [lstTileUrl, setLstTileUrl] = useState<string | null>(null);
   const [lstLoading, setLstLoading] = useState<boolean>(false);
   
-  // State for Methane
-  const [methaneTileUrl, setMethaneTileUrl] = useState<string | null>(null);
-  const [methaneLoading, setMethaneLoading] = useState<boolean>(false);
-  const [methaneEnabled, setMethaneEnabled] = useState<boolean>(false);
   
   // State for GeoJSON plots (e.g. from boundary load; currently unused)
   const [geojsonPlots, setGeojsonPlots] = useState<Array<{id: string; field_id?: string; area_ha: string; boundary: Coordinate[]}>>([]);
@@ -181,6 +178,11 @@ const App: React.FC = () => {
   const [rightWeatherDailyLoading, setRightWeatherDailyLoading] = useState<boolean>(false);
   const [rightWeatherDailyError, setRightWeatherDailyError] = useState<string | null>(null);
   const [rightWeatherChartHoverDay, setRightWeatherChartHoverDay] = useState<number | null>(null);
+
+  // Wind AOI (district / subdistrict / village) — same selection as daily weather
+  const [windDirectData, setWindDirectData] = useState<WindDirectResponse | null>(null);
+  /** Toggle animated wind particles + speed markers on the main map (Open-Meteo AOI). */
+  const [showWindFlowLayer, setShowWindFlowLayer] = useState<boolean>(false);
 
   // State for Pest stored time series (year_month tabs)
   const [pestStoredSeries, setPestStoredSeries] = useState<PestStoredResponse | null>(null);
@@ -401,12 +403,6 @@ const App: React.FC = () => {
     });
   };
 
-  // Refs to ignore stray second click when user double-taps Land Surface or Methane (so the second tap doesn't open the other)
-  const lastLstDoubleClickRef = useRef(0);
-  const lastMethaneDoubleClickRef = useRef(0);
-  const LST_METHANE_DBLCLICK_MS = 400;
-  // If user double-clicks to close while fetch is in flight, don't re-apply the result (so Methane/LST stay closed)
-  const methaneClosedByUserRef = useRef(false);
   const lstClosedByUserRef = useRef(false);
 
   // State for Pest stored time series for left and right sides (split screen mode)
@@ -433,6 +429,28 @@ const App: React.FC = () => {
       } else {
         setRightActiveTab(tab);
       }
+    }
+  };
+
+  const toggleActiveTabForSide = (tab: AnalysisType, side: 'left' | 'right' = 'left') => {
+    if (getActiveTab(side) === tab) setActiveTabForSide(null, side);
+    else setActiveTabForSide(tab, side);
+  };
+
+  const clearLstTileLayer = () => {
+    lstClosedByUserRef.current = true;
+    setLstTileUrl(null);
+    setAllPlotsTileUrls((prev) => {
+      const n = { ...prev };
+      delete n['land-surface-temperature'];
+      return n;
+    });
+    if (splitScreenMode) {
+      setRightAllPlotsTileUrls((prev) => {
+        const n = { ...prev };
+        delete n['land-surface-temperature'];
+        return n;
+      });
     }
   };
 
@@ -3907,6 +3925,41 @@ const App: React.FC = () => {
     }
   }, [splitScreenMode]);
 
+  // When no analysis tab is selected, remove those tile layers (LST stays — separate control).
+  useEffect(() => {
+    if (splitScreenMode) return;
+    if (activeTab !== null) return;
+    setAllPlotsTileUrls((prev) => {
+      const t = prev['land-surface-temperature'];
+      return t ? { 'land-surface-temperature': t } : {};
+    });
+    setPestTileUrl(null);
+    setForestTileUrl(null);
+    setForestData(null);
+    setSelectedForestAgeClass(null);
+    setPestHierarchy(null);
+    setSelectedPestCategory(null);
+    setShowPestChildren(false);
+    setWaterSources([]);
+    setNdwiData(null);
+    setSelectedWaterSource(null);
+    setWaterAreaHectares(null);
+  }, [activeTab, splitScreenMode]);
+
+  useEffect(() => {
+    if (!splitScreenMode) return;
+    if (leftActiveTab !== null) return;
+    setLeftAllPlotsTileUrls({});
+    setLeftAllPlots([]);
+  }, [splitScreenMode, leftActiveTab]);
+
+  useEffect(() => {
+    if (!splitScreenMode) return;
+    if (rightActiveTab !== null) return;
+    setRightAllPlotsTileUrls({});
+    setRightAllPlots([]);
+  }, [splitScreenMode, rightActiveTab]);
+
   // Reset pest graph size to smaller default when entering split screen mode
   useEffect(() => {
     if (splitScreenMode) {
@@ -3965,12 +4018,6 @@ const App: React.FC = () => {
       }
     }
   }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
-
-  // Reset methane when district/subdistrict changes
-  useEffect(() => {
-    setMethaneEnabled(false);
-    setMethaneTileUrl(null);
-  }, [selectedDistrict, selectedSubdistrict]);
 
   // Pest stored year_month now comes from analyze_pestclasswise response (set in loadAnalysisData). Clear when switching away.
   useEffect(() => {
@@ -4522,6 +4569,33 @@ const App: React.FC = () => {
     };
   }, [selectedDistrict, selectedSubdistrict, selectedVillage]);
 
+  // Fetch wind AOI (/weather/wind-direct) for main map Wind layer (district / subdistrict / village)
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!selectedDistrict) {
+        setWindDirectData(null);
+        return;
+      }
+      try {
+        const data = await fetchWindDirect(
+          selectedDistrict,
+          selectedSubdistrict || undefined,
+          selectedVillage || undefined
+        );
+        if (!cancelled) setWindDirectData(data);
+      } catch {
+        if (!cancelled) setWindDirectData(null);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage]);
+
   // Fetch Daily Weather for left side in split screen mode
   useEffect(() => {
     let cancelled = false;
@@ -4704,6 +4778,7 @@ const App: React.FC = () => {
   // Tab name for Health Trends card header (e.g. growth -> "Growth", waterSource -> "Water Source")
   const getActiveTabDisplayName = (side: 'left' | 'right' = 'left'): string => {
     const tab = getActiveTab(side);
+    if (!tab && lstTileUrl) return 'LST';
     if (!tab) return 'Health Trends';
     const names: Record<string, string> = {
       growth: 'Growth',
@@ -5259,78 +5334,71 @@ const App: React.FC = () => {
             <div className="flex gap-1 md:gap-1.5 bg-black/40 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto scrollbar-hide">
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('growth', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('growth', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Growth (double-click when active to close)"
+                title="Growth (click again to hide)"
               >
                 <Sprout size={16} />
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('water', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('water', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Uptake (double-click when active to close)"
+                title="Water Uptake (click again to hide)"
               >
                 <Droplets size={16} />
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('soil', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('soil', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Soil Moisture (double-click when active to close)"
+                title="Soil Moisture (click again to hide)"
               >
                 <Droplet size={16} />
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('pest', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('pest', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Pest (double-click when active to close)"
+                title="Pest (click again to hide)"
               >
                 <Bug size={16} />
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('waterSource', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('waterSource', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Source (double-click when active to close)"
+                title="Water Source (click again to hide)"
               >
                 <Waves size={16} />
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTabForSide('forest', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('forest', 'left')}
                 className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
                   getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Forest (double-click when active to close)"
+                title="Forest (click again to hide)"
               >
                 <Trees size={16} />
               </button>
               <div
                 onClick={async () => {
-                  if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
+                  if (lstTileUrl) {
+                    clearLstTileLayer();
+                    return;
+                  }
                   if (lstLoading || loading || !selectedDistrict) return;
-                  setMethaneTileUrl(null);
-                  setMethaneEnabled(false);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
                   lstClosedByUserRef.current = false;
                   try {
                     setLstLoading(true);
@@ -5353,79 +5421,16 @@ const App: React.FC = () => {
                     setLstLoading(false);
                   }
                 }}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!lstTileUrl) return;
-                  lstClosedByUserRef.current = true;
-                  lastLstDoubleClickRef.current = Date.now();
-                  setLstTileUrl(null);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                }}
                 role="button"
                 tabIndex={0}
                 className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center shrink-0 ${
-                  selectedDistrict && !lstLoading && !loading
+                  (lstTileUrl || (selectedDistrict && !lstLoading && !loading))
                     ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600'
                     : 'cursor-not-allowed opacity-50'
                 } ${lstTileUrl ? 'bg-green-600/20 border-green-500' : 'bg-gray-700 border-gray-600'}`}
-                title="Land Surface Temperature (double-click when active to close)"
+                title="Land Surface Temperature (click again to hide)"
               >
-                <span className="text-base">🌡️</span>
-              </div>
-              <div
-                onClick={async () => {
-                  if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
-                  if (methaneLoading || loading || !selectedDistrict) return;
-                  setLstTileUrl(null);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  methaneClosedByUserRef.current = false;
-                  try {
-                    setMethaneLoading(true);
-                    setError(null);
-                    const response = await fetchMethane(selectedDistrict, selectedSubdistrict || undefined);
-                    if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
-                    if (response.tile_url) {
-                      setMethaneTileUrl(response.tile_url);
-                      setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
-                      setShowTileLayers(true);
-                      setMethaneEnabled(true);
-                    } else {
-                      throw new Error('No tile_url in response');
-                    }
-                  } catch (err) {
-                    if (methaneClosedByUserRef.current) { setMethaneLoading(false); return; }
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    setError(`Failed to load Methane Concentration: ${errorMessage}`);
-                    setMethaneTileUrl(null);
-                    setMethaneEnabled(true);
-                  } finally {
-                    setMethaneLoading(false);
-                  }
-                }}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!methaneTileUrl) return;
-                  methaneClosedByUserRef.current = true;
-                  lastMethaneDoubleClickRef.current = Date.now();
-                  setMethaneTileUrl(null);
-                  setMethaneEnabled(false);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                }}
-                role="button"
-                tabIndex={0}
-                className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center shrink-0 ${
-                  methaneEnabled && !methaneLoading && !loading
-                    ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600'
-                    : 'cursor-pointer opacity-50'
-                } ${methaneTileUrl ? 'bg-blue-600/20 border-blue-500' : 'bg-gray-700 border-gray-600'}`}
-                title="Methane Concentration (double-click when active to close)"
-              >
-                <span className="text-base">💨</span>
+                <Thermometer size={18} strokeWidth={2.2} className="shrink-0" />
               </div>
             </div>
           )}
@@ -6280,18 +6285,45 @@ const App: React.FC = () => {
           )}
 
           {!splitScreenMode && (
-            <button
-              type="button"
-              onClick={() => setIsMapFullScreen((p) => !p)}
-              className={`absolute top-4 left-4 z-[1100] p-2 rounded-lg border transition-colors flex items-center justify-center ${
-                isDarkMode
-                  ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
-                  : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
-              }`}
-              title={isMapFullscreen ? 'Exit fullscreen map' : 'Fullscreen map'}
-            >
-              {isMapFullscreen ? <MdFullscreenExit size={22} /> : <MdFullscreen size={22} />}
-            </button>
+            <div className="absolute top-4 left-4 z-[1100] flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsMapFullScreen((p) => !p)}
+                className={`p-2 rounded-lg border transition-colors flex items-center justify-center ${
+                  isDarkMode
+                    ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
+                    : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
+                }`}
+                title={isMapFullscreen ? 'Exit fullscreen map' : 'Fullscreen map'}
+              >
+                {isMapFullscreen ? <MdFullscreenExit size={22} /> : <MdFullscreen size={22} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWindFlowLayer((v) => !v)}
+                disabled={!windDirectData?.points_weather?.length}
+                className={`p-2 rounded-lg border transition-colors flex items-center justify-center gap-1.5 px-2.5 ${
+                  isDarkMode
+                    ? showWindFlowLayer && windDirectData?.points_weather?.length
+                      ? 'bg-sky-700/95 border-sky-500 text-white shadow-md'
+                      : 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75 disabled:opacity-45 disabled:cursor-not-allowed'
+                    : showWindFlowLayer && windDirectData?.points_weather?.length
+                      ? 'bg-sky-600 text-white border-sky-700 shadow-md'
+                      : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
+                }`}
+                title={
+                  !windDirectData?.points_weather?.length
+                    ? 'Wind flow: select a district and wait for AOI wind data'
+                    : showWindFlowLayer
+                      ? 'Hide wind flow (particles follow wind direction)'
+                      : 'Show wind flow — red streaks move with wind; ▲ markers show speed (km/h)'
+                }
+                aria-pressed={showWindFlowLayer}
+              >
+                <Wind size={20} strokeWidth={2.2} />
+                <span className="text-xs font-semibold hidden min-[420px]:inline">Wind</span>
+              </button>
+            </div>
           )}
 
           {/* White mode: left-side analysis tabs (icon-only) */}
@@ -6308,8 +6340,7 @@ const App: React.FC = () => {
                 <button
                   key={tab}
                   type="button"
-                  onClick={() => setActiveTabForSide(tab, 'left')}
-                  onDoubleClick={() => { if (getActiveTab('left') === tab) setActiveTabForSide(null, 'left'); }}
+                  onClick={() => toggleActiveTabForSide(tab, 'left')}
                   className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
                     getActiveTab('left') === tab
                       ? 'bg-emerald-500 text-black border-emerald-300'
@@ -6320,6 +6351,46 @@ const App: React.FC = () => {
                   {icon}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={async () => {
+                  if (lstTileUrl) {
+                    clearLstTileLayer();
+                    return;
+                  }
+                  if (lstLoading || loading || !selectedDistrict) return;
+                  lstClosedByUserRef.current = false;
+                  try {
+                    setLstLoading(true);
+                    setError(null);
+                    const response = await fetchLandSurfaceTemperature(selectedDistrict);
+                    if (lstClosedByUserRef.current) return;
+                    if (response.tile_url) {
+                      setLstTileUrl(response.tile_url);
+                      setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
+                      setShowTileLayers(true);
+                    } else {
+                      throw new Error('No tile_url in response');
+                    }
+                  } catch (err) {
+                    if (lstClosedByUserRef.current) return;
+                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                    setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
+                    setLstTileUrl(null);
+                  } finally {
+                    setLstLoading(false);
+                  }
+                }}
+                disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                  lstTileUrl
+                    ? 'bg-orange-500 text-white border-orange-600 shadow-md'
+                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
+                }`}
+                title="Land Surface Temperature (click again to hide)"
+              >
+                <Thermometer size={18} strokeWidth={2.2} />
+              </button>
             </div>
           )}
 
@@ -6346,75 +6417,68 @@ const App: React.FC = () => {
             {/* Active Tab Buttons - icons only */}
             <div className={`flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto ${splitScreenMode ? 'max-w-full' : 'w-auto'}`}>
               <button
-                onClick={() => setActiveTabForSide('growth', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'growth') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('growth', 'left')}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Growth (double-click when active to close)"
+                title="Growth (click again to hide)"
               >
                 <Sprout size={18} />
               </button>
               <button
-                onClick={() => setActiveTabForSide('water', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'water') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('water', 'left')}
                 className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Uptake (double-click when active to close)"
+                title="Water Uptake (click again to hide)"
               >
                 <Droplets size={splitScreenMode ? 16 : 18} />
               </button>
               <button
-                onClick={() => setActiveTabForSide('soil', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'soil') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('soil', 'left')}
                 className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Soil Moisture (double-click when active to close)"
+                title="Soil Moisture (click again to hide)"
               >
                 <Droplet size={splitScreenMode ? 16 : 18} />
               </button>
               <button
-                onClick={() => setActiveTabForSide('pest', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'pest') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('pest', 'left')}
                 className={`${splitScreenMode ? 'px-1.5 py-1 min-w-[28px]' : 'px-2 md:px-3 py-1.5 md:py-2 min-w-[36px]'} rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                   getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Pest (double-click when active to close)"
+                title="Pest (click again to hide)"
               >
                 <Bug size={splitScreenMode ? 16 : 18} />
               </button>
               <button
-                onClick={() => setActiveTabForSide('waterSource', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'waterSource') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('waterSource', 'left')}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Water Source (double-click when active to close)"
+                title="Water Source (click again to hide)"
               >
                 <Waves size={18} />
               </button>
               <button
-                onClick={() => setActiveTabForSide('forest', 'left')}
-                onDoubleClick={() => { if (getActiveTab('left') === 'forest') setActiveTabForSide(null, 'left'); }}
+                onClick={() => toggleActiveTabForSide('forest', 'left')}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                   getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                 }`}
-                title="Forest (double-click when active to close)"
+                title="Forest (click again to hide)"
               >
                 <Trees size={18} />
               </button>
 
-              {/* Land Surface Temperature Card - Inline; double-click when active to close */}
+              {/* Land Surface Temperature — toggles on/off with repeat click */}
               <div 
                 onClick={async () => {
-                  if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
+                  if (lstTileUrl) {
+                    clearLstTileLayer();
+                    return;
+                  }
                   if (lstLoading || loading || !selectedDistrict) return;
-                  setMethaneTileUrl(null);
-                  setMethaneEnabled(false);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
                   lstClosedByUserRef.current = false;
                   try {
                     setLstLoading(true);
@@ -6439,20 +6503,10 @@ const App: React.FC = () => {
                     setLstLoading(false);
                   }
                 }}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!lstTileUrl) return;
-                  lstClosedByUserRef.current = true;
-                  lastLstDoubleClickRef.current = Date.now();
-                  setLstTileUrl(null);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                }}
                 role="button"
                 tabIndex={0}
                 className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                  selectedDistrict && !lstLoading && !loading
+                  lstTileUrl || (selectedDistrict && !lstLoading && !loading)
                     ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
                     : 'cursor-not-allowed opacity-50'
                 } ${
@@ -6460,73 +6514,9 @@ const App: React.FC = () => {
                     ? 'bg-green-600/20 border-green-500' 
                     : 'bg-gray-700 border-gray-600'
                 }`}
-                title="Land Surface Temperature (double-click when active to close)"
+                title="Land Surface Temperature (click again to hide)"
               >
-                <span className={splitScreenMode ? 'text-base' : 'text-lg'}>🌡️</span>
-              </div>
-
-              {/* Methane Concentration Card - Inline; double-click when active to close */}
-              <div 
-                onClick={async () => {
-                  if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
-                  if (methaneLoading || loading || !selectedDistrict) return;
-                  setLstTileUrl(null);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  methaneClosedByUserRef.current = false;
-                  try {
-                    setMethaneLoading(true);
-                    setError(null);
-                    
-                    const response = await fetchMethane(
-                      selectedDistrict,
-                      selectedSubdistrict || undefined
-                    );
-                    
-                    if (methaneClosedByUserRef.current) return;
-                    if (response.tile_url) {
-                      setMethaneTileUrl(response.tile_url);
-                      setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
-                      setShowTileLayers(true);
-                      setMethaneEnabled(true);
-                    } else {
-                      throw new Error('No tile_url in response');
-                    }
-                  } catch (err) {
-                    if (methaneClosedByUserRef.current) return;
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    setError(`Failed to load Methane Concentration: ${errorMessage}`);
-                    setMethaneTileUrl(null);
-                    setMethaneEnabled(true);
-                  } finally {
-                    setMethaneLoading(false);
-                  }
-                }}
-                onDoubleClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!methaneTileUrl) return;
-                  methaneClosedByUserRef.current = true;
-                  lastMethaneDoubleClickRef.current = Date.now();
-                  setMethaneTileUrl(null);
-                  setMethaneEnabled(false);
-                  setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                  if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                }}
-                role="button"
-                tabIndex={0}
-                className={`${splitScreenMode ? 'px-1.5 py-1' : 'px-2 md:px-3 py-1.5 md:py-2'} rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                  methaneEnabled && !methaneLoading && !loading
-                    ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
-                    : 'cursor-pointer opacity-50'
-                } ${
-                  methaneTileUrl 
-                    ? 'bg-blue-600/20 border-blue-500' 
-                    : 'bg-gray-700 border-gray-600'
-                }`}
-                title="Methane Concentration (double-click when active to close)"
-              >
-                <span className="text-base">💨</span>
+                <Thermometer size={splitScreenMode ? 17 : 19} strokeWidth={2.2} className="shrink-0" />
               </div>
             </div>
           </div>
@@ -7542,7 +7532,7 @@ const App: React.FC = () => {
               etData={etData}
               weatherData={weatherData}
               etWeatherLoading={etWeatherLoading}
-              tileUrl={pestTileUrl || forestTileUrl || methaneTileUrl || lstTileUrl || cropTileUrl || tileUrl}
+              tileUrl={pestTileUrl || forestTileUrl || lstTileUrl || cropTileUrl || tileUrl}
               plotBounds={plotBounds}
               allPlotsTileUrls={splitScreenMode ? leftAllPlotsTileUrls : allPlotsTileUrls}
               showTileLayers={splitScreenMode ? leftShowTileLayers : showTileLayers}
@@ -7557,6 +7547,8 @@ const App: React.FC = () => {
                   `Coordinates: ${JSON.stringify(data.coordinates).substring(0, 100)}...`
                 );
               }}
+              windDirectPayload={windDirectData}
+              showWindFlowLayer={showWindFlowLayer}
             />
           )}
 
@@ -8302,6 +8294,7 @@ const App: React.FC = () => {
                 )}
               </div>
             </div>
+
             {/* Daily Weather card removed */}
             {false && <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
@@ -8455,76 +8448,69 @@ const App: React.FC = () => {
               {/* Active Tab Buttons - icons only; content-sized, no full-width stretch */}
               <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto overflow-y-hidden max-w-full tab-bar-scroll flex-nowrap">
                 <button
-                  onClick={() => setActiveTabForSide('growth', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'growth') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('growth', 'right')}
                   className={`px-1.5 py-1 min-w-[28px] rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
                     getActiveTab('right') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Growth (double-click when active to close)"
+                  title="Growth (click again to hide)"
                 >
                   <Sprout size={16} />
                 </button>
                 <button
-                  onClick={() => setActiveTabForSide('water', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'water') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('water', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Water Uptake (double-click when active to close)"
+                  title="Water Uptake (click again to hide)"
                 >
                   <Droplets size={18} />
                 </button>
                 <button
-                  onClick={() => setActiveTabForSide('soil', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'soil') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('soil', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Soil Moisture (double-click when active to close)"
+                  title="Soil Moisture (click again to hide)"
                 >
                   <Droplet size={18} />
                 </button>
                 <button
-                  onClick={() => setActiveTabForSide('pest', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'pest') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('pest', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Pest (double-click when active to close)"
+                  title="Pest (click again to hide)"
                 >
                   <Bug size={18} />
                 </button>
                 <button
-                  onClick={() => setActiveTabForSide('waterSource', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'waterSource') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('waterSource', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Water Source (double-click when active to close)"
+                  title="Water Source (click again to hide)"
                 >
                   <Waves size={18} />
                 </button>
                 <button
-                  onClick={() => setActiveTabForSide('forest', 'right')}
-                  onDoubleClick={() => { if (getActiveTab('right') === 'forest') setActiveTabForSide(null, 'right'); }}
+                  onClick={() => toggleActiveTabForSide('forest', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
                     getActiveTab('right') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
                   }`}
-                  title="Forest (double-click when active to close)"
+                  title="Forest (click again to hide)"
                 >
                   <Trees size={18} />
                 </button>
 
-                {/* Land Surface Temperature Card - Inline; double-click when active to close */}
+                {/* Land Surface Temperature — toggles on/off with repeat click */}
                 <div 
                   onClick={async () => {
-                    if (Date.now() - lastMethaneDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
+                    if (lstTileUrl) {
+                      clearLstTileLayer();
+                      return;
+                    }
                     const currentDistrict = splitScreenMode ? rightSelectedDistrict : selectedDistrict;
                     if (lstLoading || loading || !currentDistrict) return;
-                    setMethaneTileUrl(null);
-                    setMethaneEnabled(false);
-                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
                     lstClosedByUserRef.current = false;
                     try {
                       setLstLoading(true);
@@ -8554,20 +8540,10 @@ const App: React.FC = () => {
                       setLstLoading(false);
                     }
                   }}
-                  onDoubleClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!lstTileUrl) return;
-                    lstClosedByUserRef.current = true;
-                    lastLstDoubleClickRef.current = Date.now();
-                    setLstTileUrl(null);
-                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                  }}
                   role="button"
                   tabIndex={0}
                   className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                    (splitScreenMode ? rightSelectedDistrict : selectedDistrict) && !lstLoading && !loading
+                    lstTileUrl || ((splitScreenMode ? rightSelectedDistrict : selectedDistrict) && !lstLoading && !loading)
                       ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600' 
                       : 'cursor-not-allowed opacity-50'
                   } ${
@@ -8575,80 +8551,9 @@ const App: React.FC = () => {
                       ? 'bg-green-600/20 border-green-500' 
                       : 'bg-gray-700 border-gray-600'
                   }`}
-                  title="Land Surface Temperature (double-click when active to close)"
+                  title="Land Surface Temperature (click again to hide)"
                 >
-                  <span className="text-base">🌡️</span>
-                </div>
-
-                {/* Methane Concentration Card - Inline; double-click when active to close */}
-                <div 
-                  onClick={async () => {
-                    if (Date.now() - lastLstDoubleClickRef.current < LST_METHANE_DBLCLICK_MS) return;
-                    const currentDistrict = splitScreenMode ? rightSelectedDistrict : selectedDistrict;
-                    const currentSubdistrict = splitScreenMode ? rightSelectedSubdistrict : selectedSubdistrict;
-                    if (methaneLoading || loading || !currentDistrict) return;
-                    setLstTileUrl(null);
-                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['land-surface-temperature']; return n; });
-                    methaneClosedByUserRef.current = false;
-                    try {
-                      setMethaneLoading(true);
-                      setError(null);
-                      
-                      const response = await fetchMethane(
-                        currentDistrict,
-                        currentSubdistrict || undefined
-                      );
-                      
-                      if (methaneClosedByUserRef.current) return;
-                      if (response.tile_url) {
-                        setMethaneTileUrl(response.tile_url);
-                        if (splitScreenMode) {
-                          setRightAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
-                          setRightShowTileLayers(true);
-                        } else {
-                          setAllPlotsTileUrls(prev => ({ ...prev, 'methane': response.tile_url }));
-                          setShowTileLayers(true);
-                        }
-                        setMethaneEnabled(true);
-                      } else {
-                        throw new Error('No tile_url in response');
-                      }
-                    } catch (err) {
-                      if (methaneClosedByUserRef.current) return;
-                      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                      setError(`Failed to load Methane Concentration: ${errorMessage}`);
-                      setMethaneTileUrl(null);
-                      setMethaneEnabled(true);
-                    } finally {
-                      setMethaneLoading(false);
-                    }
-                  }}
-                  onDoubleClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!methaneTileUrl) return;
-                    methaneClosedByUserRef.current = true;
-                    lastMethaneDoubleClickRef.current = Date.now();
-                    setMethaneTileUrl(null);
-                    setMethaneEnabled(false);
-                    setAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                    if (splitScreenMode) setRightAllPlotsTileUrls(prev => { const n = { ...prev }; delete n['methane']; return n; });
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center gap-1.5 flex-shrink-0 ${
-                    methaneEnabled && !methaneLoading && !loading
-                      ? 'cursor-pointer hover:border-blue-500 hover:bg-gray-600' 
-                      : 'cursor-pointer opacity-50'
-                  } ${
-                    methaneTileUrl 
-                      ? 'bg-blue-600/20 border-blue-500' 
-                      : 'bg-gray-700 border-gray-600'
-                  }`}
-                  title="Methane Concentration (double-click when active to close)"
-                >
-                  <span className="text-base">💨</span>
+                  <Thermometer size={17} strokeWidth={2.2} className="shrink-0" />
                 </div>
               </div>
             </div>
@@ -9301,6 +9206,8 @@ const App: React.FC = () => {
                 showTileLayers={rightShowTileLayers}
                 waterSources={waterSources}
                 onSelectWaterSource={setSelectedWaterSource}
+                windDirectPayload={null}
+                showWindFlowLayer={false}
               />
             )}
           </div>

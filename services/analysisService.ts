@@ -1623,84 +1623,6 @@ export const fetchLandSurfaceTemperature = async (
   }
 };
 
-// Methane Response
-export interface MethaneResponse {
-  type: string;
-  features: Array<{
-    type: string;
-    geometry: {
-      type: string;
-      coordinates: number[][][];
-    };
-    properties: {
-      plot_id?: string;
-      tile_url: string;
-      data_source?: string;
-      start_date?: string;
-      end_date?: string;
-      last_updated?: string;
-    };
-  }>;
-}
-
-// Processed Methane Response
-export interface ProcessedMethaneResponse {
-  tile_url: string;
-  district?: string;
-  subdistrict?: string;
-  start_date?: string;
-  end_date?: string;
-}
-
-// Fetch Methane Concentration
-export const fetchMethane = async (
-  district: string,
-  subdistrict?: string,
-  startDate: string = '2025-11-20',
-  endDate: string = '2025-12-23'
-): Promise<ProcessedMethaneResponse> => {
-  try {
-    let url = `${BASE_URL}/methane-concentration?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
-    if (subdistrict) {
-      url += `&subdistrict=${encodeURIComponent(subdistrict)}`;
-    }
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'accept': 'application/json'
-      },
-      body: ''
-    });
-    
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    }
-
-    const data: MethaneResponse = await response.json();
-    
-    // Extract tile_url from features array
-    const tileUrl = data.features?.[0]?.properties?.tile_url;
-    
-    if (!tileUrl) {
-      throw new Error('No tile_url found in response');
-    }
-    
-    return {
-      tile_url: tileUrl,
-      district: district,
-      subdistrict: subdistrict,
-      start_date: startDate,
-      end_date: endDate
-    };
-  } catch (error) {
-    if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/methane-concentration`);
-    }
-    throw error;
-  }
-};
-
 // ET (Evapotranspiration) Response
 export interface ETResponse {
   date: string;
@@ -1840,4 +1762,95 @@ export const fetchWeatherDaily = async (
   }
 
   throw lastError ?? new Error(`Weather daily API returned 404 for all paths. Backend must expose GET /weather/daily?district=... (or /api/weather/daily). Tried: ${urlsToTry.join(' ; ')}`);
+};
+
+/** Open-Meteo wind AOI payload: polygon ring + sampled grid points with current wind/temp (GET /weather/wind-direct). */
+export interface WindDirectLatLon {
+  lat: number;
+  lon: number;
+}
+
+export interface WindDirectBBox {
+  min_lat: number;
+  max_lat: number;
+  min_lon: number;
+  max_lon: number;
+}
+
+export interface WindDirectSummary {
+  avg_temperature_2m?: number;
+  avg_wind_speed_10m?: number;
+  avg_wind_direction_10m?: number;
+  max_wind_speed_10m?: number;
+}
+
+export interface WindDirectPointWeather {
+  latitude: number;
+  longitude: number;
+  temperature_2m?: number | null;
+  wind_speed_10m?: number | null;
+  wind_direction_10m?: number | null;
+  wind_gusts_10m?: number | null;
+  timestamp?: string | null;
+}
+
+export interface WindDirectResponse {
+  points_count: number;
+  centroid: WindDirectLatLon;
+  bbox: WindDirectBBox;
+  aoi_ring: WindDirectLatLon[];
+  sampled_points?: WindDirectLatLon[];
+  timestamp_utc?: string;
+  summary: WindDirectSummary;
+  points_weather: WindDirectPointWeather[];
+}
+
+/** Wind AOI for district / optional subdistrict / village (same query shape as /weather/daily). */
+export const fetchWindDirect = async (
+  district: string,
+  subdistrict?: string,
+  village?: string
+): Promise<WindDirectResponse> => {
+  const query = `district=${encodeURIComponent(district)}${subdistrict ? `&subdistrict=${encodeURIComponent(subdistrict)}` : ''}${village ? `&village=${encodeURIComponent(village)}` : ''}`;
+
+  const tryUrl = (pathPrefix: string) => `${BASE_URL}${pathPrefix}/weather/wind-direct?${query}`;
+  const proxyUrl = typeof window !== 'undefined' ? `${window.location.origin}/railway/weather/wind-direct?${query}` : '';
+
+  const urlsToTry: string[] = isDevelopment && proxyUrl
+    ? [proxyUrl, tryUrl(''), tryUrl('/api')]
+    : [tryUrl(''), tryUrl('/api')];
+
+  let lastError: Error | null = null;
+  for (const url of urlsToTry) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
+
+      if (!response.ok) {
+        lastError = new Error(`API Error: ${response.status} ${response.statusText}. Tried: ${url}`);
+        if (response.status === 404) continue;
+        throw lastError;
+      }
+      lastError = null;
+
+      const data: WindDirectResponse = await response.json();
+      return data;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) {
+        lastError = err;
+        continue;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'Failed to fetch' || err instanceof TypeError) {
+        lastError = new Error(`Cannot reach weather/wind-direct API. Check backend and CORS. URL tried: ${url}`);
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new Error(`weather/wind-direct returned 404 for all paths. Tried: ${urlsToTry.join(' ; ')}`);
 };
