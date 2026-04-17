@@ -30,6 +30,8 @@ interface PlotsMapProps {
   cropColor?: string | null;
   /** field_id -> field_area_ha from predict-area; shown on hover and in popup */
   fieldAreaByFieldId?: Record<string, number>;
+  /** field_id -> fill hex when multiple crops ("All"); overrides cropColor for that field */
+  fieldFillByFieldId?: Record<string, string>;
   /** When true, do not show Field ID / Area tooltip or popup (e.g. for district/subdistrict boundary only) */
   hideFieldIdAreaCard?: boolean;
   /** Open-Meteo wind AOI payload; when set with showWindFlowLayer, draws particles + markers on the map */
@@ -111,6 +113,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   onSelectWaterSource,
   cropColor = null,
   fieldAreaByFieldId = {},
+  fieldFillByFieldId = {},
   hideFieldIdAreaCard = false,
   windDirectPayload = null,
   showWindFlowLayer = false
@@ -199,6 +202,13 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
         // Highlight predict-area fields whenever field_id matches; cropColor is optional (fill falls back to dark green)
         const useCropColor = !isWaterSource && isInIdentifiedBoundaries;
         const displayAreaHa = fieldAreaByFieldId[plot.id] ?? (plot.area_ha ? Number(plot.area_ha) : undefined);
+        const fillFromPredict =
+          fieldFillByFieldId[plot.id] ?? cropColor ?? '';
+        const resolvedFillHex =
+          typeof fillFromPredict === 'string' &&
+          /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(fillFromPredict.trim())
+            ? fillFromPredict.trim()
+            : PREDICT_AREA_FIELD_FILL;
         // When hideFieldIdAreaCard is true, this is a district/subdistrict boundary – use visible stroke and light fill
         const isBoundaryOnly = hideFieldIdAreaCard && !isWaterSource;
 
@@ -223,11 +233,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                       : (useCropColor ? PREDICT_AREA_FIELD_STROKE : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillColor: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor
-                          ? (cropColor && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(cropColor.trim())
-                              ? cropColor.trim()
-                              : PREDICT_AREA_FIELD_FILL)
-                          : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 1 : 0),
                     weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 2 : 1),
                     opacity: 1,

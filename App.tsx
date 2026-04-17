@@ -173,7 +173,11 @@ const App: React.FC = () => {
   // Predict-area (crop): color and field_area_ha per field_id when crop + village selected
   const [predictAreaCropColor, setPredictAreaCropColor] = useState<string | null>(null);
   const [predictAreaFieldAreas, setPredictAreaFieldAreas] = useState<Record<string, number>>({});
-  const [predictCropAreaHa, setPredictCropAreaHa] = useState<number | null>(null);
+  const [predictFieldFillByFieldId, setPredictFieldFillByFieldId] = useState<Record<string, string>>({});
+  const [predictCropAreas, setPredictCropAreas] = useState<{
+    sugarcane: number | null;
+    wheat: number | null;
+  }>({ sugarcane: null, wheat: null });
   const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
   
   // State for ET and Weather data
@@ -1587,50 +1591,110 @@ const App: React.FC = () => {
     if (!selectedCrop || !district || !subdistrict || !village) {
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
-      setPredictCropAreaHa(null);
+      setPredictFieldFillByFieldId({});
+      setPredictCropAreas({ sugarcane: null, wheat: null });
       setPredictCropAreaLoading(false);
       return;
     }
     let cancelled = false;
     setPredictCropAreaLoading(true);
-    const cropParam = formatPredictAreaCropName(selectedCrop);
+    const cropParam = selectedCrop === 'all' ? null : formatPredictAreaCropName(selectedCrop);
+
     fetchPredictArea(district, subdistrict, village, 1, cropParam)
       .then((res) => {
         if (cancelled) return;
+
+        const hexOk = (s: string | undefined | null) =>
+          typeof s === 'string' && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s.trim());
+
+        if (selectedCrop === 'all') {
+          const areas: Record<string, number> = {};
+          const fills: Record<string, string> = {};
+          const mergeCropBlock = (key: 'wheat' | 'sugarcane') => {
+            const cd = res[key] as PredictAreaCropData | undefined;
+            if (!cd || typeof cd !== 'object') return;
+            const color = hexOk(cd.color) ? cd.color!.trim() : '#166534';
+            const boundaries = cd.identified_field_boundaries ?? {};
+            Object.values(boundaries).forEach((item) => {
+              const fid = String(item.field_id);
+              areas[fid] = item.field_area_ha;
+              fills[fid] = color;
+            });
+          };
+          mergeCropBlock('wheat');
+          mergeCropBlock('sugarcane');
+
+          let sugarHa: number | null = null;
+          const sc = res.sugarcane as PredictAreaCropData | undefined;
+          if (sc && typeof sc.crop_area_ha === 'number' && !Number.isNaN(sc.crop_area_ha)) {
+            sugarHa = sc.crop_area_ha;
+          }
+          if (sugarHa == null && typeof res.sugarcane_area_ha === 'number' && !Number.isNaN(res.sugarcane_area_ha)) {
+            sugarHa = res.sugarcane_area_ha;
+          }
+
+          let wheatHa: number | null = null;
+          const wh = res.wheat as PredictAreaCropData | undefined;
+          if (wh && typeof wh.crop_area_ha === 'number' && !Number.isNaN(wh.crop_area_ha)) {
+            wheatHa = wh.crop_area_ha;
+          }
+
+          setPredictAreaCropColor(null);
+          setPredictAreaFieldAreas(areas);
+          setPredictFieldFillByFieldId(fills);
+          setPredictCropAreas({ sugarcane: sugarHa, wheat: wheatHa });
+          return;
+        }
+
         const cropKey = selectedCrop.toLowerCase();
         const cropData = res[cropKey] as PredictAreaCropData | undefined;
         if (!cropData || typeof cropData !== 'object') {
           setPredictAreaCropColor(null);
           setPredictAreaFieldAreas({});
+          setPredictFieldFillByFieldId({});
+          setPredictCropAreas({ sugarcane: null, wheat: null });
         } else {
           setPredictAreaCropColor(cropData.color ?? null);
           const areas: Record<string, number> = {};
+          const fills: Record<string, string> = {};
           const boundaries = cropData.identified_field_boundaries ?? {};
+          const fillHex = hexOk(cropData.color) ? cropData.color!.trim() : '#166534';
           Object.values(boundaries).forEach((item) => {
-            areas[String(item.field_id)] = item.field_area_ha;
+            const fid = String(item.field_id);
+            areas[fid] = item.field_area_ha;
+            fills[fid] = fillHex;
           });
           setPredictAreaFieldAreas(areas);
+          setPredictFieldFillByFieldId(fills);
         }
 
         let areaHa: number | null = null;
         if (cropData && typeof cropData.crop_area_ha === 'number' && !Number.isNaN(cropData.crop_area_ha)) {
           areaHa = cropData.crop_area_ha;
         }
-        if (areaHa == null && selectedCrop === 'sugarcane') {
+        if (areaHa == null && selectedCrop === 'sugarcane' && cropData) {
           const rootHa = res.sugarcane_area_ha;
           if (typeof rootHa === 'number' && !Number.isNaN(rootHa)) {
             areaHa = rootHa;
-          } else if (cropData && typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
+          } else if (typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
             areaHa = cropData.sugarcane_area_ha;
           }
         }
-        setPredictCropAreaHa(areaHa);
+
+        if (selectedCrop === 'sugarcane') {
+          setPredictCropAreas({ sugarcane: areaHa, wheat: null });
+        } else if (selectedCrop === 'wheat') {
+          setPredictCropAreas({ sugarcane: null, wheat: areaHa });
+        } else {
+          setPredictCropAreas({ sugarcane: null, wheat: null });
+        }
       })
       .catch(() => {
         if (!cancelled) {
           setPredictAreaCropColor(null);
           setPredictAreaFieldAreas({});
-          setPredictCropAreaHa(null);
+          setPredictFieldFillByFieldId({});
+          setPredictCropAreas({ sugarcane: null, wheat: null });
         }
       })
       .finally(() => {
@@ -6007,6 +6071,7 @@ const App: React.FC = () => {
               <option value="">-- Select Crop --</option>
               <option value="sugarcane">Sugarcane</option>
               <option value="wheat">Wheat</option>
+              <option value="all">All</option>
             </select>
           </div>
           )}
@@ -6129,27 +6194,72 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {(selectedCrop === 'sugarcane' || selectedCrop === 'wheat') && (splitScreenMode
+          {(selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all') && (splitScreenMode
             ? (leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
             : (selectedDistrict && selectedSubdistrict && selectedVillage)) && (
             <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-emerald-100 shadow-sm'}`}>
-              <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                {selectedCrop === 'wheat'
-                  ? 'Wheat area (predicted)'
-                  : selectedCrop === 'sugarcane'
-                    ? 'Sugarcane area (predicted)'
-                    : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
-              </div>
               {predictCropAreaLoading ? (
                 <div className="flex items-center justify-center py-2">
                   <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
                 </div>
-              ) : predictCropAreaHa !== null && predictCropAreaHa !== undefined ? (
-                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
-                  {predictCropAreaHa.toFixed(2)} ha
+              ) : selectedCrop === 'all' ? (
+                <div className="space-y-3">
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                      Sugarcane area (predicted)
+                    </div>
+                    {predictCropAreas.sugarcane != null && !Number.isNaN(predictCropAreas.sugarcane) ? (
+                      <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
+                        {predictCropAreas.sugarcane.toFixed(2)} ha
+                      </div>
+                    ) : (
+                      <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No data</div>
+                    )}
+                  </div>
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                      Wheat area (predicted)
+                    </div>
+                    {predictCropAreas.wheat != null && !Number.isNaN(predictCropAreas.wheat) ? (
+                      <div className={`text-lg font-bold ${isDarkMode ? 'text-amber-400' : 'text-amber-700'}`}>
+                        {predictCropAreas.wheat.toFixed(2)} ha
+                      </div>
+                    ) : (
+                      <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No data</div>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No crop area data</div>
+                <>
+                  <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                    {selectedCrop === 'wheat'
+                      ? 'Wheat area (predicted)'
+                      : selectedCrop === 'sugarcane'
+                        ? 'Sugarcane area (predicted)'
+                        : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
+                  </div>
+                  {(selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) != null &&
+                  (selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) !== undefined &&
+                  !Number.isNaN(
+                    (selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number
+                  ) ? (
+                    <div
+                      className={`text-lg font-bold ${
+                        selectedCrop === 'wheat'
+                          ? isDarkMode
+                            ? 'text-amber-400'
+                            : 'text-amber-700'
+                          : isDarkMode
+                            ? 'text-green-400'
+                            : 'text-emerald-700'
+                      }`}
+                    >
+                      {((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number).toFixed(2)} ha
+                    </div>
+                  ) : (
+                    <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No crop area data</div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -8476,6 +8586,7 @@ const App: React.FC = () => {
               selectedPlotId={selectedPlotId}
               cropColor={predictAreaCropColor}
               fieldAreaByFieldId={predictAreaFieldAreas}
+              fieldFillByFieldId={predictFieldFillByFieldId}
               hideFieldIdAreaCard={(() => {
                 const p = splitScreenMode ? leftAllPlots : plots;
                 const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
@@ -10261,6 +10372,7 @@ const App: React.FC = () => {
                 selectedPlotId={selectedPlotId}
                 cropColor={predictAreaCropColor}
                 fieldAreaByFieldId={predictAreaFieldAreas}
+                fieldFillByFieldId={predictFieldFillByFieldId}
                 hideFieldIdAreaCard={rightAllPlots.length === 1 && (rightAllPlots[0].id === rightSelectedDistrict || rightAllPlots[0].id === rightSelectedSubdistrict || rightAllPlots[0].id === rightSelectedVillage)}
                 onSelectPlot={async (id) => {
                   setSelectedPlotId(id);
@@ -10325,6 +10437,7 @@ const App: React.FC = () => {
                   <option value="">-- Select Crop --</option>
                   <option value="sugarcane">Sugarcane</option>
                   <option value="wheat">Wheat</option>
+                  <option value="all">All</option>
                 </select>
               </div>
               )}
@@ -10408,26 +10521,54 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {splitScreenMode && (selectedCrop === 'sugarcane' || selectedCrop === 'wheat') &&
+              {splitScreenMode && (selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all') &&
                 leftSelectedDistrict &&
                 leftSelectedSubdistrict &&
                 leftSelectedVillage && (
                 <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                    {selectedCrop === 'wheat'
-                      ? 'Wheat area (predicted)'
-                      : selectedCrop === 'sugarcane'
-                        ? 'Sugarcane area (predicted)'
-                        : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
-                  </div>
                   {predictCropAreaLoading ? (
                     <div className="flex items-center justify-center py-2">
                       <Loader2 className="animate-spin text-green-400" size={20} />
                     </div>
-                  ) : predictCropAreaHa !== null && predictCropAreaHa !== undefined ? (
-                    <div className="text-lg font-bold text-green-400">{predictCropAreaHa.toFixed(2)} ha</div>
+                  ) : selectedCrop === 'all' ? (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Sugarcane area (predicted)</div>
+                        {predictCropAreas.sugarcane != null && !Number.isNaN(predictCropAreas.sugarcane) ? (
+                          <div className="text-lg font-bold text-green-400">{predictCropAreas.sugarcane.toFixed(2)} ha</div>
+                        ) : (
+                          <div className="text-sm text-gray-500">No data</div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Wheat area (predicted)</div>
+                        {predictCropAreas.wheat != null && !Number.isNaN(predictCropAreas.wheat) ? (
+                          <div className="text-lg font-bold text-amber-400">{predictCropAreas.wheat.toFixed(2)} ha</div>
+                        ) : (
+                          <div className="text-sm text-gray-500">No data</div>
+                        )}
+                      </div>
+                    </div>
                   ) : (
-                    <div className="text-sm text-gray-500">No crop area data</div>
+                    <>
+                      <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                        {selectedCrop === 'wheat'
+                          ? 'Wheat area (predicted)'
+                          : selectedCrop === 'sugarcane'
+                            ? 'Sugarcane area (predicted)'
+                            : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
+                      </div>
+                      {(selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) != null &&
+                      !Number.isNaN((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number) ? (
+                        <div
+                          className={`text-lg font-bold ${selectedCrop === 'wheat' ? 'text-amber-400' : 'text-green-400'}`}
+                        >
+                          {((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number).toFixed(2)} ha
+                        </div>
+                      ) : (
+                        <div className="text-sm text-gray-500">No crop area data</div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
