@@ -15,7 +15,6 @@ import {
   fetchSoilMoistureAnalysis,
   fetchPestDetectionAnalysis,
   fetchNDWIDetection,
-  fetchNDVISugarcaneDetection,
   fetchLandSurfaceTemperature,
   fetchForestCanopy,
   fetchET,
@@ -4071,47 +4070,16 @@ const App: React.FC = () => {
     }
   }, [activeTab]);
 
-  // Fetch sugarcane tile only when crop + district + subdistrict + village selected (do not show large overlay for district/subdistrict only)
+  // Sugarcane (and other crops): map styling and areas come from predict-area only — do not call analyze_Growthclasswise from the crop dropdown.
   useEffect(() => {
-    if (selectedCrop === 'sugarcane' && selectedDistrict && selectedSubdistrict && selectedVillage) {
-      const loadSugarcaneData = async () => {
-        try {
-          setLoading(true);
-          setError(null);
-          const response = await fetchNDVISugarcaneDetection(
-            selectedDistrict,
-            selectedSubdistrict,
-            selectedVillage
-          );
-          if (response.tile_url && response.area_ha !== undefined) {
-            setCropTileUrl(response.tile_url);
-            setCropAreaHa(response.area_ha);
-            setAllPlotsTileUrls(prev => ({ ...prev, 'sugarcane': response.tile_url }));
-            setShowTileLayers(true);
-          } else {
-            throw new Error('No tile_url or area_ha in response');
-          }
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          setError(`Failed to load sugarcane detection: ${errorMessage}`);
-          setCropTileUrl(null);
-          setCropAreaHa(null);
-        } finally {
-          setLoading(false);
-        }
-      };
-      loadSugarcaneData();
-    } else {
-      setCropTileUrl(null);
-      setCropAreaHa(null);
-      if (!selectedCrop || !selectedVillage) {
-        setAllPlotsTileUrls(prev => {
-          const next = { ...prev };
-          delete next['sugarcane'];
-          return next;
-        });
-      }
-    }
+    setCropTileUrl(null);
+    setCropAreaHa(null);
+    setAllPlotsTileUrls((prev) => {
+      if (!('sugarcane' in prev)) return prev;
+      const next = { ...prev };
+      delete next['sugarcane'];
+      return next;
+    });
   }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
 
   // Pest stored year_month now comes from analyze_pestclasswise response (set in loadAnalysisData). Clear when switching away.

@@ -1570,13 +1570,20 @@ async function fetchSugarcaneTileFromGrowthFallback(
 }
 
 /**
- * Sugarcane map overlay tile. Tries legacy `/ndvi-sugarcane-detection`; on 404 uses `analyze_Growthclasswise` (same GEE-style tile for the village).
+ * Sugarcane map overlay tile.
+ * Deployed backend has no `/ndvi-sugarcane-detection`; when subdistrict + village are known, use
+ * `analyze_Growthclasswise` directly (same tile) and avoid a redundant 404 in the Network tab.
+ * Legacy path: try `/ndvi-sugarcane-detection` only when village is not yet selected.
  */
 export const fetchNDVISugarcaneDetection = async (
   district: string,
   subdistrict?: string,
   village?: string
 ): Promise<ProcessedNDVISugarcaneResponse> => {
+  if (subdistrict && village) {
+    return fetchSugarcaneTileFromGrowthFallback(district, subdistrict, village);
+  }
+
   const url = `${BASE_URL}/ndvi-sugarcane-detection?district=${encodeURIComponent(district)}`;
   try {
     const response = await fetch(url, {
