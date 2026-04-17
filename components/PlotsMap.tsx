@@ -12,9 +12,9 @@ interface WaterSource {
   water_pixel_percentage: number;
 }
 
-/** Predict-area API often returns very bright greens; use a readable dark green on the satellite basemap */
-const PREDICT_AREA_FIELD_STROKE = '#166534';
-const PREDICT_AREA_FIELD_FILL = '#14532d';
+/** Predict-area crop fields: white outer border, dark green fill */
+const PREDICT_AREA_FIELD_STROKE = '#ffffff';
+const PREDICT_AREA_FIELD_FILL = '#166534';
 
 interface PlotsMapProps {
   plots: Plot[];
@@ -216,15 +216,15 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     opacity: 1,
                   }
                 : {
-                    // Crop fields (predict-area): dark green fill/stroke (ignore API neon for readability)
+                    // Crop fields (predict-area): white stroke, solid dark green fill
                     color: isWaterSource
                       ? '#3b82f6'
                       : (useCropColor ? PREDICT_AREA_FIELD_STROKE : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillColor: isWaterSource
                       ? '#3b82f6'
                       : (useCropColor ? PREDICT_AREA_FIELD_FILL : (isSelected ? '#FFD700' : '#FFFFFF')),
-                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.35 : 0),
-                    weight: isSelected ? 4 : (isWaterSource ? 2 : 1),
+                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 1 : 0),
+                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 2 : 1),
                     opacity: 1,
                   }),
             }}
