@@ -196,7 +196,8 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
         const isWaterSource = plot.id.startsWith('water-source-');
         // Only color fields that are in identified_field_boundaries (predict-area); others stay default
         const isInIdentifiedBoundaries = plot.id in fieldAreaByFieldId;
-        const useCropColor = !isWaterSource && cropColor && isInIdentifiedBoundaries;
+        // Highlight predict-area fields whenever field_id matches; cropColor is optional (fill falls back to dark green)
+        const useCropColor = !isWaterSource && isInIdentifiedBoundaries;
         const displayAreaHa = fieldAreaByFieldId[plot.id] ?? (plot.area_ha ? Number(plot.area_ha) : undefined);
         // When hideFieldIdAreaCard is true, this is a district/subdistrict boundary – use visible stroke and light fill
         const isBoundaryOnly = hideFieldIdAreaCard && !isWaterSource;
@@ -222,7 +223,11 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                       : (useCropColor ? PREDICT_AREA_FIELD_STROKE : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillColor: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? PREDICT_AREA_FIELD_FILL : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor
+                          ? (cropColor && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(cropColor.trim())
+                              ? cropColor.trim()
+                              : PREDICT_AREA_FIELD_FILL)
+                          : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 1 : 0),
                     weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 2 : 1),
                     opacity: 1,

@@ -9,6 +9,7 @@ import {
   fetchBoundaryGeoJSON, 
   fetchFieldBoundaries,
   fetchPredictArea,
+  formatPredictAreaCropName,
   type PredictAreaCropData,
   fetchGrowthAnalysis1,
   fetchWaterUptakeAnalysis,
@@ -172,8 +173,8 @@ const App: React.FC = () => {
   // Predict-area (crop): color and field_area_ha per field_id when crop + village selected
   const [predictAreaCropColor, setPredictAreaCropColor] = useState<string | null>(null);
   const [predictAreaFieldAreas, setPredictAreaFieldAreas] = useState<Record<string, number>>({});
-  const [predictSugarcaneAreaHa, setPredictSugarcaneAreaHa] = useState<number | null>(null);
-  const [predictSugarcaneAreaLoading, setPredictSugarcaneAreaLoading] = useState<boolean>(false);
+  const [predictCropAreaHa, setPredictCropAreaHa] = useState<number | null>(null);
+  const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
   
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
@@ -1586,13 +1587,14 @@ const App: React.FC = () => {
     if (!selectedCrop || !district || !subdistrict || !village) {
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
-      setPredictSugarcaneAreaHa(null);
-      setPredictSugarcaneAreaLoading(false);
+      setPredictCropAreaHa(null);
+      setPredictCropAreaLoading(false);
       return;
     }
     let cancelled = false;
-    setPredictSugarcaneAreaLoading(true);
-    fetchPredictArea(district, subdistrict, village, 1)
+    setPredictCropAreaLoading(true);
+    const cropParam = formatPredictAreaCropName(selectedCrop);
+    fetchPredictArea(district, subdistrict, village, 1, cropParam)
       .then((res) => {
         if (cancelled) return;
         const cropKey = selectedCrop.toLowerCase();
@@ -1610,28 +1612,29 @@ const App: React.FC = () => {
           setPredictAreaFieldAreas(areas);
         }
 
-        const rootHa = res.sugarcane_area_ha;
-        let sugarHa: number | null = null;
-        if (typeof rootHa === 'number' && !Number.isNaN(rootHa)) {
-          sugarHa = rootHa;
-        } else if (selectedCrop === 'sugarcane' && cropData) {
-          if (typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
-            sugarHa = cropData.sugarcane_area_ha;
-          } else if (typeof cropData.crop_area_ha === 'number' && !Number.isNaN(cropData.crop_area_ha)) {
-            sugarHa = cropData.crop_area_ha;
+        let areaHa: number | null = null;
+        if (cropData && typeof cropData.crop_area_ha === 'number' && !Number.isNaN(cropData.crop_area_ha)) {
+          areaHa = cropData.crop_area_ha;
+        }
+        if (areaHa == null && selectedCrop === 'sugarcane') {
+          const rootHa = res.sugarcane_area_ha;
+          if (typeof rootHa === 'number' && !Number.isNaN(rootHa)) {
+            areaHa = rootHa;
+          } else if (cropData && typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
+            areaHa = cropData.sugarcane_area_ha;
           }
         }
-        setPredictSugarcaneAreaHa(selectedCrop === 'sugarcane' ? sugarHa : null);
+        setPredictCropAreaHa(areaHa);
       })
       .catch(() => {
         if (!cancelled) {
           setPredictAreaCropColor(null);
           setPredictAreaFieldAreas({});
-          setPredictSugarcaneAreaHa(null);
+          setPredictCropAreaHa(null);
         }
       })
       .finally(() => {
-        if (!cancelled) setPredictSugarcaneAreaLoading(false);
+        if (!cancelled) setPredictCropAreaLoading(false);
       });
     return () => { cancelled = true; };
   }, [selectedCrop, splitScreenMode, selectedDistrict, selectedSubdistrict, selectedVillage, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage]);
@@ -6003,6 +6006,7 @@ const App: React.FC = () => {
             >
               <option value="">-- Select Crop --</option>
               <option value="sugarcane">Sugarcane</option>
+              <option value="wheat">Wheat</option>
             </select>
           </div>
           )}
@@ -6125,23 +6129,27 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {selectedCrop === 'sugarcane' && (splitScreenMode
+          {(selectedCrop === 'sugarcane' || selectedCrop === 'wheat') && (splitScreenMode
             ? (leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
             : (selectedDistrict && selectedSubdistrict && selectedVillage)) && (
             <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-emerald-100 shadow-sm'}`}>
               <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                Sugarcane area (predicted)
+                {selectedCrop === 'wheat'
+                  ? 'Wheat area (predicted)'
+                  : selectedCrop === 'sugarcane'
+                    ? 'Sugarcane area (predicted)'
+                    : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
               </div>
-              {predictSugarcaneAreaLoading ? (
+              {predictCropAreaLoading ? (
                 <div className="flex items-center justify-center py-2">
                   <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
                 </div>
-              ) : predictSugarcaneAreaHa !== null && predictSugarcaneAreaHa !== undefined ? (
+              ) : predictCropAreaHa !== null && predictCropAreaHa !== undefined ? (
                 <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
-                  {predictSugarcaneAreaHa.toFixed(2)} ha
+                  {predictCropAreaHa.toFixed(2)} ha
                 </div>
               ) : (
-                <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No sugarcane area data</div>
+                <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No crop area data</div>
               )}
             </div>
           )}
@@ -10316,6 +10324,7 @@ const App: React.FC = () => {
                 >
                   <option value="">-- Select Crop --</option>
                   <option value="sugarcane">Sugarcane</option>
+                  <option value="wheat">Wheat</option>
                 </select>
               </div>
               )}
@@ -10399,22 +10408,26 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {splitScreenMode && selectedCrop === 'sugarcane' &&
+              {splitScreenMode && (selectedCrop === 'sugarcane' || selectedCrop === 'wheat') &&
                 leftSelectedDistrict &&
                 leftSelectedSubdistrict &&
                 leftSelectedVillage && (
                 <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
                   <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                    Sugarcane area (predicted)
+                    {selectedCrop === 'wheat'
+                      ? 'Wheat area (predicted)'
+                      : selectedCrop === 'sugarcane'
+                        ? 'Sugarcane area (predicted)'
+                        : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
                   </div>
-                  {predictSugarcaneAreaLoading ? (
+                  {predictCropAreaLoading ? (
                     <div className="flex items-center justify-center py-2">
                       <Loader2 className="animate-spin text-green-400" size={20} />
                     </div>
-                  ) : predictSugarcaneAreaHa !== null && predictSugarcaneAreaHa !== undefined ? (
-                    <div className="text-lg font-bold text-green-400">{predictSugarcaneAreaHa.toFixed(2)} ha</div>
+                  ) : predictCropAreaHa !== null && predictCropAreaHa !== undefined ? (
+                    <div className="text-lg font-bold text-green-400">{predictCropAreaHa.toFixed(2)} ha</div>
                   ) : (
-                    <div className="text-sm text-gray-500">No sugarcane area data</div>
+                    <div className="text-sm text-gray-500">No crop area data</div>
                   )}
                 </div>
               )}

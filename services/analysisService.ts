@@ -241,11 +241,20 @@ export interface PredictAreaResponse {
   [cropKey: string]: unknown; // e.g. "sugarcane": PredictAreaCropData
 }
 
+/** Query param for predict-area, e.g. Wheat, Sugarcane (must match backend). */
+export function formatPredictAreaCropName(cropValue: string): string {
+  const c = cropValue.trim().toLowerCase();
+  if (!c) return '';
+  return c.charAt(0).toUpperCase() + c.slice(1);
+}
+
 export const fetchPredictArea = async (
   district: string,
   subdistrict: string,
   village: string,
-  takeMonths: number = 1
+  takeMonths: number = 1,
+  /** When set, server returns crop-specific block (e.g. wheat, sugarcane) and village_wise_* lists */
+  cropName?: string | null
 ): Promise<PredictAreaResponse> => {
   const params = new URLSearchParams({
     district,
@@ -253,6 +262,9 @@ export const fetchPredictArea = async (
     village,
     take_months: String(takeMonths)
   });
+  if (cropName && cropName.trim()) {
+    params.set('crop_name', cropName.trim());
+  }
   const url = `${BASE_URL}/predict-area?${params.toString()}`;
   const response = await fetch(url, {
     method: 'POST',
