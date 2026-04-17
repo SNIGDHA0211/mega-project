@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import PlotsMap from './components/PlotsMap';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
 import { LoginPage } from './components/LoginPage';
@@ -9,6 +9,7 @@ import {
   fetchBoundaryGeoJSON, 
   fetchFieldBoundaries,
   fetchPredictArea,
+  type PredictAreaCropData,
   fetchGrowthAnalysis1,
   fetchWaterUptakeAnalysis,
   fetchSoilMoistureAnalysis,
@@ -40,17 +41,30 @@ import {
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, BarChart3, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, BarChart, Bar } from 'recharts';
 import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
+import { appendPdfBrandedHeader } from './utils/pdfReportHeader';
+import { captureElementForPdf } from './utils/pdfExportCapture';
+import {
+  DASHBOARD_INDEX_ORDER,
+  DASHBOARD_INDEX_LABELS,
+  DASHBOARD_INDEX_CARD_COLORS_HEX,
+  type DashboardIndexKey,
+} from './utils/dashboardIndicesConfig';
 import { MdFullscreen, MdFullscreenExit, MdModeNight, MdLightMode } from 'react-icons/md';
 // GiUpgrade icon removed (no auto-open pest)
 
 /** Merged into allPlotsTileUrls when user clicks a Water Uptake %/area card (classwise tile_url); drawn on top in PlotsMap */
 const WATER_UPTAKE_CLASS_TILE_KEY = 'waterUptakeClass';
+
+/** One color per calendar year for weekly/monthly multi-line indices charts (14+ distinct hues). */
+const INDICES_CHART_YEAR_PALETTE = [
+  '#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444',
+  '#06b6d4', '#fb7185', '#84cc16', '#c084fc', '#fde047', '#f472b6',
+];
 
 /** Build Leaflet tile URL map from wateruptakeclasswise classwise[] (each class may have tile_url). */
 function waterClasswiseToTileUrlMap(classwise: unknown): Record<string, string> {
@@ -100,6 +114,10 @@ const App: React.FC = () => {
   // State for villages
   const [villages, setVillages] = useState<Array<{village: string; geom_type?: string; coordinates?: any; geometry?: any}>>([]);
   const [selectedVillage, setSelectedVillage] = useState<string>('');
+  /** When true, village boundary is shown on map (user must click "Display boundary") */
+  const [showVillageBoundary, setShowVillageBoundary] = useState(false);
+  const [showLeftVillageBoundary, setShowLeftVillageBoundary] = useState(false);
+  const [showRightVillageBoundary, setShowRightVillageBoundary] = useState(false);
   const [selectedPlotId, setSelectedPlotId] = useState<string | null>(null);
   const [availablePlots, setAvailablePlots] = useState<string[]>([]);
   const [totalPlotsCount, setTotalPlotsCount] = useState<number>(0);
@@ -155,6 +173,8 @@ const App: React.FC = () => {
   // Predict-area (crop): color and field_area_ha per field_id when crop + village selected
   const [predictAreaCropColor, setPredictAreaCropColor] = useState<string | null>(null);
   const [predictAreaFieldAreas, setPredictAreaFieldAreas] = useState<Record<string, number>>({});
+  const [predictSugarcaneAreaHa, setPredictSugarcaneAreaHa] = useState<number | null>(null);
+  const [predictSugarcaneAreaLoading, setPredictSugarcaneAreaLoading] = useState<boolean>(false);
   
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
@@ -179,7 +199,7 @@ const App: React.FC = () => {
   const [rightWeatherDailyError, setRightWeatherDailyError] = useState<string | null>(null);
   const [rightWeatherChartHoverDay, setRightWeatherChartHoverDay] = useState<number | null>(null);
 
-  // Wind AOI (district / subdistrict / village) — same selection as daily weather
+  // Wind AOI (district / subdistrict / village) â€” same selection as daily weather
   const [windDirectData, setWindDirectData] = useState<WindDirectResponse | null>(null);
   /** Toggle animated wind particles + speed markers on the main map (Open-Meteo AOI). */
   const [showWindFlowLayer, setShowWindFlowLayer] = useState<boolean>(false);
@@ -204,10 +224,10 @@ const App: React.FC = () => {
   const [selectedGrowthYearMonth, setSelectedGrowthYearMonth] = useState<string | null>(null);
   const [showGrowthSeries, setShowGrowthSeries] = useState<boolean>(true);
   const [showAllGrowthTimeSeries, setShowAllGrowthTimeSeries] = useState<boolean>(false);
-  const [growthChartViewMode, setGrowthChartViewMode] = useState<'all' | 'selected'>('all');
-  const [waterChartViewMode, setWaterChartViewMode] = useState<'all' | 'selected'>('all');
-  const [soilChartViewMode, setSoilChartViewMode] = useState<'all' | 'selected'>('all');
-  const [pestChartViewMode, setPestChartViewMode] = useState<'all' | 'selected'>('all');
+  const [growthChartViewMode, setGrowthChartViewMode] = useState<'all' | 'selected'>('selected');
+  const [waterChartViewMode, setWaterChartViewMode] = useState<'all' | 'selected'>('selected');
+  const [soilChartViewMode, setSoilChartViewMode] = useState<'all' | 'selected'>('selected');
+  const [pestChartViewMode, setPestChartViewMode] = useState<'all' | 'selected'>('selected');
 
   // State for Water/Soil stored time series (year_month from analyze_wateruptakeclasswise / analyze_soilmoistureclasswise)
   const [waterStoredSeries, setWaterStoredSeries] = useState<GrowthStoredResponse | null>(null);
@@ -221,9 +241,19 @@ const App: React.FC = () => {
   const [dashboardIndicesData, setDashboardIndicesData] = useState<DashboardIndicesStoreResponse | null>(null);
   const [dashboardIndicesLoading, setDashboardIndicesLoading] = useState<boolean>(false);
   const [dashboardIndicesError, setDashboardIndicesError] = useState<string | null>(null);
-  const [dashboardIndicesFrequency, setDashboardIndicesFrequency] = useState<DashboardIndicesFrequency>('weekly');
+  const [dashboardIndicesFrequency, setDashboardIndicesFrequency] = useState<DashboardIndicesFrequency | ''>('');
   const [selectedDashboardIndex, setSelectedDashboardIndex] = useState<string | null>(null);
-  
+  /** Weekly/monthly: null = all lines equal weight; string = emphasize that year's colored line, dim others (all years still drawn). */
+  const [indicesLegendHighlightedYear, setIndicesLegendHighlightedYear] = useState<string | null>(null);
+
+  const toggleIndicesYearHighlight = useCallback((yearKey: string) => {
+    setIndicesLegendHighlightedYear((prev) => (prev === yearKey ? null : yearKey));
+  }, []);
+
+  const clearIndicesYearHighlight = useCallback(() => {
+    setIndicesLegendHighlightedYear(null);
+  }, []);
+
   // State for pest graph size (normal screen)
   const [pestGraphSize, setPestGraphSize] = useState<{ width: number; height: number }>({ width: 800, height: 300 });
 
@@ -271,9 +301,14 @@ const App: React.FC = () => {
   // State for sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
   const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
+  const [showAnalysisTrendsPage, setShowAnalysisTrendsPage] = useState<boolean>(false);
   const [showGraphFrequencyDropdown, setShowGraphFrequencyDropdown] = useState<boolean>(false);
   const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
-  const [fullscreenIndexCard, setFullscreenIndexCard] = useState<string | null>(null);
+  /** Indices graph fullscreen: chart opened via icon vs chart chosen in toolbar dropdown (compare). */
+  const [fullscreenIndicesOpenedFrom, setFullscreenIndicesOpenedFrom] = useState<DashboardIndexKey | null>(null);
+  const [fullscreenIndicesCompare, setFullscreenIndicesCompare] = useState<DashboardIndexKey | null>(null);
+  const [fullscreenAnalysisTrendCard, setFullscreenAnalysisTrendCard] = useState<string | null>(null);
+  const [analysisTrendSeriesFilter, setAnalysisTrendSeriesFilter] = useState<Record<string, string | null>>({});
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && window.localStorage) {
       const saved = localStorage.getItem('ui-theme-mode');
@@ -308,7 +343,7 @@ const App: React.FC = () => {
 
   // When switching to graph mode, reset scroll so sidebar + graph area are visible.
   useEffect(() => {
-    if (!showGraphPage) return;
+    if (!showGraphPage && !showAnalysisTrendsPage) return;
     // Run after layout so overflow-y containers have correct scrollHeight.
     const t = window.setTimeout(() => {
       try {
@@ -328,7 +363,7 @@ const App: React.FC = () => {
       }
     }, 0);
     return () => window.clearTimeout(t);
-  }, [showGraphPage]);
+  }, [showGraphPage, showAnalysisTrendsPage]);
 
   // Separate state for left and right sides in split screen mode - Location selections
   const [leftSelectedDistrict, setLeftSelectedDistrict] = useState<string>('');
@@ -552,70 +587,180 @@ const App: React.FC = () => {
 
   const downloadChartPDF = async () => {
     try {
-      const graphElement =
-        document.getElementById('health-trends-chart') ||
-        document.getElementById('pest-time-series-graph') ||
-        document.getElementById('pest-time-series-graph-right');
       const weatherElement = document.getElementById('weather-daily-chart');
       const exportTab = splitScreenMode ? leftActiveTab : activeTab;
 
+      let graphElement: HTMLElement | null = null;
+      if (showGraphPage) {
+        graphElement = document.getElementById('indices/retrieve-aggregated-cards');
+      } else if (showAnalysisTrendsPage) {
+        graphElement = document.getElementById('analysis-trends-cards');
+      }
+      if (!graphElement) {
+        graphElement =
+          document.getElementById('health-trends-chart') ||
+          document.getElementById('pest-time-series-graph') ||
+          document.getElementById('pest-time-series-graph-right');
+      }
+
       if (!graphElement) {
         alert(
-          'Chart not found. Open the Growth, Water, Soil, or Pest tab and scroll so the graph below the map is visible, then try again.'
+          'Chart not found. For the indices dashboard, open the line-chart icon and wait for data to load. For map analysis, open Growth, Water, Soil, or Pest and scroll so the graph below the map is visible, then try again.'
         );
         return;
       }
 
+      const isIndicesDashboard = graphElement.id === 'indices/retrieve-aggregated-cards';
+
       const pdf = new jsPDF('landscape', 'mm', 'a4');
       const pageWidth = 297; // A4 landscape width in mm
       const pageHeight = 210; // A4 landscape height in mm
-      const margin = 10;
-      const contentWidth = pageWidth - (margin * 2);
-      
+      const margin = 12;
+      const contentWidth = pageWidth - margin * 2;
+
       let yPos = margin;
-      
-      // Add title
-      pdf.setFontSize(18);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Nearlive Crop Monitoring', margin, yPos);
-      yPos += 8;
-      
-      // Add location info with text wrapping - ensure full text display
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'normal');
-      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6, margin);
+      yPos = await appendPdfBrandedHeader(pdf, pageWidth, margin, yPos);
+
+      // Location & view (below header rule)
+      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 5.5, margin);
       yPos += 2;
 
-      const pestCat = splitScreenMode ? leftSelectedPestCategory : selectedPestCategory;
-      if (exportTab === 'pest' && pestCat) {
-        yPos = addWrappedText(pdf, `Pest: ${pestCat.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
-        yPos += 2;
-      } else if (exportTab) {
+      if (isIndicesDashboard) {
         yPos = addWrappedText(
           pdf,
-          `View: ${String(exportTab).replace(/_/g, ' ')}`,
+          `Indices dashboard Â· Frequency: ${dashboardIndicesFrequency || 'â€”'} Â· spectral, weather, and soil metrics (NDVI, EVI, LST, precipitation, NDWI, radar, etc.)`,
           margin,
           yPos,
           contentWidth,
-          6,
+          5.5,
           margin
         );
         yPos += 2;
+      } else {
+        const pestCat = splitScreenMode ? leftSelectedPestCategory : selectedPestCategory;
+        if (exportTab === 'pest' && pestCat) {
+          yPos = addWrappedText(pdf, `Pest: ${pestCat.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
+          yPos += 2;
+        } else if (exportTab) {
+          yPos = addWrappedText(
+            pdf,
+            `View: ${String(exportTab).replace(/_/g, ' ')}`,
+            margin,
+            yPos,
+            contentWidth,
+            6,
+            margin
+          );
+          yPos += 2;
+        }
       }
       
-      // Capture chart (health trends card or floating pest graph)
-      const chartCanvas = await html2canvas(graphElement, { 
-        scale: 2,
-        backgroundColor: '#f3f4f6',
-        logging: false
-      });
-      const chartImgData = chartCanvas.toDataURL('image/png');
-      const chartImgHeight = (chartCanvas.height * contentWidth) / chartCanvas.width;
-      
-      const maxChartHeight = pageHeight - yPos - 30;
-      const actualChartHeight = Math.min(chartImgHeight, maxChartHeight);
-      pdf.addImage(chartImgData, 'PNG', margin, yPos, contentWidth, actualChartHeight);
-      yPos += actualChartHeight + 10;
+      // Capture chart(s). Indices: rasterize each 6-card chunk separately (stable PDF pages).
+      const indicesChunkEls: HTMLElement[] = [];
+      for (let i = 0; i < 32; i++) {
+        const el = document.getElementById(`indices/retrieve-aggregated-chunk-${i}`);
+        if (!el) break;
+        indicesChunkEls.push(el as HTMLElement);
+      }
+
+      const appendCanvasToPdf = (
+        canvas: HTMLCanvasElement,
+        startYmm: number,
+        openWithNewPage: boolean
+      ): number => {
+        if (openWithNewPage) {
+          pdf.addPage();
+          startYmm = margin;
+        }
+        const chartImgDataUrl = canvas.toDataURL('image/png');
+        const chartImgHeight = (canvas.height * contentWidth) / canvas.width;
+        const maxChartHeight = pageHeight - startYmm - margin;
+        const pxPerMmVert = canvas.height / chartImgHeight;
+
+        if (chartImgHeight > maxChartHeight + 1) {
+          let remainingMm = chartImgHeight;
+          let imgDrawY = startYmm;
+          while (remainingMm > 0.5) {
+            if (imgDrawY > pageHeight - margin - 8) {
+              pdf.addPage();
+              imgDrawY = margin;
+            }
+            const pageAvail = Math.max(0, pageHeight - imgDrawY - margin - 0.35);
+            const sliceMm = Math.min(remainingMm, pageAvail);
+            const consumedMm = chartImgHeight - remainingMm;
+            const srcY = consumedMm * pxPerMmVert;
+            const srcH = sliceMm * pxPerMmVert;
+            const sy = Math.max(0, Math.floor(srcY));
+            const sh = Math.min(Math.max(1, Math.ceil(srcH)), canvas.height - sy);
+            const sliceCanvas = document.createElement('canvas');
+            sliceCanvas.width = canvas.width;
+            sliceCanvas.height = sh;
+            const ctx = sliceCanvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+              ctx.drawImage(canvas, 0, sy, canvas.width, sh, 0, 0, canvas.width, sh);
+            }
+            pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', margin, imgDrawY, contentWidth, sliceMm);
+            remainingMm -= sliceMm;
+            imgDrawY += sliceMm;
+          }
+          return imgDrawY + 8;
+        }
+        const actualChartHeight = Math.min(chartImgHeight, maxChartHeight);
+        pdf.addImage(chartImgDataUrl, 'PNG', margin, startYmm, contentWidth, actualChartHeight);
+        return startYmm + actualChartHeight + 8;
+      };
+
+      if (isIndicesDashboard && indicesChunkEls.length > 0) {
+        for (let i = 0; i < indicesChunkEls.length; i++) {
+          const c = await captureElementForPdf(indicesChunkEls[i], { indicesGrid: true });
+          yPos = appendCanvasToPdf(c, i === 0 ? yPos : margin, i > 0);
+        }
+      } else {
+        const chartCanvas = await captureElementForPdf(graphElement, {
+          indicesGrid: isIndicesDashboard,
+        });
+        const chartImgData = chartCanvas.toDataURL('image/png');
+        const chartImgHeight = (chartCanvas.height * contentWidth) / chartCanvas.width;
+        const maxChartHeight = pageHeight - yPos - margin;
+        const pxPerMmVert = chartCanvas.height / chartImgHeight;
+
+        if (isIndicesDashboard && chartImgHeight > maxChartHeight + 1) {
+          let remainingMm = chartImgHeight;
+          let imgDrawY = yPos;
+          while (remainingMm > 0.5) {
+            if (imgDrawY > pageHeight - margin - 8) {
+              pdf.addPage();
+              imgDrawY = margin;
+            }
+            const pageAvail = Math.max(0, pageHeight - imgDrawY - margin - 0.35);
+            const sliceMm = Math.min(remainingMm, pageAvail);
+            const consumedMm = chartImgHeight - remainingMm;
+            const srcY = consumedMm * pxPerMmVert;
+            const srcH = sliceMm * pxPerMmVert;
+            const sy = Math.max(0, Math.floor(srcY));
+            const sh = Math.min(Math.max(1, Math.ceil(srcH)), chartCanvas.height - sy);
+            const sliceCanvas = document.createElement('canvas');
+            sliceCanvas.width = chartCanvas.width;
+            sliceCanvas.height = sh;
+            const ctx = sliceCanvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+              ctx.drawImage(chartCanvas, 0, sy, chartCanvas.width, sh, 0, 0, chartCanvas.width, sh);
+            }
+            pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', margin, imgDrawY, contentWidth, sliceMm);
+            remainingMm -= sliceMm;
+            imgDrawY += sliceMm;
+          }
+          yPos = imgDrawY + 8;
+        } else {
+          const actualChartHeight = Math.min(chartImgHeight, maxChartHeight);
+          pdf.addImage(chartImgData, 'PNG', margin, yPos, contentWidth, actualChartHeight);
+          yPos += actualChartHeight + 8;
+        }
+      }
       
       // Add weather graph if available
       if (weatherElement && showWeatherDaily && weatherDailyData?.daily?.length) {
@@ -632,11 +777,7 @@ const App: React.FC = () => {
         yPos += 8;
         
         // Capture weather chart
-        const weatherCanvas = await html2canvas(weatherElement, { 
-          scale: 2,
-          backgroundColor: '#ffffff',
-          logging: false
-        });
+        const weatherCanvas = await captureElementForPdf(weatherElement, {});
         const weatherImgData = weatherCanvas.toDataURL('image/png');
         const weatherImgHeight = (weatherCanvas.height * contentWidth) / weatherCanvas.width;
         
@@ -645,8 +786,9 @@ const App: React.FC = () => {
         pdf.addImage(weatherImgData, 'PNG', margin, yPos, contentWidth, Math.min(weatherImgHeight, maxWeatherHeight));
       }
       
-      const fileSlug =
-        exportTab === 'pest' && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory)
+      const fileSlug = isIndicesDashboard
+        ? `indices-${dashboardIndicesFrequency || 'unset'}`
+        : exportTab === 'pest' && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory)
           ? (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory) || 'data'
           : exportTab || 'chart';
       pdf.save(`nearlive-crop-monitoring-${fileSlug}-${Date.now()}.pdf`);
@@ -760,6 +902,14 @@ const App: React.FC = () => {
 
   const downloadChartExcel = () => {
     try {
+      if (showGraphPage) {
+        downloadDashboardIndicesExcel();
+        return;
+      }
+      if (showAnalysisTrendsPage) {
+        alert('Excel export for this all-date trends page is not available yet. Use PDF export for now.');
+        return;
+      }
       const tab = splitScreenMode ? leftActiveTab : activeTab;
       if (tab === 'pest') {
         const series = splitScreenMode ? leftPestStoredSeries : pestStoredSeries;
@@ -795,34 +945,22 @@ const App: React.FC = () => {
       const pdf = new jsPDF('landscape', 'mm', 'a4');
       const pageWidth = 297;
       const pageHeight = 210;
-      const margin = 10;
-      const contentWidth = pageWidth - (margin * 2);
-      
+      const margin = 12;
+      const contentWidth = pageWidth - margin * 2;
+
       let yPos = margin;
-      
-      // Add title
-      pdf.setFontSize(18);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Nearlive Crop Monitoring', margin, yPos);
-      yPos += 8;
-      
-      // Add location info with text wrapping - ensure full text display
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'normal');
-      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 6, margin);
+      yPos = await appendPdfBrandedHeader(pdf, pageWidth, margin, yPos);
+
+      yPos = addWrappedText(pdf, getLocationString(), margin, yPos, contentWidth, 5.5, margin);
       yPos += 2;
-      
+
       // Add pest info if available with text wrapping - ensure full text display
       if (selectedPestCategory && graphElement) {
         yPos = addWrappedText(pdf, `Pest: ${selectedPestCategory.replace(/_/g, ' ')}`, margin, yPos, contentWidth, 6, margin);
         yPos += 4;
         
         // Capture and add pest graph - ensure it doesn't push content off page
-        const pestCanvas = await html2canvas(graphElement, { 
-          scale: 2,
-          backgroundColor: '#f3f4f6',
-          logging: false
-        });
+        const pestCanvas = await captureElementForPdf(graphElement, {});
         const pestImgData = pestCanvas.toDataURL('image/png');
         const pestImgHeight = (pestCanvas.height * contentWidth) / pestCanvas.width;
         
@@ -839,11 +977,7 @@ const App: React.FC = () => {
       yPos += 8;
       
       // Capture weather chart
-      const weatherCanvas = await html2canvas(chartElement, { 
-        scale: 2,
-        backgroundColor: '#ffffff',
-        logging: false
-      });
+      const weatherCanvas = await captureElementForPdf(chartElement, {});
       const weatherImgData = weatherCanvas.toDataURL('image/png');
       const weatherImgHeight = (weatherCanvas.height * contentWidth) / weatherCanvas.width;
       
@@ -881,7 +1015,7 @@ const App: React.FC = () => {
       worksheetData.push(['Daily Weather Data']);
       worksheetData.push([]);
       
-      const headers = ['Date', 'Temp Max (°C)', 'Temp Min (°C)', 'Rainfall (mm)', 'Wind Max (km/h)'];
+      const headers = ['Date', 'Temp Max (Â°C)', 'Temp Min (Â°C)', 'Rainfall (mm)', 'Wind Max (km/h)'];
       worksheetData.push(headers);
 
       weatherDailyData.daily.forEach((day: any) => {
@@ -904,7 +1038,7 @@ const App: React.FC = () => {
     }
   };
 
-  const downloadDashboardIndicesPDF = () => {
+  const downloadDashboardIndicesPDF = async () => {
     try {
       setShowDashboardIndicesDownloadMenu(false);
       const stored = dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored)
@@ -915,13 +1049,13 @@ const App: React.FC = () => {
         return;
       }
       const filename = `Nearlive-crop-Monitoring-${selectedDistrict || 'export'}-${selectedSubdistrict || ''}-${selectedVillage || ''}-${Date.now()}.pdf`;
-      generateDashboardIndicesPdf(
+      await generateDashboardIndicesPdf(
         {
           district: selectedDistrict || '',
           subdistrict: selectedSubdistrict || '',
           village: selectedVillage || '',
           stored,
-          frequency: dashboardIndicesFrequency,
+          ...(dashboardIndicesFrequency ? { frequency: dashboardIndicesFrequency } : {}),
         },
         filename
       );
@@ -941,22 +1075,80 @@ const App: React.FC = () => {
         alert('No indices data to export. Load data first.');
         return;
       }
-      const headers = ['Card Name', 'District', 'Subdistrict', 'Village', 'Period Date', 'Value'];
-      const rows: (string | number)[][] = [headers];
-      stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
+
+      const freqLabel =
+        dashboardIndicesFrequency === 'yearly'
+          ? 'Yearly'
+          : dashboardIndicesFrequency === 'monthly'
+            ? 'Monthly'
+            : 'Weekly';
+
+      const indexDisplayNames: Record<string, string> = { ...DASHBOARD_INDEX_LABELS };
+
+      const periodYearMonth = (periodDate: string): { year: string; month: string } => {
+        const d = new Date(periodDate);
+        if (isNaN(d.getTime())) return { year: '', month: '' };
+        const y = String(d.getFullYear());
+        const monthShort = d.toLocaleString('en-US', { month: 'short' });
+        const dayNum = d.getDate();
+        if (dashboardIndicesFrequency === 'yearly') {
+          return { year: y, month: 'â€”' };
+        }
+        if (dashboardIndicesFrequency === 'monthly') {
+          return { year: y, month: monthShort };
+        }
+        return { year: y, month: `${monthShort} ${dayNum}` };
+      };
+
+      const headers = [
+        'Index Name',
+        'Year',
+        'Month',
+        'Value',
+        'District',
+        'Subdistrict',
+        'Village',
+        'Frequency',
+      ];
+      const locSummary = [selectedDistrict, selectedSubdistrict, selectedVillage].filter(Boolean).join(' Â· ') || 'â€”';
+      const rows: (string | number)[][] = [
+        ['Nearlive Crop Monitoring â€” Indices export'],
+        [`Frequency: ${freqLabel}  |  Location: ${locSummary}`],
+        [],
+        headers,
+      ];
+
+      const sorted = [...stored].sort((a, b) => {
+        const ia = String(a.index_name || '').toLowerCase();
+        const ib = String(b.index_name || '').toLowerCase();
+        if (ia !== ib) return ia.localeCompare(ib);
+        return String(a.period_date || '').localeCompare(String(b.period_date || ''));
+      });
+
+      sorted.forEach((item: { index_name: string; period_date: string; value: number }) => {
+        const key = String(item.index_name || '').toLowerCase();
+        const { year, month } = periodYearMonth(item.period_date || '');
+        const displayName = indexDisplayNames[key] || String(item.index_name || '').toUpperCase();
+        const val = item.value;
         rows.push([
-          String(item.index_name || '').toUpperCase(),
+          displayName,
+          year,
+          month,
+          typeof val === 'number' && !Number.isNaN(val) ? val : String(val ?? ''),
           selectedDistrict || '',
           selectedSubdistrict || '',
           selectedVillage || '',
-          item.period_date || '',
-          item.value
+          freqLabel,
         ]);
       });
+
       const ws = XLSX.utils.aoa_to_sheet(rows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Indices');
-      XLSX.writeFile(wb, `Nearlive-crop-Monitoring-${selectedDistrict || 'export'}-${Date.now()}.xlsx`);
+      XLSX.writeFile(
+        wb,
+        `Nearlive-crop-Monitoring-indices-${freqLabel}-${selectedDistrict || 'export'}-${Date.now()}.xlsx`
+      );
     } catch (error) {
       console.error('Error generating dashboard indices Excel:', error);
       alert('Failed to generate Excel file');
@@ -973,12 +1165,10 @@ const App: React.FC = () => {
         if (Array.isArray(data)) {
           setDistricts(data);
         } else {
-          console.warn('Unexpected districts response format:', data);
           setDistricts([]);
         }
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-        console.error('Error loading districts:', err);
         setError(`Failed to load districts: ${errorMessage}`);
         setDistricts([]); // Set empty array on error to prevent crashes
       } finally {
@@ -1008,12 +1198,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setSubdistricts(data);
           } else {
-            console.warn('Unexpected subdistricts response format:', data);
             setSubdistricts([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading subdistricts:', err);
           setError(`Failed to load subdistricts: ${errorMessage}`);
           setSubdistricts([]);
         } finally {
@@ -1042,12 +1230,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setVillages(data);
           } else {
-            console.warn('Unexpected villages response format:', data);
             setVillages([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading villages:', err);
           setError(`Failed to load villages: ${errorMessage}`);
           setVillages([]);
         } finally {
@@ -1060,6 +1246,53 @@ const App: React.FC = () => {
       setSelectedVillage('');
     }
   }, [selectedSubdistrict]);
+
+  useEffect(() => {
+    setShowVillageBoundary(false);
+  }, [selectedVillage]);
+
+  useEffect(() => {
+    setShowLeftVillageBoundary(false);
+  }, [leftSelectedVillage]);
+
+  useEffect(() => {
+    setShowRightVillageBoundary(false);
+  }, [rightSelectedVillage]);
+
+  // When a village is selected but boundary not confirmed, keep subdistrict boundary on map (non–split-screen)
+  useEffect(() => {
+    if (splitScreenMode) return;
+    if (!selectedVillage || showVillageBoundary) return;
+    if (!selectedSubdistrict || subdistricts.length === 0) return;
+    const subdistrictData = subdistricts.find((s) => s.subdistrict === selectedSubdistrict);
+    if (!subdistrictData?.geometry) return;
+    try {
+      let coordinates: Coordinate[] = [];
+      const geom = subdistrictData.geometry;
+      if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+        const coords = geom.coordinates;
+        if (geom.type === 'Polygon') {
+          const outerRing = coords[0] || [];
+          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+        } else {
+          const firstPolygon = coords[0] || [];
+          const outerRing = firstPolygon[0] || [];
+          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+        }
+      } else if (geom.coordinates) {
+        const coords = geom.coordinates;
+        if (Array.isArray(coords[0])?.[0]) {
+          const outerRing = coords[0] || [];
+          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+        } else {
+          coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+        }
+      }
+      setBoundaryPlot(selectedSubdistrict, coordinates);
+    } catch {
+      /* keep previous map state */
+    }
+  }, [selectedVillage, selectedSubdistrict, showVillageBoundary, splitScreenMode, subdistricts]);
 
   // Handle district selection and display coordinates on map (from list geometry or get-geojson API)
   useEffect(() => {
@@ -1127,7 +1360,6 @@ const App: React.FC = () => {
         }
         setDistrictBoundary(coordinates);
       } catch (err) {
-        console.error('Error processing district geometry:', err);
         setAllPlots([]);
       }
     } else {
@@ -1195,7 +1427,6 @@ const App: React.FC = () => {
           }
           setBoundaryPlot(selectedSubdistrict, coordinates);
         } catch (err) {
-          console.error('Error processing subdistrict geometry:', err);
           setAllPlots([]);
         }
       } else {
@@ -1234,7 +1465,6 @@ const App: React.FC = () => {
           }
           setBoundaryPlot(selectedDistrict, coordinates);
         } catch (err) {
-          console.error('Error processing district geometry:', err);
         }
       } else {
         let cancelled = false;
@@ -1255,6 +1485,7 @@ const App: React.FC = () => {
       setAllPlots([]);
       return;
     }
+    if (!showVillageBoundary) return;
 
     let cancelled = false;
 
@@ -1279,7 +1510,6 @@ const App: React.FC = () => {
         }
       } catch (err) {
         if (cancelled) return;
-        console.warn('Field boundaries API failed, falling back to village geometry:', err);
       }
 
       // Fallback: use village geometry from villages list if API returned nothing or failed
@@ -1340,50 +1570,72 @@ const App: React.FC = () => {
           setAllPlots([]);
         }
       } catch (err) {
-        console.error('Error processing village geometry:', err);
         setAllPlots([]);
       }
     };
 
     loadVillageBoundary();
     return () => { cancelled = true; };
-  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages]);
+  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary]);
 
   // When crop type + village selected, fetch predict-area for color and field_area_ha per field_id
   useEffect(() => {
-    if (!selectedCrop || !selectedDistrict || !selectedSubdistrict || !selectedVillage) {
+    const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
+    const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
+    const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
+
+    if (!selectedCrop || !district || !subdistrict || !village) {
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
+      setPredictSugarcaneAreaHa(null);
+      setPredictSugarcaneAreaLoading(false);
       return;
     }
     let cancelled = false;
-    const month = new Date().toISOString().slice(0, 7); // YYYY-MM
-    fetchPredictArea(selectedDistrict, selectedSubdistrict, selectedVillage, month)
+    setPredictSugarcaneAreaLoading(true);
+    fetchPredictArea(district, subdistrict, village, 1)
       .then((res) => {
         if (cancelled) return;
         const cropKey = selectedCrop.toLowerCase();
-        const cropData = res[cropKey] as { crop_name?: string; crop_area_ha?: number; color?: string; identified_field_boundaries?: Record<string, { field_id: number; field_area_ha: number }> } | undefined;
+        const cropData = res[cropKey] as PredictAreaCropData | undefined;
         if (!cropData || typeof cropData !== 'object') {
           setPredictAreaCropColor(null);
           setPredictAreaFieldAreas({});
-          return;
+        } else {
+          setPredictAreaCropColor(cropData.color ?? null);
+          const areas: Record<string, number> = {};
+          const boundaries = cropData.identified_field_boundaries ?? {};
+          Object.values(boundaries).forEach((item) => {
+            areas[String(item.field_id)] = item.field_area_ha;
+          });
+          setPredictAreaFieldAreas(areas);
         }
-        setPredictAreaCropColor(cropData.color ?? null);
-        const areas: Record<string, number> = {};
-        const boundaries = cropData.identified_field_boundaries ?? {};
-        Object.values(boundaries).forEach((item) => {
-          areas[String(item.field_id)] = item.field_area_ha;
-        });
-        setPredictAreaFieldAreas(areas);
+
+        const rootHa = res.sugarcane_area_ha;
+        let sugarHa: number | null = null;
+        if (typeof rootHa === 'number' && !Number.isNaN(rootHa)) {
+          sugarHa = rootHa;
+        } else if (selectedCrop === 'sugarcane' && cropData) {
+          if (typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
+            sugarHa = cropData.sugarcane_area_ha;
+          } else if (typeof cropData.crop_area_ha === 'number' && !Number.isNaN(cropData.crop_area_ha)) {
+            sugarHa = cropData.crop_area_ha;
+          }
+        }
+        setPredictSugarcaneAreaHa(selectedCrop === 'sugarcane' ? sugarHa : null);
       })
       .catch(() => {
         if (!cancelled) {
           setPredictAreaCropColor(null);
           setPredictAreaFieldAreas({});
+          setPredictSugarcaneAreaHa(null);
         }
+      })
+      .finally(() => {
+        if (!cancelled) setPredictSugarcaneAreaLoading(false);
       });
     return () => { cancelled = true; };
-  }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
+  }, [selectedCrop, splitScreenMode, selectedDistrict, selectedSubdistrict, selectedVillage, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage]);
 
   // Clear analysis data when village changes; when village cleared, show subdistrict boundary
   useEffect(() => {
@@ -1427,7 +1679,6 @@ const App: React.FC = () => {
             if (bounds.isValid()) setPlotBounds(bounds);
           }
         } catch (err) {
-          console.error('Error processing subdistrict geometry:', err);
         }
       }
     }
@@ -1447,34 +1698,22 @@ const App: React.FC = () => {
             selectedVillage || undefined
           );
           
-          // Log the full response to debug
-          // Debug: root-level area_hectares logging removed for production
-          console.log('📊 area_hectares:', response.area_hectares);
-          console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
-          console.log('📊 area:', (response as any).area);
-          console.log('📊 total_area:', (response as any).total_area);
-          
           // Check for area_hectares in various possible locations
           let areaValue: number | null = null;
           
           // Check root level with different possible field names
           if (response.area_hectares !== undefined && response.area_hectares !== null) {
             areaValue = response.area_hectares;
-            console.log('✅ Found area_hectares at root:', areaValue);
           } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
             areaValue = (response as any).total_area_hectares;
-            console.log('✅ Found total_area_hectares at root:', areaValue);
           } else if ((response as any).area !== undefined && (response as any).area !== null) {
             areaValue = (response as any).area;
-            console.log('✅ Found area at root:', areaValue);
           } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
             areaValue = (response as any).total_area;
-            console.log('✅ Found total_area at root:', areaValue);
           }
           // Check in pixel_summary
           else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
             areaValue = (response.pixel_summary as any).area_hectares;
-            console.log('✅ Found area_hectares in pixel_summary:', areaValue);
           }
           // If not in root, check if it's calculated from plots
           else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
@@ -1493,20 +1732,16 @@ const App: React.FC = () => {
             });
             if (totalArea > 0) {
               areaValue = totalArea;
-              console.log('✅ Calculated area from plots:', areaValue);
             }
           }
           
           if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
             setTotalAreaHectares(areaValue);
-            console.log('✅ Setting total area to:', areaValue);
           } else {
-            console.warn('⚠️ No valid area found in response');
             setTotalAreaHectares(null);
           }
         } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('❌ Error loading total area:', err);
+          void err;
           // Don't set error here as it might interfere with other operations
           setTotalAreaHectares(null);
         } finally {
@@ -1532,12 +1767,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setLeftSubdistricts(data);
           } else {
-            console.warn('Unexpected subdistricts response format:', data);
             setLeftSubdistricts([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading left subdistricts:', err);
           setLeftError(`Failed to load subdistricts: ${errorMessage}`);
           setLeftSubdistricts([]);
         } finally {
@@ -1564,12 +1797,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setLeftVillages(data);
           } else {
-            console.warn('Unexpected villages response format:', data);
             setLeftVillages([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading left villages:', err);
           setLeftError(`Failed to load villages: ${errorMessage}`);
           setLeftVillages([]);
         } finally {
@@ -1597,34 +1828,22 @@ const App: React.FC = () => {
             leftSelectedVillage || undefined
           );
           
-          // Log the full response to debug
-          // Debug: left total area logging removed for production
-          console.log('📊 area_hectares:', response.area_hectares);
-          console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
-          console.log('📊 area:', (response as any).area);
-          console.log('📊 total_area:', (response as any).total_area);
-          
           // Check for area_hectares in various possible locations
           let areaValue: number | null = null;
           
           // Check root level with different possible field names
           if (response.area_hectares !== undefined && response.area_hectares !== null) {
             areaValue = response.area_hectares;
-            console.log('✅ Found area_hectares at root:', areaValue);
           } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
             areaValue = (response as any).total_area_hectares;
-            console.log('✅ Found total_area_hectares at root:', areaValue);
           } else if ((response as any).area !== undefined && (response as any).area !== null) {
             areaValue = (response as any).area;
-            console.log('✅ Found area at root:', areaValue);
           } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
             areaValue = (response as any).total_area;
-            console.log('✅ Found total_area at root:', areaValue);
           }
           // Check in pixel_summary
           else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
             areaValue = (response.pixel_summary as any).area_hectares;
-            console.log('✅ Found area_hectares in pixel_summary:', areaValue);
           }
           // If not in root, check if it's calculated from plots
           else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
@@ -1643,20 +1862,16 @@ const App: React.FC = () => {
             });
             if (totalArea > 0) {
               areaValue = totalArea;
-              console.log('✅ Calculated area from plots:', areaValue);
             }
           }
           
           if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
             setLeftTotalAreaHectares(areaValue);
-            console.log('✅ Setting left total area to:', areaValue);
           } else {
-            console.warn('⚠️ No valid area found in response');
             setLeftTotalAreaHectares(null);
           }
         } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('❌ Error loading left total area:', err);
+          void err;
           // Don't set error here as it might interfere with other operations
           setLeftTotalAreaHectares(null);
         } finally {
@@ -1680,12 +1895,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setRightSubdistricts(data);
           } else {
-            console.warn('Unexpected subdistricts response format:', data);
             setRightSubdistricts([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading right subdistricts:', err);
           setRightError(`Failed to load subdistricts: ${errorMessage}`);
           setRightSubdistricts([]);
         } finally {
@@ -1712,12 +1925,10 @@ const App: React.FC = () => {
           if (Array.isArray(data)) {
             setRightVillages(data);
           } else {
-            console.warn('Unexpected villages response format:', data);
             setRightVillages([]);
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('Error loading right villages:', err);
           setRightError(`Failed to load villages: ${errorMessage}`);
           setRightVillages([]);
         } finally {
@@ -1745,34 +1956,22 @@ const App: React.FC = () => {
             rightSelectedVillage || undefined
           );
           
-          // Log the full response to debug
-          // Debug: right total area logging removed for production
-          console.log('📊 area_hectares:', response.area_hectares);
-          console.log('📊 total_area_hectares:', (response as any).total_area_hectares);
-          console.log('📊 area:', (response as any).area);
-          console.log('📊 total_area:', (response as any).total_area);
-          
           // Check for area_hectares in various possible locations
           let areaValue: number | null = null;
           
           // Check root level with different possible field names
           if (response.area_hectares !== undefined && response.area_hectares !== null) {
             areaValue = response.area_hectares;
-            console.log('✅ Found area_hectares at root:', areaValue);
           } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
             areaValue = (response as any).total_area_hectares;
-            console.log('✅ Found total_area_hectares at root:', areaValue);
           } else if ((response as any).area !== undefined && (response as any).area !== null) {
             areaValue = (response as any).area;
-            console.log('✅ Found area at root:', areaValue);
           } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
             areaValue = (response as any).total_area;
-            console.log('✅ Found total_area at root:', areaValue);
           }
           // Check in pixel_summary
           else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
             areaValue = (response.pixel_summary as any).area_hectares;
-            console.log('✅ Found area_hectares in pixel_summary:', areaValue);
           }
           // If not in root, check if it's calculated from plots
           else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
@@ -1791,20 +1990,16 @@ const App: React.FC = () => {
             });
             if (totalArea > 0) {
               areaValue = totalArea;
-              console.log('✅ Calculated area from plots:', areaValue);
             }
           }
           
           if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
             setRightTotalAreaHectares(areaValue);
-            console.log('✅ Setting right total area to:', areaValue);
           } else {
-            console.warn('⚠️ No valid area found in response');
             setRightTotalAreaHectares(null);
           }
         } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error('❌ Error loading right total area:', err);
+          void err;
           // Don't set error here as it might interfere with other operations
           setRightTotalAreaHectares(null);
         } finally {
@@ -1948,21 +2143,6 @@ const App: React.FC = () => {
             plotsArray = [responseAny.feature];
           }
           
-          console.log('📦 Processed plots array count:', plotsArray.length);
-          if (plotsArray.length > 0) {
-            console.log('📦 First plot/item structure:', JSON.stringify(plotsArray[0], null, 2));
-            // Special logging for Water Source tab
-            if (activeTab === 'waterSource') {
-              console.log('🌊 Water Source - First plot tile_url:', plotsArray[0].properties?.tile_url || plotsArray[0].tile_url);
-              console.log('🌊 Water Source - First plot plot_id:', plotsArray[0].properties?.plot_id || plotsArray[0].plot_id);
-            }
-          } else {
-            console.error('❌ No plots array found in response!');
-            console.error('❌ Response structure:', response);
-            console.error('❌ Response type:', typeof response);
-            console.error('❌ Response keys:', Object.keys(response || {}));
-          }
-          
           // Extract plots from response
           if (plotsArray.length > 0) {
             // Collect tile URLs first (before mapping)
@@ -1976,39 +2156,12 @@ const App: React.FC = () => {
                             `plot-${index}`;
               const tileUrl = plot.properties?.tile_url || plot.tile_url;
               
-              // Enhanced logging for Water Source
-              if (activeTab === 'waterSource' && index < 3) {
-                console.log(`🌊 Water Source Plot ${index}:`, {
-                  plotId,
-                  tileUrl,
-                  hasProperties: !!plot.properties,
-                  propertiesKeys: plot.properties ? Object.keys(plot.properties) : [],
-                  directTileUrl: plot.tile_url,
-                  propertiesTileUrl: plot.properties?.tile_url,
-                  plotName: plot.properties?.plot_name || plot.plot_name
-                });
-              }
-              
               // Store tile_url even if plotId is missing (use index as fallback)
               if (tileUrl) {
                 // Ensure the tile URL is a valid string and properly formatted
                 const cleanTileUrl = String(tileUrl).trim();
                 if (cleanTileUrl && cleanTileUrl.includes('earthengine.googleapis.com')) {
                   tileUrlsMap[plotId] = cleanTileUrl;
-                  console.log(`✅ Found tile_url for plot ${plotId}:`, cleanTileUrl);
-                  if (activeTab === 'waterSource') {
-                    console.log(`🌊 Water Source - Stored tile_url for ${plotId}`);
-                  }
-                } else {
-                  console.warn(`⚠️ Invalid tile_url format for plot ${plotId}:`, tileUrl);
-                  if (activeTab === 'waterSource') {
-                    console.warn(`🌊 Water Source - Invalid tile_url format:`, tileUrl);
-                  }
-                }
-              } else {
-                console.warn(`⚠️ Plot ${plotId} missing tile_url`);
-                if (activeTab === 'waterSource') {
-                  console.warn(`🌊 Water Source - Missing tile_url for plot:`, { plotId, plot: plot });
                 }
               }
             });
@@ -2024,7 +2177,6 @@ const App: React.FC = () => {
                 const areaAcres = plot.properties?.area_acres || plot.area_acres;
                 
                 if (!plotId) {
-                  console.warn(`Plot at index ${index} missing plot_id and plot_name`);
                   return null;
                 }
                 
@@ -2058,7 +2210,6 @@ const App: React.FC = () => {
                 
                 // Validate coordinates
                 if (!coordinates || coordinates.length < 3) {
-                  console.warn(`Plot ${plotId} has invalid coordinates - skipping plot boundary but tile_url may still be used`);
                   return null;
                 }
                 
@@ -2071,7 +2222,6 @@ const App: React.FC = () => {
                   .map((coord: any) => [coord[0], coord[1]] as Coordinate);
                 
                 if (validCoords.length < 3) {
-                  console.warn(`Plot ${plotId} has insufficient valid coordinates - skipping plot boundary but tile_url may still be used`);
                   return null;
                 }
                 
@@ -2085,26 +2235,10 @@ const App: React.FC = () => {
             
             // Set all tile URLs at once (after collecting them all)
             if (Object.keys(tileUrlsMap).length > 0) {
-              console.log(`✅ Setting ${Object.keys(tileUrlsMap).length} tile URLs:`, Object.keys(tileUrlsMap));
-              console.log('✅ Sample tile URL:', Object.values(tileUrlsMap)[0]);
-              console.log('✅ All tile URLs to display:', tileUrlsMap);
-              if (activeTab === 'waterSource') {
-                console.log(`🌊 Water Source - Setting ${Object.keys(tileUrlsMap).length} tile URLs`);
-                console.log('🌊 Water Source - Tile URLs map:', tileUrlsMap);
-              }
               setAllPlotsTileUrls(tileUrlsMap);
               // Ensure showTileLayers is true when we have tile URLs
               setShowTileLayers(true);
-              if (activeTab === 'waterSource') {
-                console.log('🌊 Water Source - showTileLayers set to true');
-              }
             } else {
-              console.warn('⚠️ No tile URLs found in plots');
-              console.warn('⚠️ Response structure:', response);
-              if (activeTab === 'waterSource') {
-                console.warn('🌊 Water Source - No tile URLs found!');
-                console.warn('🌊 Water Source - Plots array:', plotsArray);
-              }
               setAllPlotsTileUrls({});
             }
             
@@ -2113,20 +2247,13 @@ const App: React.FC = () => {
               const plotIds = plotsForMap.map(p => p.id);
               setAvailablePlots(plotIds);
               setTotalPlotsCount(plotIds.length);
-              console.log(`✅ Displaying ${plotsForMap.length} plots on map from ${activeTab} analysis`);
             } else {
-              console.warn(`No valid plots with coordinates found in ${activeTab} response`);
               // Keep existing boundary (district/subdistrict) visible when we have tile URLs but no boundaries from API
               if (Object.keys(tileUrlsMap).length === 0) {
                 setAllPlots([]);
               }
             }
           } else {
-            console.error(`❌ No plots array found in ${activeTab} analysis response!`);
-            console.error('❌ Full response:', JSON.stringify(response, null, 2));
-            console.error('❌ Response type:', typeof response);
-            console.error('❌ Response keys:', Object.keys(response || {}));
-            console.error('❌ Is response an array?', Array.isArray(response));
             setAllPlots([]);
             setAllPlotsTileUrls({});
           }
@@ -2139,8 +2266,6 @@ const App: React.FC = () => {
               ...(response.pixel_summary || {}),
               ...(ndwiResponse.area_summary || {}), // Include area_summary (water_area_percentage, water_area_hectare, etc.)
             };
-            console.log('🌊 Water Source - Merged data for LegendCircles:', waterSourceData);
-            console.log('🌊 Water Source - water_area_percentage:', waterSourceData.water_area_percentage);
             setAllPlotsAnalysisData(prev => ({
               ...prev,
               waterSource: waterSourceData,
@@ -2263,17 +2388,16 @@ const App: React.FC = () => {
               setSoilStoredSeries(sStored);
               if (sStored.length > 0) {
                 const inList = selectedTimeSeriesYearMonth && sStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
-                setSelectedSoilYearMonth(inList ? selectedTimeSeriesYearMonth : sStored[0].year_month);
-                if (!inList) setSelectedTimeSeriesYearMonth(sStored[0].year_month);
+                setSelectedSoilYearMonth(inList ? selectedTimeSeriesYearMonth : null);
               } else setSelectedSoilYearMonth(null);
             } else if (activeTab === 'pest' && Array.isArray(storedResponse.stored)) {
               const stored = storedResponse.stored as PestStoredResponse;
               setPestStoredSeries(stored);
               if (stored.length > 0) {
                 const inList = selectedTimeSeriesYearMonth && stored.some((x: PestStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
-                const effective = inList ? selectedTimeSeriesYearMonth! : stored[0].year_month;
-                setSelectedPestYearMonth(effective);
-                if (!inList) setSelectedTimeSeriesYearMonth(stored[0].year_month);
+                setSelectedPestYearMonth(inList ? selectedTimeSeriesYearMonth! : null);
+              } else {
+                setSelectedPestYearMonth(null);
               }
             }
           } else {
@@ -2291,38 +2415,26 @@ const App: React.FC = () => {
             const ndwiResponse = response as NDWIDetectionResponse;
             const responseAny = response as any;
             
-            // Log full response for debugging
-            console.log('🌊 Water Source - Full API Response:', JSON.stringify(response, null, 2));
-            console.log('🌊 Water Source - Response keys:', Object.keys(responseAny));
-            console.log('🌊 Water Source - area_summary:', responseAny.area_summary);
-            
             // Try multiple possible field names and locations
             let waterArea: number | null = null;
             
             // FIRST: Check in area_summary (this is the correct location based on API response)
             if (ndwiResponse.area_summary?.water_area_hectare !== undefined && ndwiResponse.area_summary.water_area_hectare !== null) {
               waterArea = ndwiResponse.area_summary.water_area_hectare;
-              console.log('✅ Found water_area_hectare in area_summary:', waterArea);
             } else if (responseAny.area_summary?.water_area_hectares !== undefined && responseAny.area_summary.water_area_hectares !== null) {
               waterArea = responseAny.area_summary.water_area_hectares;
-              console.log('✅ Found water_area_hectares in area_summary:', waterArea);
             }
             // SECOND: Check root level with different possible field names
             else if (ndwiResponse.water_area_hectare !== undefined && ndwiResponse.water_area_hectare !== null) {
               waterArea = ndwiResponse.water_area_hectare;
-              console.log('✅ Found water_area_hectare at root:', waterArea);
             } else if (responseAny.water_area_hectares !== undefined && responseAny.water_area_hectares !== null) {
               waterArea = responseAny.water_area_hectares;
-              console.log('✅ Found water_area_hectares at root:', waterArea);
             } else if (responseAny.water_area_hectare !== undefined && responseAny.water_area_hectare !== null) {
               waterArea = responseAny.water_area_hectare;
-              console.log('✅ Found water_area_hectare (any) at root:', waterArea);
             } else if (responseAny.total_water_area_hectare !== undefined && responseAny.total_water_area_hectare !== null) {
               waterArea = responseAny.total_water_area_hectare;
-              console.log('✅ Found total_water_area_hectare at root:', waterArea);
             } else if (responseAny.total_water_area_hectares !== undefined && responseAny.total_water_area_hectares !== null) {
               waterArea = responseAny.total_water_area_hectares;
-              console.log('✅ Found total_water_area_hectares at root:', waterArea);
             }
             
             // THIRD: Check in pixel_summary if available
@@ -2330,21 +2442,14 @@ const App: React.FC = () => {
               const pixelSummary = response.pixel_summary as any;
               if (pixelSummary.water_area_hectare !== undefined && pixelSummary.water_area_hectare !== null) {
                 waterArea = pixelSummary.water_area_hectare;
-                console.log('✅ Found water_area_hectare in pixel_summary:', waterArea);
               } else if (pixelSummary.water_area_hectares !== undefined && pixelSummary.water_area_hectares !== null) {
                 waterArea = pixelSummary.water_area_hectares;
-                console.log('✅ Found water_area_hectares in pixel_summary:', waterArea);
               }
             }
             
-            // Set the value or log warning
             if (waterArea !== null && !isNaN(waterArea) && waterArea >= 0) {
               setWaterAreaHectares(waterArea);
-              console.log('✅ Setting water area hectares to:', waterArea);
             } else {
-              console.warn('⚠️ No valid water_area_hectare found in response');
-              console.warn('⚠️ Response structure:', response);
-              console.warn('⚠️ area_summary:', responseAny.area_summary);
               setWaterAreaHectares(null);
             }
           } else {
@@ -2354,7 +2459,6 @@ const App: React.FC = () => {
           
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error(`Error loading ${activeTab} analysis:`, err);
           setError(`Failed to load plots: ${errorMessage}`);
           setAllPlots([]);
           setAvailablePlots([]);
@@ -2451,11 +2555,9 @@ const App: React.FC = () => {
               }
             }
           } else {
-            console.warn(`Left district ${leftSelectedDistrict} has insufficient coordinates:`, coordinates.length);
             setLeftAllPlots([]);
           }
         } catch (err) {
-          console.error('Error processing left district geometry:', err);
           setLeftAllPlots([]);
         }
       } else {
@@ -2521,7 +2623,6 @@ const App: React.FC = () => {
               boundary: coordinates
             };
             setRightAllPlots([districtPlot]);
-            console.log('✅ Right district boundary displayed:', rightSelectedDistrict);
             
             // Calculate bounds for the district
             if (coordinates.length > 0) {
@@ -2534,16 +2635,13 @@ const App: React.FC = () => {
               }
             }
           } else {
-            console.warn(`Right district ${rightSelectedDistrict} has insufficient coordinates:`, coordinates.length);
             setRightAllPlots([]);
           }
         } catch (err) {
-          console.error('Error processing right district geometry:', err);
           setRightAllPlots([]);
         }
       } else {
         // No geometry available
-        console.warn('Right district has no geometry:', rightSelectedDistrict);
         setRightAllPlots([]);
       }
     } else if (splitScreenMode && (!rightSelectedDistrict || rightSelectedSubdistrict || rightSelectedVillage)) {
@@ -2553,7 +2651,7 @@ const App: React.FC = () => {
 
   // Handle left subdistrict boundary display in split screen mode (even without tab)
   useEffect(() => {
-    if (splitScreenMode && leftSelectedSubdistrict && leftSubdistricts.length > 0 && !leftActiveTab) {
+    if (splitScreenMode && leftSelectedSubdistrict && leftSubdistricts.length > 0 && !leftActiveTab && (!leftSelectedVillage || !showLeftVillageBoundary)) {
       // Find the selected subdistrict data
       const subdistrictData = leftSubdistricts.find(s => s.subdistrict === leftSelectedSubdistrict);
       
@@ -2603,11 +2701,9 @@ const App: React.FC = () => {
               }
             }
           } else {
-            console.warn(`Left subdistrict ${leftSelectedSubdistrict} has insufficient coordinates:`, coordinates.length);
             setLeftAllPlots([]);
           }
         } catch (err) {
-          console.error('Error processing left subdistrict geometry:', err);
           setLeftAllPlots([]);
         }
       } else {
@@ -2649,95 +2745,103 @@ const App: React.FC = () => {
             setLeftAllPlots([districtPlot]);
           }
         } catch (err) {
-          console.error('Error processing left district geometry:', err);
         }
       }
     }
-  }, [splitScreenMode, leftSelectedSubdistrict, leftSubdistricts, leftSelectedDistrict, leftSelectedVillage, leftActiveTab, districts]);
+  }, [splitScreenMode, leftSelectedSubdistrict, leftSubdistricts, leftSelectedDistrict, leftSelectedVillage, leftActiveTab, districts, showLeftVillageBoundary]);
 
-  // Handle left village boundary display in split screen mode (even without tab)
+  // Handle left village boundary in split screen (after "Display boundary" — same logic as main map)
   useEffect(() => {
-    if (splitScreenMode && leftSelectedVillage && leftVillages.length > 0 && !leftActiveTab) {
-      // Find the selected village data
-      const villageData = leftVillages.find(v => v.village === leftSelectedVillage);
-      
-      if (villageData?.coordinates || villageData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle new format: coordinates directly on village object with geom_type
-          if (villageData.coordinates && villageData.geom_type) {
-            const coords = villageData.coordinates;
-            const geomType = villageData.geom_type.toUpperCase();
-            
-            if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-              if (Array.isArray(coords) && coords.length > 0) {
-                if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                  const outerRing = coords[0] || [];
-                  coordinates = outerRing.map((coord: number[]) => {
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                } else {
-                  coordinates = coords.map((coord: number[]) => {
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                }
-              }
-            }
-          }
-          // Handle old format: geometry object
-          else if (villageData.geometry) {
-            if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-              const coords = villageData.geometry.coordinates;
-              
-              if (villageData.geometry.type === 'Polygon') {
+    if (!splitScreenMode || !leftSelectedVillage || !showLeftVillageBoundary || !leftVillages.length || leftActiveTab) return;
+    if (!leftSelectedDistrict || !leftSelectedSubdistrict) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const plots = await fetchFieldBoundaries(leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage);
+        if (cancelled) return;
+        if (plots.length > 0) {
+          setLeftAllPlots(plots);
+          const bounds = L.latLngBounds([]);
+          plots.forEach((plot) => {
+            (plot.boundary || []).forEach((coord: Coordinate) => {
+              bounds.extend([coord[1], coord[0]]);
+            });
+          });
+          if (bounds.isValid()) setPlotBounds(bounds);
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+      }
+
+      const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
+      if (!villageData?.coordinates && !villageData?.geometry) {
+        setLeftAllPlots([]);
+        return;
+      }
+
+      try {
+        let coordinates: Coordinate[] = [];
+        if (villageData.coordinates && villageData.geom_type) {
+          const coords = villageData.coordinates;
+          const geomType = villageData.geom_type.toUpperCase();
+          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
+            if (Array.isArray(coords) && coords.length > 0) {
+              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
                 const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else if (villageData.geometry.type === 'MultiPolygon') {
-                const firstPolygon = coords[0] || [];
-                const outerRing = firstPolygon[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+                coordinates = outerRing.map((coord: number[]) => {
+                  if (Array.isArray(coord) && coord.length >= 2) {
+                    return [coord[0], coord[1]] as Coordinate;
+                  }
+                  return null;
+                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
+              } else {
+                coordinates = coords.map((coord: number[]) => {
+                  if (Array.isArray(coord) && coord.length >= 2) {
+                    return [coord[0], coord[1]] as Coordinate;
+                  }
+                  return null;
+                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
               }
             }
           }
-          
-          // Create a plot from village boundary for map display
-          if (coordinates.length >= 3) {
-            const villagePlot = {
-              id: leftSelectedVillage,
-              area_ha: '0',
-              boundary: coordinates
-            };
-            setLeftAllPlots([villagePlot]);
-            
-            // Calculate bounds for the village
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
+        } else if (villageData.geometry) {
+          if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
+            const coords = villageData.geometry.coordinates;
+            if (villageData.geometry.type === 'Polygon') {
+              const outerRing = coords[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else if (villageData.geometry.type === 'MultiPolygon') {
+              const firstPolygon = coords[0] || [];
+              const outerRing = firstPolygon[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
-          } else {
-            console.warn(`Left village ${leftSelectedVillage} has insufficient coordinates:`, coordinates.length);
-            setLeftAllPlots([]);
           }
-        } catch (err) {
-          console.error('Error processing left village geometry:', err);
+        }
+
+        if (coordinates.length >= 3) {
+          setLeftAllPlots([{ id: leftSelectedVillage, area_ha: '0', boundary: coordinates }]);
+          const bounds = L.latLngBounds([]);
+          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+          if (bounds.isValid()) setPlotBounds(bounds);
+        } else {
           setLeftAllPlots([]);
         }
-      } else {
+      } catch {
         setLeftAllPlots([]);
       }
-    } else if (splitScreenMode && !leftSelectedVillage && leftSelectedSubdistrict) {
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, leftVillages, leftSelectedDistrict, leftSelectedSubdistrict, leftActiveTab]);
+
+  useEffect(() => {
+    if (splitScreenMode && !leftSelectedVillage && leftSelectedSubdistrict) {
       // If village is cleared, show subdistrict boundary again
       const subdistrictData = leftSubdistricts.find(s => s.subdistrict === leftSelectedSubdistrict);
       if (subdistrictData?.geometry && !leftActiveTab) {
@@ -2773,7 +2877,6 @@ const App: React.FC = () => {
             setLeftAllPlots([subdistrictPlot]);
           }
         } catch (err) {
-          console.error('Error processing left subdistrict geometry:', err);
         }
       }
     }
@@ -2781,7 +2884,7 @@ const App: React.FC = () => {
 
   // Handle right subdistrict boundary display in split screen mode (even without tab)
   useEffect(() => {
-    if (splitScreenMode && rightSelectedSubdistrict && rightSubdistricts.length > 0 && !rightActiveTab && !rightSelectedVillage) {
+    if (splitScreenMode && rightSelectedSubdistrict && rightSubdistricts.length > 0 && !rightActiveTab && (!rightSelectedVillage || !showRightVillageBoundary)) {
       // Find the selected subdistrict data
       const subdistrictData = rightSubdistricts.find(s => s.subdistrict === rightSelectedSubdistrict);
       
@@ -2819,7 +2922,6 @@ const App: React.FC = () => {
               boundary: coordinates
             };
             setRightAllPlots([subdistrictPlot]);
-            console.log('✅ Right subdistrict boundary displayed:', rightSelectedSubdistrict);
             
             // Calculate bounds for the subdistrict
             if (coordinates.length > 0) {
@@ -2832,15 +2934,12 @@ const App: React.FC = () => {
               }
             }
           } else {
-            console.warn(`Right subdistrict ${rightSelectedSubdistrict} has insufficient coordinates:`, coordinates.length);
             setRightAllPlots([]);
           }
         } catch (err) {
-          console.error('Error processing right subdistrict geometry:', err);
           setRightAllPlots([]);
         }
       } else {
-        console.warn('Right subdistrict has no geometry:', rightSelectedSubdistrict);
         setRightAllPlots([]);
       }
     } else if (splitScreenMode && !rightSelectedSubdistrict && !rightSelectedVillage && rightSelectedDistrict && !rightActiveTab) {
@@ -2877,100 +2976,105 @@ const App: React.FC = () => {
               boundary: coordinates
             };
             setRightAllPlots([districtPlot]);
-            console.log('✅ Right district boundary restored after subdistrict cleared');
           }
         } catch (err) {
-          console.error('Error processing right district geometry:', err);
         }
       }
     }
-  }, [splitScreenMode, rightSelectedSubdistrict, rightSubdistricts, rightSelectedDistrict, rightSelectedVillage, rightActiveTab, districts]);
+  }, [splitScreenMode, rightSelectedSubdistrict, rightSubdistricts, rightSelectedDistrict, rightSelectedVillage, rightActiveTab, districts, showRightVillageBoundary]);
 
-  // Handle right village boundary display in split screen mode (even without tab)
+  // Handle right village boundary in split screen (after "Display boundary")
   useEffect(() => {
-    if (splitScreenMode && rightSelectedVillage && rightVillages.length > 0 && !rightActiveTab) {
-      // Find the selected village data
-      const villageData = rightVillages.find(v => v.village === rightSelectedVillage);
-      
-      if (villageData?.coordinates || villageData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle new format: coordinates directly on village object with geom_type
-          if (villageData.coordinates && villageData.geom_type) {
-            const coords = villageData.coordinates;
-            const geomType = villageData.geom_type.toUpperCase();
-            
-            if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-              if (Array.isArray(coords) && coords.length > 0) {
-                if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                  const outerRing = coords[0] || [];
-                  coordinates = outerRing.map((coord: number[]) => {
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                } else {
-                  coordinates = coords.map((coord: number[]) => {
-                    if (Array.isArray(coord) && coord.length >= 2) {
-                      return [coord[0], coord[1]] as Coordinate;
-                    }
-                    return null;
-                  }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                }
-              }
-            }
-          }
-          // Handle old format: geometry object
-          else if (villageData.geometry) {
-            if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-              const coords = villageData.geometry.coordinates;
-              
-              if (villageData.geometry.type === 'Polygon') {
+    if (!splitScreenMode || !rightSelectedVillage || !showRightVillageBoundary || !rightVillages.length || rightActiveTab) return;
+    if (!rightSelectedDistrict || !rightSelectedSubdistrict) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const plots = await fetchFieldBoundaries(rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage);
+        if (cancelled) return;
+        if (plots.length > 0) {
+          setRightAllPlots(plots);
+          const bounds = L.latLngBounds([]);
+          plots.forEach((plot) => {
+            (plot.boundary || []).forEach((coord: Coordinate) => {
+              bounds.extend([coord[1], coord[0]]);
+            });
+          });
+          if (bounds.isValid()) setPlotBounds(bounds);
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+      }
+
+      const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
+      if (!villageData?.coordinates && !villageData?.geometry) {
+        setRightAllPlots([]);
+        return;
+      }
+
+      try {
+        let coordinates: Coordinate[] = [];
+        if (villageData.coordinates && villageData.geom_type) {
+          const coords = villageData.coordinates;
+          const geomType = villageData.geom_type.toUpperCase();
+          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
+            if (Array.isArray(coords) && coords.length > 0) {
+              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
                 const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-              } else if (villageData.geometry.type === 'MultiPolygon') {
-                const firstPolygon = coords[0] || [];
-                const outerRing = firstPolygon[0] || [];
-                coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+                coordinates = outerRing.map((coord: number[]) => {
+                  if (Array.isArray(coord) && coord.length >= 2) {
+                    return [coord[0], coord[1]] as Coordinate;
+                  }
+                  return null;
+                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
+              } else {
+                coordinates = coords.map((coord: number[]) => {
+                  if (Array.isArray(coord) && coord.length >= 2) {
+                    return [coord[0], coord[1]] as Coordinate;
+                  }
+                  return null;
+                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
               }
             }
           }
-          
-          // Create a plot from village boundary for map display
-          if (coordinates.length >= 3) {
-            const villagePlot = {
-              id: rightSelectedVillage,
-              area_ha: '0',
-              boundary: coordinates
-            };
-            setRightAllPlots([villagePlot]);
-            console.log('✅ Right village boundary displayed:', rightSelectedVillage);
-            
-            // Calculate bounds for the village
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
+        } else if (villageData.geometry) {
+          if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
+            const coords = villageData.geometry.coordinates;
+            if (villageData.geometry.type === 'Polygon') {
+              const outerRing = coords[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+            } else if (villageData.geometry.type === 'MultiPolygon') {
+              const firstPolygon = coords[0] || [];
+              const outerRing = firstPolygon[0] || [];
+              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
             }
-          } else {
-            console.warn(`Right village ${rightSelectedVillage} has insufficient coordinates:`, coordinates.length);
-            setRightAllPlots([]);
           }
-        } catch (err) {
-          console.error('Error processing right village geometry:', err);
+        }
+
+        if (coordinates.length >= 3) {
+          setRightAllPlots([{ id: rightSelectedVillage, area_ha: '0', boundary: coordinates }]);
+          const bounds = L.latLngBounds([]);
+          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+          if (bounds.isValid()) setPlotBounds(bounds);
+        } else {
           setRightAllPlots([]);
         }
-      } else {
-        console.warn('Right village has no geometry/coordinates:', rightSelectedVillage);
+      } catch {
         setRightAllPlots([]);
       }
-    } else if (splitScreenMode && !rightSelectedVillage && rightSelectedSubdistrict && !rightActiveTab) {
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, rightVillages, rightSelectedDistrict, rightSelectedSubdistrict, rightActiveTab]);
+
+  useEffect(() => {
+    if (splitScreenMode && !rightSelectedVillage && rightSelectedSubdistrict && !rightActiveTab) {
       // If village is cleared, show subdistrict boundary again
       const subdistrictData = rightSubdistricts.find(s => s.subdistrict === rightSelectedSubdistrict);
       if (subdistrictData?.geometry) {
@@ -3004,10 +3108,8 @@ const App: React.FC = () => {
               boundary: coordinates
             };
             setRightAllPlots([subdistrictPlot]);
-            console.log('✅ Right subdistrict boundary restored after village cleared');
           }
         } catch (err) {
-          console.error('Error processing right subdistrict geometry:', err);
         }
       }
     }
@@ -3078,7 +3180,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing left village geometry for boundary preservation:', err);
               }
             }
           }
@@ -3117,7 +3218,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing left subdistrict geometry for boundary preservation:', err);
               }
             }
           }
@@ -3162,7 +3262,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing left district geometry for boundary preservation:', err);
               }
             }
           }
@@ -3325,7 +3424,6 @@ const App: React.FC = () => {
             
             if (finalPlots.length > 0) {
               setLeftAllPlots(finalPlots);
-              console.log(`✅ Displaying ${finalPlots.length} plots on left map (${plotsForMap.length} analysis + ${locationBoundary ? '1 location boundary' : '0 location boundary'})`);
             } else {
               // If no plots and no location boundary, still try to show location boundary if available
               if (locationBoundary) {
@@ -3423,7 +3521,6 @@ const App: React.FC = () => {
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error(`Error loading left ${leftActiveTab} analysis:`, err);
           setLeftError(`Failed to load ${leftActiveTab} analysis: ${errorMessage}`);
           setLeftAllPlotsAnalysisData(null);
           setLeftAllPlotsTileUrls({});
@@ -3505,7 +3602,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing right village geometry for boundary preservation:', err);
               }
             }
           }
@@ -3544,7 +3640,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing right subdistrict geometry for boundary preservation:', err);
               }
             }
           }
@@ -3589,7 +3684,6 @@ const App: React.FC = () => {
                   };
                 }
               } catch (err) {
-                console.error('Error processing right district geometry for boundary preservation:', err);
               }
             }
           }
@@ -3752,7 +3846,6 @@ const App: React.FC = () => {
             
             if (finalPlots.length > 0) {
               setRightAllPlots(finalPlots);
-              console.log(`✅ Displaying ${finalPlots.length} plots on right map (${plotsForMap.length} analysis + ${locationBoundary ? '1 location boundary' : '0 location boundary'})`);
             } else {
               // If no plots and no location boundary, still try to show location boundary if available
               if (locationBoundary) {
@@ -3850,7 +3943,6 @@ const App: React.FC = () => {
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-          console.error(`Error loading right ${rightActiveTab} analysis:`, err);
           setRightError(`Failed to load ${rightActiveTab} analysis: ${errorMessage}`);
           setRightAllPlotsAnalysisData(null);
           setRightAllPlotsTileUrls({});
@@ -3921,11 +4013,10 @@ const App: React.FC = () => {
       setActiveTab(null);
       setPlotBounds(null);
       setTotalAreaHectares(null);
-      console.log('✅ Cleared normal screen - showing clean base satellite map');
     }
   }, [splitScreenMode]);
 
-  // When no analysis tab is selected, remove those tile layers (LST stays — separate control).
+  // When no analysis tab is selected, remove those tile layers (LST stays â€” separate control).
   useEffect(() => {
     if (splitScreenMode) return;
     if (activeTab !== null) return;
@@ -3987,7 +4078,11 @@ const App: React.FC = () => {
         try {
           setLoading(true);
           setError(null);
-          const response = await fetchNDVISugarcaneDetection(selectedDistrict);
+          const response = await fetchNDVISugarcaneDetection(
+            selectedDistrict,
+            selectedSubdistrict,
+            selectedVillage
+          );
           if (response.tile_url && response.area_ha !== undefined) {
             setCropTileUrl(response.tile_url);
             setCropAreaHa(response.area_ha);
@@ -4043,6 +4138,15 @@ const App: React.FC = () => {
         }
         return;
       }
+      if (!dashboardIndicesFrequency) {
+        if (!cancelled) {
+          setDashboardIndicesData(null);
+          setDashboardIndicesError(null);
+          setDashboardIndicesLoading(false);
+          setSelectedDashboardIndex(null);
+        }
+        return;
+      }
       try {
         setDashboardIndicesLoading(true);
         setDashboardIndicesError(null);
@@ -4073,6 +4177,10 @@ const App: React.FC = () => {
     };
     run();
     return () => { cancelled = true; };
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage, dashboardIndicesFrequency]);
+
+  useEffect(() => {
+    setIndicesLegendHighlightedYear(null);
   }, [selectedDistrict, selectedSubdistrict, selectedVillage, dashboardIndicesFrequency]);
 
   // Fetch Pest stored time series for left side (split screen mode)
@@ -4343,7 +4451,7 @@ const App: React.FC = () => {
         tileUrlsMap[String(plotId)] = tileUrl.trim();
       }
 
-      // Geometry → boundary for map
+      // Geometry â†’ boundary for map
       let coordinates: number[][] = [];
       if (plot.geometry && plot.geometry.coordinates) {
         const geomCoords = plot.geometry.coordinates;
@@ -4734,7 +4842,7 @@ const App: React.FC = () => {
     healthy: '#00351d',
   };
 
-  /** Water uptake class colors — same as bottom chart; used before load and when API omits `color`. */
+  /** Water uptake class colors â€” same as bottom chart; used before load and when API omits `color`. */
   const WATER_CLASS_COLORS: Record<string, string> = {
     deficient: '#EBFF34',
     less: '#CC8213',
@@ -4794,10 +4902,10 @@ const App: React.FC = () => {
   // Location name for Daily Weather card header: village, or subdistrict, or district
   const getWeatherCardLocationName = (side: 'left' | 'right' = 'left'): string => {
     if (!splitScreenMode) {
-      return selectedVillage || selectedSubdistrict || selectedDistrict || '—';
+      return selectedVillage || selectedSubdistrict || selectedDistrict || 'â€”';
     }
-    if (side === 'left') return leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || '—';
-    return rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || '—';
+    if (side === 'left') return leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || 'â€”';
+    return rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || 'â€”';
   };
 
   // Helper function to calculate area cards for a specific side
@@ -4884,6 +4992,113 @@ const App: React.FC = () => {
       }
     }
     return areaCards;
+  };
+
+  /** Compact area (ha) bar chart docked to map bottom â€” split screen only, one instance per pane. */
+  const renderSplitScreenMapBottomGraph = (side: 'left' | 'right'): React.ReactNode => {
+    if (!splitScreenMode) return null;
+    const district = side === 'left' ? leftSelectedDistrict : rightSelectedDistrict;
+    if (!district) return null;
+    const tab = getActiveTab(side);
+    if (!tab || !['growth', 'water', 'soil', 'pest'].includes(tab)) return null;
+    const cardsAll = calculateAreaCards(side);
+    if (!cardsAll.length) return null;
+
+    const clipId = `split-map-bottom-clip-${side}-${tab}`;
+    const H = 128;
+    const W = 440;
+    const paddingLeft = 40;
+    const paddingRight = 10;
+    const paddingTop = 6;
+    const paddingBottom = 22;
+    const chartW = W - paddingLeft - paddingRight;
+    const chartH = H - paddingTop - paddingBottom;
+    const values = cardsAll.map((c) => c.value);
+    const maxVal = values.length > 0 ? Math.max(1, ...values.filter((v) => !Number.isNaN(v) && v >= 0)) : 1;
+    const paddedMax = maxVal * 1.1;
+    const n = cardsAll.length;
+    const barGap = n > 6 ? 3 : n > 4 ? 5 : 7;
+    const barWidth = n > 0 ? Math.max(3, (chartW - barGap * Math.max(0, n - 1)) / n) : 0;
+    const axisMain = '#cbd5e1';
+    const axisTick = '#475569';
+    const labelFill = '#1e293b';
+
+    return (
+      <div
+        className="absolute bottom-2 left-2 right-2 z-[850] flex max-h-[42vmin] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg ring-1 ring-black/5"
+      >
+        <div className="flex-shrink-0 border-b border-gray-200 bg-gray-50 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-800">
+          {getActiveTabDisplayName(side)} Â· Area (ha)
+        </div>
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden bg-white px-2 py-2">
+          <svg width="100%" height={H} className="block min-w-[260px]" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMinYMid meet">
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} />
+              </clipPath>
+            </defs>
+            <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={axisMain} strokeWidth={1} />
+            <line
+              x1={paddingLeft}
+              y1={H - paddingBottom}
+              x2={paddingLeft + chartW}
+              y2={H - paddingBottom}
+              stroke={axisMain}
+              strokeWidth={1}
+            />
+            {[0, 0.5, 1].map((r) => {
+              const value = paddedMax * r;
+              const y = paddingTop + chartH - r * chartH;
+              return (
+                <g key={r}>
+                  <line x1={paddingLeft - 4} y1={y} x2={paddingLeft} y2={y} stroke={axisMain} strokeWidth={1} />
+                  <text x={paddingLeft - 6} y={y + 3} textAnchor="end" fontSize={9} fill={axisTick}>
+                    {value.toFixed(0)}
+                  </text>
+                </g>
+              );
+            })}
+            <g clipPath={`url(#${clipId})`}>
+              {cardsAll.map((c, ci) => {
+                const val = c.value ?? 0;
+                const bh = paddedMax > 0 ? (val / paddedMax) * chartH : 0;
+                const y = paddingTop + chartH - bh;
+                const x = paddingLeft + ci * (barWidth + barGap);
+                const fill = c.color || '#6b7280';
+                return (
+                  <rect
+                    key={`${side}-split-btm-${c.label}-${ci}`}
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={Math.max(bh, 0)}
+                    fill={fill}
+                    rx={2}
+                  />
+                );
+              })}
+            </g>
+            {cardsAll.map((c, ci) => {
+              const x = paddingLeft + ci * (barWidth + barGap) + barWidth / 2;
+              const short =
+                c.label.length > 11 ? `${c.label.slice(0, 10)}â€¦` : c.label;
+              return (
+                <text
+                  key={`${side}-split-btm-lbl-${ci}`}
+                  x={x}
+                  y={H - 5}
+                  textAnchor="middle"
+                  fontSize={8}
+                  fill={labelFill}
+                >
+                  {short}
+                </text>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    );
   };
 
   // Area cards data for sidebar: ha + percentage; for pest optionally tileUrl + pestKey for click-to-show on map + children panel
@@ -4982,15 +5197,28 @@ const App: React.FC = () => {
                     <option key={v.village} value={v.village}>{v.village}</option>
                   ))}
                 </select>
+                {selectedVillage && (
+                  <button
+                    type="button"
+                    onClick={() => setShowVillageBoundary(true)}
+                    className="mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
+                  >
+                    Display boundary
+                  </button>
+                )}
               </div>
               {/* Frequency dropdown - same row as other filters */}
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Frequency</label>
                 <select
                   value={dashboardIndicesFrequency}
-                  onChange={(e) => setDashboardIndicesFrequency(e.target.value as DashboardIndicesFrequency)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setDashboardIndicesFrequency(v === '' ? '' : (v as DashboardIndicesFrequency));
+                  }}
                   className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[140px]"
                 >
+                  <option value=""></option>
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
                   <option value="yearly">Yearly</option>
@@ -5043,47 +5271,44 @@ const App: React.FC = () => {
             ) : dashboardIndicesLoading ? (
               <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
                 <Loader2 className="animate-spin text-green-400" size={32} />
-                <p className="text-gray-400">Loading indices data…</p>
+                <p className="text-gray-400">Loading indices dataâ€¦</p>
               </div>
             ) : dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored) ? (
               (() => {
                 const stored = (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored;
-                const INDEX_NAMES = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
-                const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_NAMES)[number], string> = {
-                  ndvi: 'Crop Health (NDVI)',
-                  evi: 'Plantation thickness (EVI)',
-                  gndvi: 'Fertilizer status (GNDVI)',
-                  lst: 'Heat Stress (LST)',
-                  ndbi: 'Non Farm Area (NDBI)',
-                  ndmi: 'Soil Moisture (NDMI)',
-                  ndre: 'Crop Stress (NDRE)',
-                  evi2: 'Crop Yield Potential (EVI2)',
-                  bsi: 'Bare Soil Index (BSI)',
-                };
+                const INDEX_NAMES = DASHBOARD_INDEX_ORDER;
+                const INDEX_DISPLAY_LABELS = DASHBOARD_INDEX_LABELS;
                 const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
-                INDEX_NAMES.forEach(name => { byIndex[name] = []; });
+                INDEX_NAMES.forEach((name) => {
+                  byIndex[name] = [];
+                });
                 stored.forEach((item: { index_name: string; period_date: string; value: number }) => {
                   const key = item.index_name.toLowerCase();
                   if (byIndex[key]) {
                     byIndex[key].push({ period_date: item.period_date, value: item.value });
                   }
                 });
-                INDEX_NAMES.forEach(name => {
+                INDEX_NAMES.forEach((name) => {
                   byIndex[name].sort((a, b) => a.period_date.localeCompare(b.period_date));
                 });
-                const cardColors: Record<string, string> = {
-                  evi: '#22c55e', bsi: '#f59e0b', gndvi: '#06b6d4', lst: '#ef4444',
-                  ndbi: '#8b5cf6', ndmi: '#ec4899', ndre: '#14b8a6', ndvi: '#3b82f6', evi2: '#84cc16'
-                };
-                const yearPalette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444'];
+                const cardColors = DASHBOARD_INDEX_CARD_COLORS_HEX;
+                const yearPalette = INDICES_CHART_YEAR_PALETTE;
+                const idxMeta = dashboardIndicesData as DashboardIndicesStoreResponse;
+                const emptyIndicesSeries = stored.length === 0;
                 return (
-                  <div id="dashboard-indices-cards" className="w-full px-4 md:px-6 space-y-6">
-                    {fullscreenIndexCard && (
-                      <div
-                        className="fixed inset-0 z-[1190] bg-black/60"
-                        onClick={() => setFullscreenIndexCard(null)}
-                        aria-hidden="true"
-                      />
+                  <div className="w-full px-4 md:px-6 space-y-6">
+                    {emptyIndicesSeries && (
+                      <div className="rounded-lg border border-amber-700/50 bg-gray-800/90 px-3 py-2 text-xs text-amber-100/95">
+                        {idxMeta.count === 0 ? (
+                          <p className="font-medium">No indices rows for this selection (count: 0).</p>
+                        ) : (
+                          <p className="font-medium">
+                            No numeric values to chart
+                            {typeof idxMeta.count === 'number' ? ` (${idxMeta.count} periods in response)` : ''}.
+                          </p>
+                        )}
+                        {idxMeta.note ? <p className="mt-1 text-gray-400">{idxMeta.note}</p> : null}
+                      </div>
                     )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
                       {INDEX_NAMES.map((indexName) => {
@@ -5092,7 +5317,7 @@ const App: React.FC = () => {
 
                         const isYearlyFreq = dashboardIndicesFrequency === 'yearly';
 
-                        // Yearly API: one value per calendar year — x-axis shows years, not months
+                        // Yearly API: one value per calendar year â€” x-axis shows years, not months
                         let chartData: Array<Record<string, string | number | null>>;
                         let years: string[];
                         const isWeeklyFreq = dashboardIndicesFrequency === 'weekly';
@@ -5132,7 +5357,7 @@ const App: React.FC = () => {
                           years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
                           chartData = Object.values(xRows).sort((a, b) => Number(a.x) - Number(b.x));
                         } else {
-                          // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
+                          // Fixed 12 months (Janâ€“Dec) on x-axis so each year draws one continuous line
                           const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                           const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
                           const monthYearAgg: Record<string, Record<string, { sum: number; count: number }>> = {};
@@ -5183,9 +5408,7 @@ const App: React.FC = () => {
                         return (
                           <div
                             key={indexName}
-                            className={`rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px] ${
-                              fullscreenIndexCard === indexName ? 'fixed inset-4 z-[1200] shadow-2xl bg-gray-900' : ''
-                            }`}
+                            className="rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px]"
                           >
                             <div className="flex items-center justify-between mb-2">
                               <span className="text-sm font-semibold text-gray-200 leading-tight pr-2" style={{ color: titleColor }}>
@@ -5201,22 +5424,14 @@ const App: React.FC = () => {
                                         : String(latestForHeader.value)}
                                   </span>
                                 )}
-                                <button
-                                  type="button"
-                                  onClick={() => setFullscreenIndexCard(fullscreenIndexCard === indexName ? null : indexName)}
-                                  className="p-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
-                                  title={fullscreenIndexCard === indexName ? 'Exit fullscreen' : 'Fullscreen'}
-                                >
-                                  {fullscreenIndexCard === indexName ? <MdFullscreenExit size={18} /> : <MdFullscreen size={18} />}
-                                </button>
                               </div>
                             </div>
                             <div className="text-[10px] text-gray-500 mb-1">
-                              {(isYearlyFreq ? chartData.length : points.length)} points · {dashboardIndicesFrequency}
+                              {(isYearlyFreq ? chartData.length : points.length)} points Â· {dashboardIndicesFrequency}
                             </div>
                             {chartData.length > 0 ? (
-                              <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: fullscreenIndexCard === indexName ? '85vh' : '70vh' }}>
-                                <ResponsiveContainer width="100%" height={fullscreenIndexCard === indexName ? 420 : 220}>
+                              <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: '70vh' }}>
+                                <ResponsiveContainer width="100%" height={220}>
                                   <LineChart
                                     data={chartData}
                                     margin={{
@@ -5231,7 +5446,13 @@ const App: React.FC = () => {
                                       dataKey={isYearlyFreq ? 'year' : (isWeeklyFreq ? 'x' : 'month')}
                                       type={isWeeklyFreq ? 'number' : 'category'}
                                       domain={isWeeklyFreq ? [0, 11.999] : undefined}
-                                      ticks={isWeeklyFreq ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : undefined}
+                                      ticks={
+                                        isWeeklyFreq
+                                          ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+                                          : isYearlyFreq
+                                            ? chartData.map((row) => String(row.year ?? ''))
+                                            : undefined
+                                      }
                                       tickFormatter={isWeeklyFreq
                                         ? (v: number) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Math.max(0, Math.min(11, Math.floor(v)))] ?? ''
                                         : undefined}
@@ -5259,6 +5480,7 @@ const App: React.FC = () => {
                                         name,
                                       ]}
                                       labelFormatter={(label) => {
+                                        if (isYearlyFreq) return `Year ${label}`;
                                         if (!isWeeklyFreq) return label;
                                         const x = typeof label === 'number' ? label : Number(label);
                                         if (!Number.isFinite(x)) return label;
@@ -5271,8 +5493,62 @@ const App: React.FC = () => {
                                     {!isYearlyFreq && (
                                       <Legend
                                         verticalAlign="bottom"
-                                        height={20}
-                                        wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
+                                        align="center"
+                                        content={({ payload }) => (
+                                          <ul
+                                            className="recharts-default-legend"
+                                            style={{
+                                              listStyle: 'none',
+                                              margin: 0,
+                                              padding: '6px 0 0',
+                                              display: 'flex',
+                                              flexWrap: 'wrap',
+                                              justifyContent: 'center',
+                                              alignItems: 'center',
+                                              gap: '6px 12px',
+                                              rowGap: '8px',
+                                              maxWidth: '100%',
+                                              fontSize: 10,
+                                            }}
+                                          >
+                                            {(payload ?? []).map(
+                                              (entry: { value?: string; color?: string; dataKey?: string | number }, i: number) => {
+                                                const yk = String(entry.dataKey ?? entry.value ?? '');
+                                                const dimmed =
+                                                  indicesLegendHighlightedYear !== null && yk !== indicesLegendHighlightedYear;
+                                                return (
+                                                  <li key={String(entry.dataKey ?? entry.value ?? i)} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => toggleIndicesYearHighlight(yk)}
+                                                      title="Highlight this year on the chart (others stay visible, dimmed). Click again to clear."
+                                                      className="inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
+                                                      style={{ opacity: dimmed ? 0.4 : 1 }}
+                                                    >
+                                                      <span
+                                                        style={{
+                                                          width: 14,
+                                                          height: 3,
+                                                          backgroundColor: entry.color,
+                                                          borderRadius: 1,
+                                                          flexShrink: 0,
+                                                        }}
+                                                      />
+                                                      <span
+                                                        style={{
+                                                          color: isDarkMode ? '#e7e5e4' : '#57534e',
+                                                          fontWeight: indicesLegendHighlightedYear === yk ? 700 : 500,
+                                                        }}
+                                                      >
+                                                        {entry.value}
+                                                      </span>
+                                                    </button>
+                                                  </li>
+                                                );
+                                              }
+                                            )}
+                                          </ul>
+                                        )}
                                       />
                                     )}
                                     {isYearlyFreq ? (
@@ -5281,26 +5557,43 @@ const App: React.FC = () => {
                                         dataKey="value"
                                         name="Value"
                                         stroke={titleColor}
-                                        dot={{ r: 3 }}
+                                        dot={{
+                                          r: 4,
+                                          strokeWidth: 2,
+                                          fill: isDarkMode ? '#111827' : '#f8fafc',
+                                          stroke: titleColor,
+                                        }}
                                         strokeWidth={2}
                                         connectNulls
                                         isAnimationActive
                                         animationDuration={600}
                                       />
                                     ) : (
-                                      years.map((yearKey, idx) => (
-                                        <Line
-                                          key={yearKey}
-                                          type="monotone"
-                                          dataKey={yearKey}
-                                          stroke={yearPalette[idx % yearPalette.length]}
-                                          dot={{ r: 2 }}
-                                          strokeWidth={1.5}
-                                          connectNulls
-                                          isAnimationActive
-                                          animationDuration={600}
-                                        />
-                                      ))
+                                      years.map((yearKey, idx) => {
+                                          const isHi = indicesLegendHighlightedYear === yearKey;
+                                          const isDim =
+                                            indicesLegendHighlightedYear !== null && !isHi;
+                                          const lineColor = yearPalette[idx % yearPalette.length];
+                                          return (
+                                            <Line
+                                              key={yearKey}
+                                              type="monotone"
+                                              dataKey={yearKey}
+                                              stroke={lineColor}
+                                              dot={{
+                                                r: isHi ? 3.5 : 2.5,
+                                                strokeWidth: 1.5,
+                                                fill: isDarkMode ? '#111827' : '#ffffff',
+                                                stroke: lineColor,
+                                              }}
+                                              strokeWidth={isHi ? 3.5 : isDim ? 1.2 : 1.8}
+                                              strokeOpacity={isDim ? 0.28 : 1}
+                                              connectNulls
+                                              isAnimationActive
+                                              animationDuration={600}
+                                            />
+                                          );
+                                        })
                                     )}
                                   </LineChart>
                                 </ResponsiveContainer>
@@ -5510,7 +5803,7 @@ const App: React.FC = () => {
         {/* Sidebar - no header inside; starts with CONFIGURATION */}
         {sidebarVisible && (
           <aside 
-            className="w-full md:w-64 flex-shrink-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
+            className="w-full md:w-64 md:max-w-64 flex-shrink-0 min-w-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
             style={{
               // White mode: mint canvas behind the configuration card (like your screenshot)
               backgroundColor: isDarkMode ? '#0f172a' : '#eaf6f0',
@@ -5545,7 +5838,13 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => setSplitScreenMode((p) => !p)}
+                    onClick={() => {
+                      setShowGraphPage(false);
+                      setShowAnalysisTrendsPage(false);
+                      setFullscreenAnalysisTrendCard(null);
+                      setShowGraphFrequencyDropdown(false);
+                      setSplitScreenMode((p) => !p);
+                    }}
                     className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
                       isDarkMode
                         ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
@@ -5559,7 +5858,10 @@ const App: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setShowGraphPage(false);
+                      setShowAnalysisTrendsPage(false);
+                      setFullscreenAnalysisTrendCard(null);
                       setShowGraphFrequencyDropdown(false);
+                      setSplitScreenMode(false);
                     }}
                     className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
                       isDarkMode
@@ -5611,6 +5913,8 @@ const App: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setShowGraphPage(true);
+                      setShowAnalysisTrendsPage(false);
+                      setFullscreenAnalysisTrendCard(null);
                       setShowGraphFrequencyDropdown(true);
                     }}
                     className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
@@ -5626,6 +5930,27 @@ const App: React.FC = () => {
                   >
                     <LineChartIcon size={18} />
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAnalysisTrendsPage(true);
+                      setFullscreenAnalysisTrendCard(null);
+                      setShowGraphPage(false);
+                      setShowGraphFrequencyDropdown(false);
+                    }}
+                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
+                      showAnalysisTrendsPage
+                        ? isDarkMode
+                          ? 'bg-emerald-900/40 border-emerald-600 text-emerald-200'
+                          : 'bg-emerald-100 border-emerald-300 text-emerald-900'
+                        : isDarkMode
+                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
+                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+                    }`}
+                    title="All-date analysis trends"
+                  >
+                    <BarChart3 size={18} />
+                  </button>
                 </div>
               </div>
 
@@ -5637,13 +5962,17 @@ const App: React.FC = () => {
                     </div>
                     <select
                       value={dashboardIndicesFrequency}
-                      onChange={(e) => setDashboardIndicesFrequency(e.target.value as DashboardIndicesFrequency)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setDashboardIndicesFrequency(v === '' ? '' : (v as DashboardIndicesFrequency));
+                      }}
                       className={`mt-2 w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
                         isDarkMode
                           ? 'bg-gray-700 border border-gray-600 text-white'
                           : 'bg-white border border-emerald-100 text-slate-800'
                       }`}
                     >
+                      <option value=""></option>
                       <option value="weekly">Weekly</option>
                       <option value="monthly">Monthly</option>
                       <option value="yearly">Yearly</option>
@@ -5651,13 +5980,42 @@ const App: React.FC = () => {
                     <div className={`mt-2 text-[10px] ${isDarkMode ? 'text-gray-300' : 'text-slate-500'}`}>
                       (Graphs will update for this frequency.)
                     </div>
+                    {(dashboardIndicesFrequency === 'weekly' || dashboardIndicesFrequency === 'monthly') && (
+                      <div className="mt-3 pt-3 border-t border-dashed border-gray-600/60">
+                        <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-slate-600'}`}>
+                          Year lines
+                        </div>
+                        <button
+                          type="button"
+                          onClick={clearIndicesYearHighlight}
+                          disabled={indicesLegendHighlightedYear === null}
+                          className={`w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            indicesLegendHighlightedYear === null
+                              ? isDarkMode
+                                ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
+                                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                              : isDarkMode
+                                ? 'bg-emerald-800/80 text-emerald-100 hover:bg-emerald-700 border border-emerald-600'
+                                : 'bg-emerald-600 text-white hover:bg-emerald-700 border border-emerald-500'
+                          }`}
+                          title="Remove highlight — all years stay visible with equal emphasis"
+                        >
+                          Clear highlight
+                        </button>
+                        {indicesLegendHighlightedYear !== null && (
+                          <p className={`mt-2 text-[10px] leading-snug ${isDarkMode ? 'text-emerald-200/90' : 'text-emerald-900'}`}>
+                            <span className="font-semibold">{indicesLegendHighlightedYear}</span> is emphasized; other years are dimmed. All lines remain on the chart.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
                   CONFIGURATION
                 </div>
           {/* Crops Dropdown - before District, independent */}
-          {!showGraphPage && (
+          {!showGraphPage && !showAnalysisTrendsPage && (
             <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
               Crops
@@ -5777,12 +6135,54 @@ const App: React.FC = () => {
                   </option>
                 ))}
               </select>
+              {getSelectedVillage('left') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (splitScreenMode) {
+                      if (getSelectedVillage('left')) setShowLeftVillageBoundary(true);
+                    } else {
+                      setShowVillageBoundary(true);
+                    }
+                  }}
+                  className={`mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isDarkMode
+                      ? 'bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500'
+                  }`}
+                >
+                  Display boundary
+                </button>
+              )}
+            </div>
+          )}
+
+          {selectedCrop === 'sugarcane' && (splitScreenMode
+            ? (leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
+            : (selectedDistrict && selectedSubdistrict && selectedVillage)) && (
+            <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-emerald-100 shadow-sm'}`}>
+              <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                Sugarcane area (predicted)
+              </div>
+              {predictSugarcaneAreaLoading ? (
+                <div className="flex items-center justify-center py-2">
+                  <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
+                </div>
+              ) : predictSugarcaneAreaHa !== null && predictSugarcaneAreaHa !== undefined ? (
+                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
+                  {predictSugarcaneAreaHa.toFixed(2)} ha
+                </div>
+              ) : (
+                <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No sugarcane area data</div>
+              )}
             </div>
           )}
               </div>
 
           {/* Total Area Card */}
           {getSelectedDistrict('left') && (
+            splitScreenMode || !['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '')
+          ) && (
             <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                 {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
@@ -5826,8 +6226,8 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Percentage / Area (ha) — grid 2 per row; click loads tile on map */}
-          {['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && calculateAreaCards('left').length > 0 && (
+          {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
+          {splitScreenMode && ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && calculateAreaCards('left').length > 0 && (
             <div className="mt-3">
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                 Percentage / Area (ha)
@@ -5968,7 +6368,19 @@ const App: React.FC = () => {
       {/* Home Icon Toggle Button removed (do not display) */}
 
       {/* Main Map Area - Shows two maps in split screen mode; scroll at 1440/1024 so map is viewable */}
-      <main ref={mainScrollRef} className={`flex-1 w-full min-h-0 relative bg-gray-950 overflow-y-auto ${splitScreenMode ? 'flex' : 'flex flex-col'}`}>
+      <main
+        ref={mainScrollRef}
+        className={`flex-1 w-full min-h-0 relative bg-gray-950 overflow-y-auto ${
+          splitScreenMode
+            ? 'flex'
+            : !isMapFullscreen &&
+              !showGraphPage &&
+              !showAnalysisTrendsPage &&
+              ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '')
+              ? 'flex flex-col md:flex-row md:items-stretch'
+              : 'flex flex-col'
+        }`}
+      >
         {/* Pest graph PDF/Excel: use Download in sidebar only (no floating control on map) */}
 
           {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
@@ -5978,9 +6390,11 @@ const App: React.FC = () => {
               ? 'flex-1 w-1/2 border-r border-gray-700'
               : isMapFullscreen
                 ? 'flex-1 min-h-[calc(100vh-140px)]'
-                : showGraphPage
+                : (showGraphPage || showAnalysisTrendsPage)
                   ? 'flex-1 min-h-[calc(100vh-140px)]'
-                  : 'flex-none h-[80vh] min-h-[520px]'
+                  : ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '')
+                    ? 'flex-1 min-h-[calc(100vh-140px)] md:border-r md:border-gray-800'
+                    : 'flex-1 min-h-[calc(100vh-140px)]'
           }`}
         >
           {showGraphPage && (
@@ -5996,23 +6410,13 @@ const App: React.FC = () => {
                   ) : dashboardIndicesLoading ? (
                     <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
                       <Loader2 className="animate-spin text-green-400" size={32} />
-                      <p className="text-gray-400">Loading indices data…</p>
+                      <p className="text-gray-400">Loading indices dataâ€¦</p>
                     </div>
                   ) : dashboardIndicesData?.stored && Array.isArray(dashboardIndicesData.stored) ? (
                     (() => {
                       const stored = (dashboardIndicesData as { stored: Array<{ index_name: string; period_date: string; value: number }> }).stored;
-                      const INDEX_NAMES = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
-                      const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_NAMES)[number], string> = {
-                        ndvi: 'Crop Health (NDVI)',
-                        evi: 'Plantation thickness (EVI)',
-                        gndvi: 'Fertilizer status (GNDVI)',
-                        lst: 'Heat Stress (LST)',
-                        ndbi: 'Non Farm Area (NDBI)',
-                        ndmi: 'Soil Moisture (NDMI)',
-                        ndre: 'Crop Stress (NDRE)',
-                        evi2: 'Crop Yield Potential (EVI2)',
-                        bsi: 'Bare Soil Index (BSI)',
-                      };
+                      const INDEX_NAMES = DASHBOARD_INDEX_ORDER;
+                      const INDEX_DISPLAY_LABELS = DASHBOARD_INDEX_LABELS;
                       const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
                       INDEX_NAMES.forEach((name) => {
                         byIndex[name] = [];
@@ -6026,36 +6430,28 @@ const App: React.FC = () => {
                       INDEX_NAMES.forEach((name) => {
                         byIndex[name].sort((a, b) => a.period_date.localeCompare(b.period_date));
                       });
-                      const cardColors: Record<string, string> = {
-                        evi: '#22c55e',
-                        bsi: '#f59e0b',
-                        gndvi: '#06b6d4',
-                        lst: '#ef4444',
-                        ndbi: '#8b5cf6',
-                        ndmi: '#ec4899',
-                        ndre: '#14b8a6',
-                        ndvi: '#3b82f6',
-                        evi2: '#84cc16',
-                      };
-                      const yearPalette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#e11d48', '#10b981', '#facc15', '#6366f1', '#14b8a6', '#ef4444'];
-                      return (
-                        <div id="dashboard-indices-cards" className="w-full px-4 md:px-6 space-y-6">
-                          {fullscreenIndexCard && (
-                            <div
-                              className="fixed inset-0 z-[1190] bg-black/60"
-                              onClick={() => setFullscreenIndexCard(null)}
-                              aria-hidden="true"
-                            />
-                          )}
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
-                            {INDEX_NAMES.map((indexName) => {
+                      const cardColors = DASHBOARD_INDEX_CARD_COLORS_HEX;
+                      const yearPalette = INDICES_CHART_YEAR_PALETTE;
+                      const INDICES_CHUNK = 6;
+                      const indexChunks: DashboardIndexKey[][] = [];
+                      for (let i = 0; i < INDEX_NAMES.length; i += INDICES_CHUNK) {
+                        indexChunks.push([...INDEX_NAMES.slice(i, i + INDICES_CHUNK)]);
+                      }
+                      const idxMetaFull = dashboardIndicesData as DashboardIndicesStoreResponse;
+                      const emptyIndicesSeriesFull = stored.length === 0;
+                      const renderIndexCard = (
+                        indexName: DashboardIndexKey,
+                        mode: 'grid' | 'fullscreen' | 'fullscreen-split' = 'grid',
+                        fullscreenInstanceKey = 'main',
+                      ) => {
+                        const isSplitFullscreen = mode === 'fullscreen-split';
                               const points = byIndex[indexName] || [];
                               const titleColor = cardColors[indexName] ?? '#6b7280';
 
                               const isYearlyFreq = dashboardIndicesFrequency === 'yearly';
                               const isWeeklyFreq = dashboardIndicesFrequency === 'weekly';
 
-                              // Yearly API: one value per calendar year — x-axis shows years, not months
+                              // Yearly API: one value per calendar year â€” x-axis shows years, not months
                               let chartData: Array<Record<string, string | number | null>>;
                               let years: string[];
 
@@ -6095,7 +6491,7 @@ const App: React.FC = () => {
                                 years = Array.from(yearsSet).sort((a, b) => a - b).map((y) => String(y));
                                 chartData = Object.values(xRows).sort((a, b) => Number(a.x) - Number(b.x));
                               } else {
-                                // Fixed 12 months (Jan–Dec) on x-axis so each year draws one continuous line
+                                // Fixed 12 months (Janâ€“Dec) on x-axis so each year draws one continuous line
                                 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                                 const monthMap: Record<string, { month: string; monthIndex: number; [k: string]: string | number }> = {};
                                 const monthYearAgg: Record<string, Record<string, { sum: number; count: number }>> = {};
@@ -6145,18 +6541,33 @@ const App: React.FC = () => {
 
                               return (
                                 <div
-                                  key={indexName}
-                                  className={`rounded-lg border border-gray-600 bg-gray-800/90 p-4 flex flex-col min-h-[280px] ${
-                                    fullscreenIndexCard === indexName ? 'fixed inset-4 z-[1200] shadow-2xl bg-gray-900' : ''
+                                  key={mode === 'grid' ? indexName : `${indexName}-fs-${fullscreenInstanceKey}`}
+                                  className={`rounded-lg border flex flex-col ${
+                                    isSplitFullscreen
+                                      ? isDarkMode
+                                        ? 'h-full min-h-0 w-full flex-1 overflow-hidden border-gray-600 bg-gray-800/90 p-2 sm:p-3'
+                                        : 'h-full min-h-0 w-full flex-1 overflow-hidden border-emerald-200/80 bg-white p-2 sm:p-3 shadow-sm'
+                                      : mode === 'fullscreen'
+                                        ? isDarkMode
+                                          ? 'w-full min-h-0 border-gray-600 bg-gray-800/90 p-4'
+                                          : 'w-full min-h-0 border-emerald-200/80 bg-white p-4 shadow-sm'
+                                        : 'min-h-[280px] border-gray-600 bg-gray-800/90 p-4'
                                   }`}
                                 >
-                                  <div className="flex items-center justify-between mb-2">
-                                    <span className="text-sm font-semibold text-gray-200 leading-tight pr-2" style={{ color: titleColor }}>
+                                  <div className={`flex items-center justify-between ${isSplitFullscreen ? 'mb-1 shrink-0' : 'mb-2'}`}>
+                                    <span
+                                      className={`text-sm font-semibold leading-tight pr-2 ${
+                                        (mode === 'fullscreen' || isSplitFullscreen) && !isDarkMode ? 'text-stone-800' : 'text-gray-200'
+                                      }`}
+                                      style={{ color: titleColor }}
+                                    >
                                       {INDEX_DISPLAY_LABELS[indexName] ?? indexName}
                                     </span>
                                     <div className="flex items-center gap-2">
                                       {latestForHeader && (
-                                        <span className="text-xs text-gray-400">
+                                        <span
+                                          className={`text-xs ${(mode === 'fullscreen' || isSplitFullscreen) && !isDarkMode ? 'text-stone-600' : 'text-gray-400'}`}
+                                        >
                                           {typeof latestForHeader.value === 'number' && (latestForHeader.value > 1000 || latestForHeader.value < -1000)
                                             ? latestForHeader.value.toExponential(2)
                                             : typeof latestForHeader.value === 'number'
@@ -6164,48 +6575,104 @@ const App: React.FC = () => {
                                               : String(latestForHeader.value)}
                                         </span>
                                       )}
-                                      <button
-                                        type="button"
-                                        onClick={() => setFullscreenIndexCard(fullscreenIndexCard === indexName ? null : indexName)}
-                                        className="p-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
-                                        title={fullscreenIndexCard === indexName ? 'Exit fullscreen' : 'Fullscreen'}
-                                      >
-                                        {fullscreenIndexCard === indexName ? <MdFullscreenExit size={18} /> : <MdFullscreen size={18} />}
-                                      </button>
+                                      {mode === 'grid' && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setFullscreenIndicesOpenedFrom(indexName);
+                                            setFullscreenIndicesCompare(indexName);
+                                          }}
+                                          className="p-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
+                                          title="Fullscreen"
+                                        >
+                                          <MdFullscreen size={18} />
+                                        </button>
+                                      )}
                                     </div>
                                   </div>
-                                  <div className="text-[10px] text-gray-500 mb-1">
-                                    {(isYearlyFreq ? chartData.length : points.length)} points · {dashboardIndicesFrequency}
+                                  <div
+                                    className={`text-[10px] ${isSplitFullscreen ? 'mb-0.5 shrink-0' : 'mb-1'} ${
+                                      (mode === 'fullscreen' || isSplitFullscreen) && !isDarkMode ? 'text-stone-500' : 'text-gray-500'
+                                    }`}
+                                  >
+                                    {(isYearlyFreq ? chartData.length : points.length)} points Â· {dashboardIndicesFrequency}
                                   </div>
                                   {chartData.length > 0 ? (
-                                    <div className="w-full flex-1 min-h-[220px]" style={{ maxWidth: '100%', maxHeight: fullscreenIndexCard === indexName ? '85vh' : '70vh' }}>
-                                      <ResponsiveContainer width="100%" height={fullscreenIndexCard === indexName ? 420 : 220}>
+                                    <div
+                                      className={
+                                        isSplitFullscreen
+                                          ? 'relative w-full min-h-0 flex-1 overflow-hidden'
+                                          : 'w-full flex-1 min-h-[220px]'
+                                      }
+                                      style={
+                                        isSplitFullscreen
+                                          ? { maxWidth: '100%', minHeight: 0, flex: '1 1 0%' }
+                                          : {
+                                              maxWidth: '100%',
+                                              maxHeight: mode === 'fullscreen' ? '75vh' : '70vh',
+                                              height: mode === 'fullscreen' ? 440 : 220,
+                                            }
+                                      }
+                                    >
+                                      <ResponsiveContainer width="100%" height="100%">
                                         <LineChart
                                           data={chartData}
                                           margin={{
-                                            top: 10,
-                                            right: 10,
+                                            top: isSplitFullscreen ? 4 : 10,
+                                            right: 8,
                                             left: 0,
-                                            bottom: isYearlyFreq && chartData.length > 10 ? 36 : 20,
+                                            bottom: isSplitFullscreen
+                                              ? isYearlyFreq && chartData.length > 10
+                                                ? 28
+                                                : isYearlyFreq
+                                                  ? 16
+                                                  : years.length > 6
+                                                    ? 40
+                                                    : 32
+                                              : isYearlyFreq && chartData.length > 10
+                                                ? 36
+                                                : isYearlyFreq
+                                                  ? 20
+                                                  : years.length > 6
+                                                    ? 52
+                                                    : 42,
                                           }}
                                         >
                                           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                           <XAxis
                                             dataKey={isYearlyFreq ? 'year' : isWeeklyFreq ? 'x' : 'month'}
-                                            type={isYearlyFreq ? 'number' : 'category'}
+                                            type={isWeeklyFreq ? 'number' : 'category'}
                                             domain={isWeeklyFreq ? [0, 11.999] : undefined}
-                                            ticks={isWeeklyFreq ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : undefined}
+                                            ticks={
+                                              isWeeklyFreq
+                                                ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+                                                : isYearlyFreq
+                                                  ? chartData.map((row) => String(row.year ?? ''))
+                                                  : undefined
+                                            }
                                             tickFormatter={
                                               isWeeklyFreq
                                                 ? (v: number) =>
                                                     ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Math.max(0, Math.min(11, Math.floor(v)))] ?? ''
                                                 : undefined
                                             }
-                                            tick={{ fill: '#9ca3af', fontSize: isYearlyFreq && chartData.length > 12 ? 9 : 10 }}
+                                            tick={{
+                                              fill: '#9ca3af',
+                                              fontSize:
+                                                isYearlyFreq && chartData.length > 12
+                                                  ? isSplitFullscreen
+                                                    ? 8
+                                                    : 9
+                                                  : isSplitFullscreen
+                                                    ? 9
+                                                    : 10,
+                                            }}
                                             interval={isYearlyFreq || isWeeklyFreq ? 0 : 'preserveStartEnd'}
                                             angle={isYearlyFreq && chartData.length > 10 ? -40 : 0}
                                             textAnchor={isYearlyFreq && chartData.length > 10 ? 'end' : 'middle'}
-                                            height={isYearlyFreq && chartData.length > 10 ? 48 : 24}
+                                            height={
+                                              isYearlyFreq && chartData.length > 10 ? (isSplitFullscreen ? 34 : 48) : isSplitFullscreen ? 20 : 24
+                                            }
                                           />
                                           <YAxis
                                             width={48}
@@ -6222,6 +6689,7 @@ const App: React.FC = () => {
                                             labelStyle={{ color: '#d1d5db' }}
                                             formatter={(value: number, name: string) => [typeof value === 'number' ? value.toFixed(4) : value, name]}
                                             labelFormatter={(label) => {
+                                              if (isYearlyFreq) return `Year ${label}`;
                                               if (!isWeeklyFreq) return label;
                                               const x = typeof label === 'number' ? label : Number(label);
                                               if (!Number.isFinite(x)) return label;
@@ -6232,7 +6700,68 @@ const App: React.FC = () => {
                                             }}
                                           />
                                           {!isYearlyFreq && (
-                                            <Legend verticalAlign="bottom" height={20} wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
+                                            <Legend
+                                              verticalAlign="bottom"
+                                              align="center"
+                                              content={({ payload }) => (
+                                                <ul
+                                                  className="recharts-default-legend"
+                                                  style={{
+                                                    listStyle: 'none',
+                                                    margin: 0,
+                                                    padding: '6px 0 0',
+                                                    display: 'flex',
+                                                    flexWrap: 'wrap',
+                                                    justifyContent: 'center',
+                                                    alignItems: 'center',
+                                                    gap: '6px 12px',
+                                                    rowGap: '8px',
+                                                    maxWidth: '100%',
+                                                    fontSize: isSplitFullscreen ? 8 : 11,
+                                                  }}
+                                                >
+                                                  {(payload ?? []).map(
+                                                    (entry: { value?: string; color?: string; dataKey?: string | number }, i: number) => {
+                                                      const yk = String(entry.dataKey ?? entry.value ?? '');
+                                                      const dimmed =
+                                                        indicesLegendHighlightedYear !== null && yk !== indicesLegendHighlightedYear;
+                                                      return (
+                                                        <li
+                                                          key={String(entry.dataKey ?? entry.value ?? i)}
+                                                          style={{ display: 'inline-flex', alignItems: 'center' }}
+                                                        >
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => toggleIndicesYearHighlight(yk)}
+                                                            title="Highlight this year (all years stay on chart). Click again to clear."
+                                                            className="inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
+                                                            style={{ opacity: dimmed ? 0.4 : 1 }}
+                                                          >
+                                                            <span
+                                                              style={{
+                                                                width: 14,
+                                                                height: 3,
+                                                                backgroundColor: entry.color,
+                                                                borderRadius: 1,
+                                                                flexShrink: 0,
+                                                              }}
+                                                            />
+                                                            <span
+                                                              style={{
+                                                                color: isDarkMode ? '#e7e5e4' : '#57534e',
+                                                                fontWeight: indicesLegendHighlightedYear === yk ? 700 : 500,
+                                                              }}
+                                                            >
+                                                              {entry.value}
+                                                            </span>
+                                                          </button>
+                                                        </li>
+                                                      );
+                                                    }
+                                                  )}
+                                                </ul>
+                                              )}
+                                            />
                                           )}
                                           {isYearlyFreq ? (
                                             <Line
@@ -6240,36 +6769,232 @@ const App: React.FC = () => {
                                               dataKey="value"
                                               name="Value"
                                               stroke={titleColor}
-                                              dot={{ r: 3 }}
+                                              dot={{
+                                                r: 4,
+                                                strokeWidth: 2,
+                                                fill: isDarkMode ? '#111827' : '#f8fafc',
+                                                stroke: titleColor,
+                                              }}
                                               strokeWidth={2}
                                               connectNulls
                                               isAnimationActive
                                               animationDuration={600}
                                             />
                                           ) : (
-                                            years.map((yearKey, idx) => (
-                                              <Line
-                                                key={yearKey}
-                                                type="monotone"
-                                                dataKey={yearKey}
-                                                stroke={yearPalette[idx % yearPalette.length]}
-                                                dot={{ r: 2 }}
-                                                strokeWidth={1.5}
-                                                connectNulls
-                                                isAnimationActive
-                                                animationDuration={600}
-                                              />
-                                            ))
+                                            years.map((yearKey, idx) => {
+                                                const isHi = indicesLegendHighlightedYear === yearKey;
+                                                const isDim =
+                                                  indicesLegendHighlightedYear !== null && !isHi;
+                                                const lineColor = yearPalette[idx % yearPalette.length];
+                                                return (
+                                                  <Line
+                                                    key={yearKey}
+                                                    type="monotone"
+                                                    dataKey={yearKey}
+                                                    stroke={lineColor}
+                                                    dot={{
+                                                      r: isHi ? 3.5 : 2.5,
+                                                      strokeWidth: 1.5,
+                                                      fill: isDarkMode ? '#111827' : '#ffffff',
+                                                      stroke: lineColor,
+                                                    }}
+                                                    strokeWidth={isHi ? 3.5 : isDim ? 1.2 : 1.8}
+                                                    strokeOpacity={isDim ? 0.28 : 1}
+                                                    connectNulls
+                                                    isAnimationActive
+                                                    animationDuration={600}
+                                                  />
+                                                );
+                                              })
                                           )}
                                         </LineChart>
                                       </ResponsiveContainer>
                                     </div>
                                   ) : (
-                                    <div className="min-h-[220px] flex items-center justify-center text-gray-500 text-xs">No data</div>
+                                    <div
+                                      className={`flex items-center justify-center text-xs ${
+                                        isSplitFullscreen ? 'min-h-0 flex-1' : 'min-h-[220px]'
+                                      } ${
+                                        (mode === 'fullscreen' || isSplitFullscreen) && !isDarkMode ? 'text-stone-500' : 'text-gray-500'
+                                      }`}
+                                    >
+                                      No data
+                                    </div>
                                   )}
                                 </div>
                               );
-                            })}
+                      };
+                      return (
+                        <div id="indices/retrieve-aggregated-cards" className="w-full px-4 md:px-6 space-y-6">
+                          {fullscreenIndicesOpenedFrom && fullscreenIndicesCompare && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[1190] bg-black/60"
+                                onClick={() => {
+                                  setFullscreenIndicesOpenedFrom(null);
+                                  setFullscreenIndicesCompare(null);
+                                }}
+                                aria-hidden="true"
+                              />
+                              <div className="fixed inset-0 z-[1210] flex pointer-events-none">
+                                <div
+                                  role="dialog"
+                                  aria-modal="true"
+                                  aria-labelledby="indices-fullscreen-title"
+                                  className={`pointer-events-auto flex h-[100dvh] max-h-[100dvh] w-full min-h-0 flex-col overflow-hidden rounded-none shadow-none border-0 ${
+                                    isDarkMode ? 'bg-gray-900' : 'bg-[#f8fafc]'
+                                  }`}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div
+                                    className={`flex flex-wrap items-center gap-2 sm:gap-3 px-4 py-2.5 sm:px-6 border-b shrink-0 ${
+                                      isDarkMode ? 'border-gray-700 bg-gray-900' : 'border-emerald-100 bg-[#f0fdf4]'
+                                    }`}
+                                  >
+                                    <span
+                                      id="indices-fullscreen-title"
+                                      className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-stone-800'}`}
+                                    >
+                                      Compare index
+                                    </span>
+                                    <select
+                                      id="indices-fullscreen-select"
+                                      value={fullscreenIndicesCompare}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        if ((INDEX_NAMES as readonly string[]).includes(v)) {
+                                          setFullscreenIndicesCompare(v as DashboardIndexKey);
+                                        }
+                                      }}
+                                      className={`min-w-[12rem] max-w-[min(100%,28rem)] rounded-lg border px-2 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/60 ${
+                                        isDarkMode
+                                          ? 'border-gray-500 bg-gray-800 text-gray-100'
+                                          : 'border-emerald-300 bg-white text-stone-900'
+                                      }`}
+                                    >
+                                      {INDEX_NAMES.map((n) => (
+                                        <option key={n} value={n}>
+                                          {INDEX_DISPLAY_LABELS[n] ?? n}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setFullscreenIndicesOpenedFrom(null);
+                                        setFullscreenIndicesCompare(null);
+                                      }}
+                                      className={`ml-auto inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                                        isDarkMode
+                                          ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
+                                          : 'border-emerald-300 bg-white text-stone-800 hover:bg-emerald-50'
+                                      }`}
+                                      title="Close"
+                                    >
+                                      <MdFullscreenExit size={18} />
+                                      <span>Close</span>
+                                    </button>
+                                  </div>
+                                  <div
+                                    className={`flex flex-1 min-h-0 w-full flex-col gap-2 overflow-hidden px-3 py-2 sm:px-4 ${
+                                      isDarkMode ? 'bg-gray-900' : 'bg-[#f8fafc]'
+                                    }`}
+                                  >
+                                    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+                                      <p
+                                        className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+                                          isDarkMode ? 'text-gray-400' : 'text-stone-600'
+                                        }`}
+                                      >
+                                        Opened from (this chart)
+                                      </p>
+                                      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                                        {renderIndexCard(fullscreenIndicesOpenedFrom, 'fullscreen-split', 'primary')}
+                                      </div>
+                                    </div>
+                                    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+                                      <p
+                                        className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+                                          isDarkMode ? 'text-gray-400' : 'text-stone-600'
+                                        }`}
+                                      >
+                                        Compare (dropdown)
+                                      </p>
+                                      {fullscreenIndicesCompare !== fullscreenIndicesOpenedFrom ? (
+                                        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                                          {renderIndexCard(fullscreenIndicesCompare, 'fullscreen-split', 'compare')}
+                                        </div>
+                                      ) : (
+                                        <div
+                                          className={`flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden rounded-lg border border-dashed px-4 text-center text-xs ${
+                                            isDarkMode
+                                              ? 'border-gray-600 bg-gray-800/50 text-gray-400'
+                                              : 'border-emerald-200 bg-white text-stone-600'
+                                          }`}
+                                        >
+                                          Choose a <strong className="font-semibold">different</strong> index in
+                                          &quot;Compare index&quot; above to show a second graph here.
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                          {emptyIndicesSeriesFull && (
+                            <div className="rounded-lg border border-amber-700/50 bg-gray-800/90 px-3 py-2 text-xs text-amber-100/95">
+                              {idxMetaFull.count === 0 ? (
+                                <p className="font-medium">No indices rows for this selection (count: 0).</p>
+                              ) : (
+                                <p className="font-medium">
+                                  No numeric values to chart
+                                  {typeof idxMetaFull.count === 'number'
+                                    ? ` (${idxMetaFull.count} periods in response)`
+                                    : ''}
+                                  .
+                                </p>
+                              )}
+                              {idxMetaFull.note ? <p className="mt-1 text-gray-400">{idxMetaFull.note}</p> : null}
+                            </div>
+                          )}
+                          {(dashboardIndicesFrequency === 'weekly' || dashboardIndicesFrequency === 'monthly') && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-600 bg-gray-800/80 px-3 py-2">
+                              <span className="text-xs text-gray-400">
+                                {indicesLegendHighlightedYear !== null ? (
+                                  <>
+                                    Emphasizing <span className="font-semibold text-emerald-300">{indicesLegendHighlightedYear}</span>
+                                    <span className="text-gray-500"> — other years dimmed, all still shown</span>
+                                  </>
+                                ) : (
+                                  <>Click a year in any legend to emphasize that line; all years stay on the chart</>
+                                )}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={clearIndicesYearHighlight}
+                                disabled={indicesLegendHighlightedYear === null}
+                                className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                                  indicesLegendHighlightedYear === null
+                                    ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
+                                    : 'bg-emerald-700 text-white hover:bg-emerald-600 border border-emerald-500'
+                                }`}
+                                title="Clear highlight — equal emphasis on every year"
+                              >
+                                Clear highlight
+                              </button>
+                            </div>
+                          )}
+                          <div className="flex flex-col gap-5 md:gap-6 w-full">
+                            {indexChunks.map((chunk, chunkIdx) => (
+                              <div
+                                key={chunkIdx}
+                                id={`indices/retrieve-aggregated-chunk-${chunkIdx}`}
+                                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6"
+                              >
+                                {chunk.map((n) => renderIndexCard(n))}
+                              </div>
+                            ))}
                           </div>
                         </div>
                       );
@@ -6278,6 +7003,328 @@ const App: React.FC = () => {
                     <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
                       <p className="text-gray-400">Select District and Frequency to load indices. Subdistrict and Village can be selected to further filter data.</p>
                     </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {showAnalysisTrendsPage && (
+            <div
+              className={`absolute inset-0 z-[1200] overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}
+            >
+              <div className="min-h-[100%]">
+                <div className="flex-1 p-4 md:p-6 overflow-auto">
+                  {!selectedDistrict ? (
+                    <div className={`w-full max-w-4xl mx-auto rounded-lg p-8 text-center border ${
+                      isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
+                    }`}>
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-slate-600'}>
+                        Select District to load all-date trend graphs. Subdistrict and Village are optional filters.
+                      </p>
+                    </div>
+                  ) : (
+                    (() => {
+                      const monthLabel = (ym: string | null) => {
+                        if (!ym) return 'Current';
+                        const [y, m] = ym.split('-');
+                        if (!m) return ym;
+                        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
+                        return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
+                      };
+                      const palette = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#14b8a6', '#ef4444', '#f59e0b', '#84cc16'];
+                      const classwiseToMap = (classwise: any[] | undefined): Record<string, number> => {
+                        if (!Array.isArray(classwise)) return {};
+                        const out: Record<string, number> = {};
+                        classwise.forEach((c) => {
+                          const label = String(c?.class_name ?? c?.name ?? c?.label ?? '').trim();
+                          if (!label) return;
+                          out[label] = Number(c?.area_hectares ?? c?.area_ha ?? 0);
+                        });
+                        return out;
+                      };
+                      const normalizeLabel = (label: string): string => label.toLowerCase().replace(/\s+/g, '');
+                      const buildClasswiseTrend = (
+                        currentClasswise: any[] | undefined,
+                        storedSeries: GrowthStoredResponse | null,
+                        preferredOrder: string[],
+                        colorMap: Record<string, string>
+                      ): {
+                        rows: Array<Record<string, string | number>>;
+                        seriesKeys: string[];
+                        seriesColors: Record<string, string>;
+                      } => {
+                        const periods = [
+                          { label: 'Current', classwise: currentClasswise || [] },
+                          ...((storedSeries || []).map((item: GrowthStoredItem) => ({
+                            label: monthLabel(item.year_month),
+                            classwise: (item.response_data as any)?.classwise || [],
+                          }))),
+                        ];
+                        const discovered = new Set<string>();
+                        periods.forEach((p) => Object.keys(classwiseToMap(p.classwise)).forEach((k) => discovered.add(k)));
+                        const preferredLower = preferredOrder.map((v) => normalizeLabel(v));
+                        const preferredFound = preferredOrder.filter((v) =>
+                          Array.from(discovered).some((d) => normalizeLabel(d) === normalizeLabel(v))
+                        );
+                        const remaining = Array.from(discovered)
+                          .filter((k) => !preferredLower.includes(normalizeLabel(k)))
+                          .sort((a, b) => a.localeCompare(b));
+                        const seriesKeys = [...preferredFound, ...remaining];
+                        const rows = periods.map((p) => {
+                          const areaMap = classwiseToMap(p.classwise);
+                          const row: Record<string, string | number> = { label: p.label };
+                          seriesKeys.forEach((k) => {
+                            const matched = Object.keys(areaMap).find((name) => normalizeLabel(name) === normalizeLabel(k));
+                            row[k] = Number(matched ? areaMap[matched] : 0);
+                          });
+                          return row;
+                        });
+                        const hasValues = rows.some((r) => seriesKeys.some((k) => Number(r[k] ?? 0) > 0));
+                        const seriesColors: Record<string, string> = {};
+                        seriesKeys.forEach((k, idx) => {
+                          seriesColors[k] = colorMap[k] || colorMap[normalizeLabel(k)] || palette[idx % palette.length];
+                        });
+                        return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
+                      };
+                      const growthTrend = buildClasswiseTrend(
+                        growthCurrentData?.classwise,
+                        growthStoredSeries,
+                        ['Weak', 'Stress', 'Moderate', 'Healthy'],
+                        { weak: '#bc1e29', stress: '#58cf54', moderate: '#28ae31', healthy: '#00351d' }
+                      );
+                      const waterTrend = buildClasswiseTrend(
+                        (allPlotsAnalysisData as any)?.water?.classwise ?? (waterData as any)?.classwise,
+                        waterStoredSeries,
+                        ['Very low', 'Low', 'Moderate', 'High'],
+                        {}
+                      );
+                      const soilTrend = buildClasswiseTrend(
+                        (allPlotsAnalysisData as any)?.soil?.classwise ?? (soilData as any)?.classwise,
+                        soilStoredSeries,
+                        ['Very dry', 'Dry', 'Moderate', 'Wet'],
+                        {}
+                      );
+                      const pestCategoryForGraph =
+                        selectedPestCategory ||
+                        ((pestStoredSeries && pestStoredSeries.length > 0)
+                          ? Object.keys(((pestStoredSeries[0] as any).response_data?.hierarchy || {}))[0]
+                          : null);
+                      const pestTrend = (() => {
+                        if (!pestCategoryForGraph) {
+                          return { rows: [] as Array<Record<string, string | number>>, seriesKeys: [] as string[], seriesColors: {} as Record<string, string> };
+                        }
+                        const currentNode = (pestHierarchy?.hierarchy?.[pestCategoryForGraph] as any) || {};
+                        const childKeys = new Set<string>();
+                        Object.keys((currentNode?.children || {}) as Record<string, unknown>).forEach((k) => childKeys.add(k));
+                        (pestStoredSeries || []).forEach((item: PestStoredItem) => {
+                          const node = (item as any)?.response_data?.hierarchy?.[pestCategoryForGraph];
+                          Object.keys((node?.children || {}) as Record<string, unknown>).forEach((k) => childKeys.add(k));
+                        });
+                        const seriesKeys = ['Total', ...Array.from(childKeys)];
+                        const rows = [
+                          (() => {
+                            const row: Record<string, string | number> = { label: 'Current', Total: Number(currentNode?.total_area_ha ?? 0) };
+                            Array.from(childKeys).forEach((child) => {
+                              row[child] = Number((currentNode?.children?.[child] as any)?.area_ha ?? (currentNode?.children?.[child] as any)?.total_area_ha ?? 0);
+                            });
+                            return row;
+                          })(),
+                          ...(pestStoredSeries || [])
+                            .filter((item: PestStoredItem) => (item as any)?.response_data?.hierarchy?.[pestCategoryForGraph])
+                            .map((item: PestStoredItem) => {
+                              const node = (item as any).response_data?.hierarchy?.[pestCategoryForGraph] || {};
+                              const row: Record<string, string | number> = {
+                                label: monthLabel(item.year_month),
+                                Total: Number(node?.total_area_ha ?? 0),
+                              };
+                              Array.from(childKeys).forEach((child) => {
+                                row[child] = Number((node?.children?.[child] as any)?.area_ha ?? (node?.children?.[child] as any)?.total_area_ha ?? 0);
+                              });
+                              return row;
+                            }),
+                        ];
+                        const hasValues = rows.some((r) => seriesKeys.some((k) => Number(r[k] ?? 0) > 0));
+                        const seriesColors: Record<string, string> = {};
+                        seriesKeys.forEach((k, idx) => {
+                          seriesColors[k] = k === 'Total' ? '#f97316' : palette[(idx + 1) % palette.length];
+                        });
+                        return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
+                      })();
+                      const renderAnalysisTrendCard = (
+                        cardKey: string,
+                        title: string,
+                        data: Array<Record<string, string | number>>,
+                        seriesKeys: string[],
+                        seriesColors: Record<string, string>,
+                        emptyText: string,
+                        isFullscreen: boolean = false
+                      ) => (
+                        <div className={`rounded-lg border ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'} p-4 ${isFullscreen ? 'min-h-[82vh]' : 'min-h-[460px]'}`}>
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className={`text-[11px] font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                              {title} Â· all dates
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setFullscreenAnalysisTrendCard(isFullscreen ? null : cardKey)}
+                              className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors ${
+                                isDarkMode
+                                  ? 'border-gray-600 bg-gray-700 text-gray-200 hover:bg-gray-600'
+                                  : 'border-emerald-200 bg-white text-gray-700 hover:bg-emerald-50'
+                              }`}
+                              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                            >
+                              {isFullscreen ? <MdFullscreenExit size={15} /> : <Maximize2 size={14} />}
+                            </button>
+                          </div>
+                          {data.length > 0 && seriesKeys.length > 0 ? (
+                            <div className={isFullscreen ? 'h-[70vh]' : 'h-[380px]'}>
+                              {(() => {
+                                const selectedSeries = analysisTrendSeriesFilter[cardKey] ?? null;
+                                const visibleSeriesKeys = selectedSeries
+                                  ? seriesKeys.filter((k) => k === selectedSeries)
+                                  : seriesKeys;
+                                const handleLegendToggle = (seriesKey: string) => {
+                                  setAnalysisTrendSeriesFilter((prev) => ({
+                                    ...prev,
+                                    [cardKey]: prev[cardKey] === seriesKey ? null : seriesKey,
+                                  }));
+                                };
+                                return (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={data} barCategoryGap="22%">
+                                  <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                  <XAxis
+                                    dataKey="label"
+                                    tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }}
+                                    interval={0}
+                                    angle={-35}
+                                    textAnchor="end"
+                                    height={64}
+                                  />
+                                  <YAxis tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
+                                  <Tooltip />
+                                  <Legend
+                                    wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+                                    payload={seriesKeys.map((k) => ({
+                                      value: k,
+                                      id: k,
+                                      type: 'square' as const,
+                                      color: seriesColors[k],
+                                    }))}
+                                    content={() => (
+                                      <div className="mt-2 flex flex-wrap items-center justify-center gap-3 text-[11px]">
+                                        {seriesKeys.map((k) => {
+                                          const isActive = !selectedSeries || selectedSeries === k;
+                                          return (
+                                            <button
+                                              key={`${cardKey}-${k}`}
+                                              type="button"
+                                              onClick={() => handleLegendToggle(k)}
+                                              className={`inline-flex items-center gap-1.5 transition-opacity ${isActive ? 'opacity-100' : 'opacity-35'}`}
+                                              title={`Show only ${k}`}
+                                            >
+                                              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: seriesColors[k] }} />
+                                              <span className={isDarkMode ? 'text-gray-200' : 'text-slate-700'}>{k}</span>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  />
+                                  {visibleSeriesKeys.map((k) => (
+                                    <Bar key={k} dataKey={k} fill={seriesColors[k]} radius={[2, 2, 0, 0]} />
+                                  ))}
+                                </BarChart>
+                              </ResponsiveContainer>
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            <div className={`${isFullscreen ? 'h-[70vh]' : 'h-[380px]'} flex items-center justify-center text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              {emptyText}
+                            </div>
+                          )}
+                        </div>
+                      );
+                      const trendCards = [
+                        {
+                          key: 'growth',
+                          title: 'Growth',
+                          data: growthTrend.rows,
+                          seriesKeys: growthTrend.seriesKeys,
+                          seriesColors: growthTrend.seriesColors,
+                          emptyText: 'Growth all-date series not loaded yet',
+                        },
+                        {
+                          key: 'water',
+                          title: 'Water uptake',
+                          data: waterTrend.rows,
+                          seriesKeys: waterTrend.seriesKeys,
+                          seriesColors: waterTrend.seriesColors,
+                          emptyText: 'Water uptake all-date series not loaded yet',
+                        },
+                        {
+                          key: 'soil',
+                          title: 'Soil moisture',
+                          data: soilTrend.rows,
+                          seriesKeys: soilTrend.seriesKeys,
+                          seriesColors: soilTrend.seriesColors,
+                          emptyText: 'Soil moisture all-date series not loaded yet',
+                        },
+                        {
+                          key: 'pest',
+                          title: 'Pest',
+                          data: pestTrend.rows,
+                          seriesKeys: pestTrend.seriesKeys,
+                          seriesColors: pestTrend.seriesColors,
+                          emptyText: pestCategoryForGraph
+                            ? `Pest all-date series not loaded for ${pestCategoryForGraph}`
+                            : 'Select/open Pest once to load all-date series',
+                        },
+                      ] as const;
+                      const fullscreenTrend = trendCards.find((c) => c.key === fullscreenAnalysisTrendCard);
+                      return (
+                        <div id="analysis-trends-cards" className="w-full px-4 md:px-6 space-y-6">
+                          <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Growth / Water uptake / Soil moisture / Pest trends
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {trendCards.map((card) =>
+                              renderAnalysisTrendCard(
+                                card.key,
+                                card.title,
+                                card.data,
+                                card.seriesKeys,
+                                card.seriesColors,
+                                card.emptyText
+                              )
+                            )}
+                          </div>
+                          {fullscreenTrend && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-[1240] bg-black/65"
+                                onClick={() => setFullscreenAnalysisTrendCard(null)}
+                                aria-hidden="true"
+                              />
+                              <div className="fixed inset-4 z-[1250]">
+                                {renderAnalysisTrendCard(
+                                  fullscreenTrend.key,
+                                  fullscreenTrend.title,
+                                  fullscreenTrend.data,
+                                  fullscreenTrend.seriesKeys,
+                                  fullscreenTrend.seriesColors,
+                                  fullscreenTrend.emptyText,
+                                  true
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()
                   )}
                 </div>
               </div>
@@ -6316,12 +7363,12 @@ const App: React.FC = () => {
                     ? 'Wind flow: select a district and wait for AOI wind data'
                     : showWindFlowLayer
                       ? 'Hide wind flow (particles follow wind direction)'
-                      : 'Show wind flow — red streaks move with wind; ▲ markers show speed (km/h)'
+                      : 'Show wind flow â€” red streaks move with wind; â–² markers show speed (km/h)'
                 }
                 aria-pressed={showWindFlowLayer}
               >
                 <Wind size={20} strokeWidth={2.2} />
-                <span className="text-xs font-semibold hidden min-[420px]:inline">Wind</span>
+                <span className="text-xs font-semibold hidden min-[420px]:inline"></span>
               </button>
             </div>
           )}
@@ -6395,7 +7442,7 @@ const App: React.FC = () => {
           )}
 
           {/* Removed: "slider" button that auto-opened Pest tab */}
-          {/* Water / Forest legend (normal mode only — tabs moved to header) */}
+          {/* Water / Forest legend (normal mode only â€” tabs moved to header) */}
           {!splitScreenMode && !isMapFullscreen && getActiveTab('left') && (getActiveTab('left') === 'waterSource' || getActiveTab('left') === 'forest') && (
             <div className="absolute top-28 md:top-20 left-1/2 -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 w-auto max-w-[calc(100vw-2rem)]">
               <LegendCircles
@@ -6471,7 +7518,7 @@ const App: React.FC = () => {
                 <Trees size={18} />
               </button>
 
-              {/* Land Surface Temperature — toggles on/off with repeat click */}
+              {/* Land Surface Temperature â€” toggles on/off with repeat click */}
               <div 
                 onClick={async () => {
                   if (lstTileUrl) {
@@ -6531,7 +7578,7 @@ const App: React.FC = () => {
                     Year / Month Series
                   </div>
                   {leftPestStoredLoading && (
-                    <div className="text-[9px] text-gray-400">Loading…</div>
+                    <div className="text-[9px] text-gray-400">Loadingâ€¦</div>
                   )}
                 </div>
                 {leftPestStoredError ? (
@@ -6732,7 +7779,7 @@ const App: React.FC = () => {
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className={`${splitScreenMode ? 'text-xs' : 'text-sm'} font-semibold text-gray-800 uppercase tracking-wider`}>
-                      {currentCategory?.replace(/_/g, ' ') || ''} · Time Series
+                      {currentCategory?.replace(/_/g, ' ') || ''} Â· Time Series
                     </span>
                     <div className="flex items-center gap-2">
                       <button
@@ -6846,7 +7893,7 @@ const App: React.FC = () => {
                     {/* X-axis line */}
                     <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                     
-                    {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
+                    {/* Y-axis labels â€“ same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                       const value = paddedMaxValue * ratio;
                       const y = H - bottomPadding - (chartHeight * ratio);
@@ -7033,7 +8080,7 @@ const App: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
-                        {child.pct_of_parent.toFixed(1)}% · {child.area_ha.toFixed(2)} ha
+                        {child.pct_of_parent.toFixed(1)}% Â· {child.area_ha.toFixed(2)} ha
                       </div>
                     </button>
                   ))}
@@ -7097,7 +8144,7 @@ const App: React.FC = () => {
                           </span>
                         </div>
                         <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
-                          {child.pct_of_parent?.toFixed(1) ?? '0.0'}% · {child.area_ha?.toFixed(2) ?? '0.00'} ha
+                          {child.pct_of_parent?.toFixed(1) ?? '0.0'}% Â· {child.area_ha?.toFixed(2) ?? '0.00'} ha
                         </div>
                       </button>
                     ))}
@@ -7115,15 +8162,15 @@ const App: React.FC = () => {
               <div>
                 <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Daily Weather</div>
                 <div className="text-sm text-gray-100">
-                  {leftWeatherDailyData?.name || leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || '—'}
+                  {leftWeatherDailyData?.name || leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || 'â€”'}
                   {leftWeatherDailyData?.level ? (
-                    <span className="text-xs text-gray-400"> · {String(leftWeatherDailyData.level)}</span>
+                    <span className="text-xs text-gray-400"> Â· {String(leftWeatherDailyData.level)}</span>
                   ) : null}
                 </div>
               </div>
               <div className="flex items-center gap-1">
                 {leftWeatherDailyLoading ? (
-                  <div className="text-xs text-gray-400">Loading…</div>
+                  <div className="text-xs text-gray-400">Loadingâ€¦</div>
                 ) : leftWeatherDailyError ? (
                   <div className="text-xs text-red-300">Failed</div>
                 ) : null}
@@ -7185,7 +8232,7 @@ const App: React.FC = () => {
                         }}
                       >
                         <div className="font-semibold text-gray-200 mb-1">{days[leftWeatherChartHoverDay].date}</div>
-                        <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[leftWeatherChartHoverDay].temp_max}</span> °C</div>
+                        <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[leftWeatherChartHoverDay].temp_max}</span> Â°C</div>
                         <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[leftWeatherChartHoverDay].rainfall}</span></div>
                         <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[leftWeatherChartHoverDay].wind_max}</span></div>
                       </div>
@@ -7268,9 +8315,9 @@ const App: React.FC = () => {
               <div>
                 <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Daily Weather</div>
                 <div className="text-sm text-gray-100">
-                  {weatherDailyData?.name || selectedVillage || selectedSubdistrict || selectedDistrict || '—'}
+                  {weatherDailyData?.name || selectedVillage || selectedSubdistrict || selectedDistrict || 'â€”'}
                   {weatherDailyData?.level ? (
-                    <span className="text-xs text-gray-400"> · {String(weatherDailyData.level)}</span>
+                    <span className="text-xs text-gray-400"> Â· {String(weatherDailyData.level)}</span>
                   ) : null}
                 </div>
               </div>
@@ -7305,7 +8352,7 @@ const App: React.FC = () => {
                   <Move size={14} />
                 </button>
                 {weatherDailyLoading ? (
-                  <div className="text-xs text-gray-400">Loading…</div>
+                  <div className="text-xs text-gray-400">Loadingâ€¦</div>
                 ) : weatherDailyError ? (
                   <div className="text-xs text-red-300">Failed</div>
                 ) : null}
@@ -7367,7 +8414,7 @@ const App: React.FC = () => {
                         }}
                       >
                         <div className="font-semibold text-gray-200 mb-1">{days[weatherChartHoverDay].date}</div>
-                        <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> °C</div>
+                        <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> Â°C</div>
                         <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[weatherChartHoverDay].rainfall}</span></div>
                         <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[weatherChartHoverDay].wind_max}</span></div>
                       </div>
@@ -7423,7 +8470,7 @@ const App: React.FC = () => {
                     <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-gray-300">
                       <div className="flex items-center gap-1">
                         <span className="inline-block w-2 h-2 rounded-full bg-[#f97316]" />
-                        <span>Temp max (°C)</span>
+                        <span>Temp max (Â°C)</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <span className="inline-block w-2 h-2 rounded-full bg-[#3b82f6]" />
@@ -7467,7 +8514,6 @@ const App: React.FC = () => {
                 const currentPlots = splitScreenMode ? leftAllPlots : plots;
                 const selectedPlot = currentPlots.find(p => p.id === id);
                 if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
-                  console.warn('Plot not found or has no boundary:', id);
                   return;
                 }
                 
@@ -7476,7 +8522,6 @@ const App: React.FC = () => {
                   const plotArea = parseFloat(selectedPlot.area_ha);
                   if (!isNaN(plotArea) && plotArea > 0) {
                     setSelectedPlotArea(plotArea);
-                    console.log(`✅ Selected plot ${id} area: ${plotArea} ha`);
                   } else {
                     setSelectedPlotArea(null);
                   }
@@ -7496,8 +8541,6 @@ const App: React.FC = () => {
                 const centerLng = sumLng / selectedPlot.boundary.length;
                 const centerLat = sumLat / selectedPlot.boundary.length;
                 
-                console.log(`Selected plot ${id}, center coordinates: Lat=${centerLat}, Lng=${centerLng}`);
-                console.log(`Plot field_id:`, (selectedPlot as any).field_id);
                 
                 // Fetch ET and Weather data
                 // Note: ET API uses lat=longitude, lon=latitude (reversed)
@@ -7517,11 +8560,8 @@ const App: React.FC = () => {
                   setEtData(etResponse);
                   setWeatherData(weatherResponse);
                   
-                  console.log('ET Data:', etResponse);
-                  console.log('Weather Data:', weatherResponse);
                 } catch (err) {
                   const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                  console.error('Error loading ET/Weather data:', err);
                   setError(`Failed to load ET/Weather: ${errorMessage}`);
                   setEtData(null);
                   setWeatherData(null);
@@ -7561,7 +8601,7 @@ const App: React.FC = () => {
                   PEST - YEAR / MONTH SERIES
                 </div>
                 {pestStoredLoading && (
-                  <div className="text-[9px] text-gray-600">Loading…</div>
+                  <div className="text-[9px] text-gray-600">Loadingâ€¦</div>
                 )}
               </div>
               {pestStoredError ? (
@@ -7607,18 +8647,18 @@ const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      setPestChartViewMode('all');
+                      setPestChartViewMode('selected');
                       setSelectedPestYearMonth(null);
                       setSelectedTimeSeriesYearMonth(null);
                     }}
                     className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                      pestChartViewMode === 'all' && selectedPestYearMonth == null
+                      pestChartViewMode === 'selected' && selectedPestYearMonth == null
                         ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
                         : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                     }`}
-                    title="Show full time series context"
+                    title="Show current snapshot"
                   >
-                    View all
+                    Current
                   </button>
                 </div>
               )}
@@ -7633,7 +8673,7 @@ const App: React.FC = () => {
                   GROWTH - YEAR / MONTH SERIES
                 </div>
                 {growthStoredLoading && (
-                  <span className="text-[9px] text-amber-700">Loading year_month…</span>
+                  <span className="text-[9px] text-amber-700">Loading year_monthâ€¦</span>
                 )}
                 {!growthStoredLoading && growthStoredError && (
                   <span className="text-[9px] text-red-600" title={growthStoredError}>Error</span>
@@ -7657,7 +8697,7 @@ const App: React.FC = () => {
                   className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0"
                   style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                 >
-                  {/* Stored year_month – display only year-month */}
+                  {/* Stored year_month â€“ display only year-month */}
                   {[...(growthStoredSeries || [])]
                     .sort((a, b) => b.year_month.localeCompare(a.year_month))
                     .map((item: GrowthStoredItem, idx: number) => (
@@ -7694,21 +8734,25 @@ const App: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setGrowthChartViewMode('all')}
+                  onClick={() => {
+                    setGrowthChartViewMode('selected');
+                    setSelectedGrowthYearMonth(null);
+                    setSelectedTimeSeriesYearMonth(null);
+                  }}
                   className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    growthChartViewMode === 'all'
+                    growthChartViewMode === 'selected' && selectedGrowthYearMonth == null
                       ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
                       : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                   }`}
-                  title="Show all dates on graph"
+                  title="Show current snapshot"
                 >
-                  View all
+                  Current
                 </button>
               </div>
             </div>
           )}
 
-          {/* Water Uptake: time series bar – year_month from analyze_wateruptakeclasswise */}
+          {/* Water Uptake: time series bar â€“ year_month from analyze_wateruptakeclasswise */}
           {!splitScreenMode && getActiveTab('left') === 'water' && selectedDistrict && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
@@ -7729,11 +8773,12 @@ const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      setWaterChartViewMode('all');
+                      setWaterChartViewMode('selected');
                       setSelectedWaterYearMonth(null);
+                      setSelectedTimeSeriesYearMonth(null);
                     }}
                     className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                      waterChartViewMode === 'all' && selectedWaterYearMonth == null
+                      waterChartViewMode === 'selected' && selectedWaterYearMonth == null
                         ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
                         : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                     }`}
@@ -7770,23 +8815,24 @@ const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setWaterChartViewMode('all');
+                    setWaterChartViewMode('selected');
                     setSelectedWaterYearMonth(null);
+                    setSelectedTimeSeriesYearMonth(null);
                   }}
                   className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    waterChartViewMode === 'all' && selectedWaterYearMonth == null
+                    waterChartViewMode === 'selected' && selectedWaterYearMonth == null
                       ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
                       : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                   }`}
-                  title="Use current snapshot / full series context"
+                  title="Show current snapshot"
                 >
-                  View all
+                  Current
                 </button>
               </div>
             </div>
           )}
 
-          {/* Soil Moisture: time series bar – year_month from analyze_soilmoistureclasswise */}
+          {/* Soil Moisture: time series bar â€“ year_month from analyze_soilmoistureclasswise */}
           {!splitScreenMode && getActiveTab('left') === 'soil' && selectedDistrict && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
               <div className="flex items-center justify-between gap-2 mb-1">
@@ -7834,34 +8880,40 @@ const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setSoilChartViewMode('all');
+                    setSoilChartViewMode('selected');
                     setSelectedSoilYearMonth(null);
                     setSelectedTimeSeriesYearMonth(null);
                   }}
                   className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    soilChartViewMode === 'all' && selectedSoilYearMonth == null
+                    soilChartViewMode === 'selected' && selectedSoilYearMonth == null
                       ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
                       : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
                   }`}
-                  title="Full soil moisture series context"
+                  title="Show current snapshot"
                 >
-                  View all
+                  Current
                 </button>
               </div>
             </div>
           )}
 
+          {renderSplitScreenMapBottomGraph('left')}
+
         </div>
 
-        {/* Two cards below map (non–split): Health Trends + Daily Weather */}
-      {!splitScreenMode && !isMapFullscreen && !showGraphPage && (
+        {/* Two cards below map (nonâ€“split): Health Trends + Daily Weather */}
+      {!splitScreenMode &&
+        !isMapFullscreen &&
+        !showGraphPage &&
+        !showAnalysisTrendsPage &&
+        ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && (
           <div
             ref={bottomCardsRef}
-            className={`grid w-full grid-cols-1 ${['growth','water','soil','pest'].includes(getActiveTab('left') || '') ? 'md:grid-cols-1' : 'md:grid-cols-2'} gap-3 bg-gray-950 border-t border-gray-800 flex-shrink-0 min-h-0`}
+            className="grid w-full grid-cols-1 gap-3 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[38%] md:min-w-[360px] md:max-w-[560px] p-3 flex-shrink-0 min-h-0 md:overflow-y-auto md:self-start"
             style={{ scrollMarginTop: 96 }}
           >
-            {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
-            <div className={`bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px] ${['growth','water','soil','pest'].includes(getActiveTab('left') || '') ? 'md:col-span-2' : ''}`}>
+            {/* Health Trends card â€“ header shows selected tab name (e.g. Growth, Water, Pest) */}
+            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px] md:order-2">
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
                 <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
                   {getActiveTabDisplayName('left')}
@@ -7930,7 +8982,7 @@ const App: React.FC = () => {
 
                       return (
                         <div className="w-full min-h-0 flex flex-col flex-1">
-                          <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class · all dates</div>
+                          <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class Â· all dates</div>
                           <div className="flex-1 min-h-0 w-full overflow-x-auto">
                             <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${Math.max(W, paddingLeft + chartW + paddingRight)} ${H}`} preserveAspectRatio="none">
                               <defs><clipPath id="growth-chart-clip-all"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
@@ -8014,7 +9066,7 @@ const App: React.FC = () => {
                     const selectedLabel = formatMonthLabel(selectedGrowthYearMonth);
                     return (
                       <div className="w-full min-h-0 flex flex-col flex-1">
-                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class · {selectedLabel}</div>
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class Â· {selectedLabel}</div>
                         <div className="flex-1 min-h-0 w-full">
                           <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
                             <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
@@ -8133,7 +9185,7 @@ const App: React.FC = () => {
                     const pestAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
                       <div className="w-full min-h-0 flex flex-col flex-1">
-                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) · {currentCategory.replace(/_/g, ' ')} time series</div>
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) Â· {currentCategory.replace(/_/g, ' ')} time series</div>
                         <div className="w-full overflow-x-auto">
                           <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
                           <line x1={P} y1={topPadding} x2={P} y2={H - bottomPadding} stroke={pestAxisMain} strokeWidth={1} />
@@ -8242,7 +9294,7 @@ const App: React.FC = () => {
                     const waterAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
                       <div className="w-full min-h-0 flex flex-col flex-1">
-                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by water uptake class · {selectedLabel}</div>
+                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by water uptake class Â· {selectedLabel}</div>
                         <div className="flex-1 min-h-0 w-full">
                           <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
                             <defs><clipPath id="water-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
@@ -8295,21 +9347,65 @@ const App: React.FC = () => {
               </div>
             </div>
 
+            {getSelectedDistrict('left') && (
+              <div className="p-4 bg-gray-800/80 rounded-lg border border-gray-700">
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
+                </div>
+                {selectedPlotArea !== null ? (
+                  <div className="text-xl font-bold text-green-400">{selectedPlotArea.toFixed(2)} ha</div>
+                ) : getTotalAreaLoading('left') ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="animate-spin text-green-400" size={20} />
+                  </div>
+                ) : getTotalAreaHectares('left') !== null && getTotalAreaHectares('left') !== undefined ? (
+                  <div className="text-xl font-bold text-green-400">{getTotalAreaHectares('left')!.toFixed(2)} ha</div>
+                ) : (
+                  <div className="text-sm text-gray-500">No area data available</div>
+                )}
+              </div>
+            )}
+
+            {calculateAreaCards('left').length > 0 && (
+              <div className="p-4 bg-gray-800/80 rounded-lg border border-gray-700">
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Percentage / Area (ha)
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {calculateAreaCards('left').map((item, idx) => {
+                    const cardBg = item.color || '#f97316';
+                    const cardFg = textColorOnBackground(cardBg);
+                    return (
+                      <div
+                        key={`right-pct-${item.label}-${idx}`}
+                        className="rounded-xl p-3 flex flex-col items-center justify-center text-center min-h-[86px]"
+                        style={{ backgroundColor: cardBg, color: cardFg }}
+                      >
+                        <span className="text-sm font-semibold">{item.label}</span>
+                        <span className="font-bold text-base mt-1">{item.percentage.toFixed(2)}%</span>
+                        <span className="font-semibold text-base mt-0.5">{item.value.toFixed(2)} ha</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Daily Weather card removed */}
             {false && <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px]">
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
                 <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-                  Daily Weather {getWeatherCardLocationName('left') !== '—' ? `· ${getWeatherCardLocationName('left')}` : ''}
+                  Daily Weather {getWeatherCardLocationName('left') !== 'â€”' ? `Â· ${getWeatherCardLocationName('left')}` : ''}
                 </h3>
               </div>
               <div className="flex-1 p-4 min-h-0">
-                {getWeatherCardLocationName('left') === '—' ? (
+                {getWeatherCardLocationName('left') === 'â€”' ? (
                   <div className="h-full flex items-center justify-center text-gray-500 text-sm text-center">
                     Select district, subdistrict or village to load daily weather graph here.
                   </div>
                 ) : weatherDailyLoading ? (
                   <div className="h-full flex items-center justify-center text-gray-400 text-sm">
-                    Loading daily weather…
+                    Loading daily weatherâ€¦
                   </div>
                 ) : weatherDailyError ? (
                   <div className="h-full flex items-center justify-center text-red-300 text-sm text-center">
@@ -8360,7 +9456,7 @@ const App: React.FC = () => {
                             }}
                           >
                             <div className="font-semibold text-gray-200 mb-1">{days[weatherChartHoverDay].date}</div>
-                            <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> °C</div>
+                            <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[weatherChartHoverDay].temp_max}</span> Â°C</div>
                             <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[weatherChartHoverDay].rainfall}</span></div>
                             <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[weatherChartHoverDay].wind_max}</span></div>
                           </div>
@@ -8416,7 +9512,7 @@ const App: React.FC = () => {
                         <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-300">
                           <div className="flex items-center gap-2">
                             <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f97316]" />
-                            <span>Temp max (°C)</span>
+                            <span>Temp max (Â°C)</span>
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
@@ -8502,7 +9598,7 @@ const App: React.FC = () => {
                   <Trees size={18} />
                 </button>
 
-                {/* Land Surface Temperature — toggles on/off with repeat click */}
+                {/* Land Surface Temperature â€” toggles on/off with repeat click */}
                 <div 
                   onClick={async () => {
                     if (lstTileUrl) {
@@ -8567,7 +9663,7 @@ const App: React.FC = () => {
                       Year / Month Series
                     </div>
                     {rightPestStoredLoading && (
-                      <div className="text-[9px] text-gray-400">Loading…</div>
+                      <div className="text-[9px] text-gray-400">Loadingâ€¦</div>
                     )}
                   </div>
                   {rightPestStoredError ? (
@@ -8751,7 +9847,7 @@ const App: React.FC = () => {
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-semibold text-gray-800 uppercase tracking-wider">
-                        {rightSelectedPestCategory?.replace(/_/g, ' ') || ''} · Time Series
+                        {rightSelectedPestCategory?.replace(/_/g, ' ') || ''} Â· Time Series
                       </span>
                       <div className="flex items-center gap-2">
                         <button
@@ -8818,7 +9914,7 @@ const App: React.FC = () => {
                       {/* X-axis line */}
                       <line x1={P} y1={H - bottomPadding} x2={W - P} y2={H - bottomPadding} stroke="#111827" strokeWidth={1} />
                       
-                      {/* Y-axis labels – same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
+                      {/* Y-axis labels â€“ same format as Growth/Water/Soil (e.g. 1.5k for 1500) */}
                       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                         const value = paddedMaxValue * ratio;
                         const y = H - bottomPadding - (chartHeight * ratio);
@@ -9016,7 +10112,7 @@ const App: React.FC = () => {
                             </span>
                           </div>
                           <div className="text-xs text-gray-400 mt-0.5 max-[1024px]:text-[10px]">
-                            {child.pct_of_parent?.toFixed(1) ?? '0.0'}% · {child.area_ha?.toFixed(2) ?? '0.00'} ha
+                            {child.pct_of_parent?.toFixed(1) ?? '0.0'}% Â· {child.area_ha?.toFixed(2) ?? '0.00'} ha
                           </div>
                         </button>
                       ))}
@@ -9033,15 +10129,15 @@ const App: React.FC = () => {
                   <div>
                     <div className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Daily Weather</div>
                     <div className="text-sm text-gray-100">
-                      {rightWeatherDailyData?.name || rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || '—'}
+                      {rightWeatherDailyData?.name || rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || 'â€”'}
                       {rightWeatherDailyData?.level ? (
-                        <span className="text-xs text-gray-400"> · {String(rightWeatherDailyData.level)}</span>
+                        <span className="text-xs text-gray-400"> Â· {String(rightWeatherDailyData.level)}</span>
                       ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
                     {rightWeatherDailyLoading ? (
-                      <div className="text-xs text-gray-400">Loading…</div>
+                      <div className="text-xs text-gray-400">Loadingâ€¦</div>
                     ) : rightWeatherDailyError ? (
                       <div className="text-xs text-red-300">Failed</div>
                     ) : null}
@@ -9103,7 +10199,7 @@ const App: React.FC = () => {
                             }}
                           >
                             <div className="font-semibold text-gray-200 mb-1">{days[rightWeatherChartHoverDay].date}</div>
-                            <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[rightWeatherChartHoverDay].temp_max}</span> °C</div>
+                            <div className="text-gray-400">temp_max: <span className="text-orange-400">{days[rightWeatherChartHoverDay].temp_max}</span> Â°C</div>
                             <div className="text-gray-400">rainfall: <span className="text-blue-400">{days[rightWeatherChartHoverDay].rainfall}</span></div>
                             <div className="text-gray-400">wind_max: <span className="text-emerald-400">{days[rightWeatherChartHoverDay].wind_max}</span></div>
                           </div>
@@ -9194,7 +10290,6 @@ const App: React.FC = () => {
                   setSelectedPlotId(id);
                   const selectedPlot = rightAllPlots.find(p => p.id === id);
                   if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
-                    console.warn('Plot not found or has no boundary:', id);
                     return;
                   }
                   const bounds = L.latLngBounds(selectedPlot.boundary.map((coord: Coordinate) => [coord[1], coord[0]]));
@@ -9210,6 +10305,8 @@ const App: React.FC = () => {
                 showWindFlowLayer={false}
               />
             )}
+
+            {renderSplitScreenMapBottomGraph('right')}
           </div>
         )}
       </main>
@@ -9217,7 +10314,7 @@ const App: React.FC = () => {
       {/* Right Sidebar - Enabled for split screen mode */}
       {sidebarVisible && splitScreenMode && (
         <aside 
-          className="w-full md:w-48 flex-shrink-0 border-l border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
+          className="w-full md:w-64 md:max-w-64 flex-shrink-0 min-w-0 border-l border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
           style={{
             backgroundColor: isDarkMode ? '#0f172a' : '#ffffff',
             backgroundImage: 'none',
@@ -9235,7 +10332,7 @@ const App: React.FC = () => {
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {/* Crops Dropdown - before District, independent */}
-              {!showGraphPage && (
+              {!showGraphPage && !showAnalysisTrendsPage && (
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                   Crops
@@ -9322,6 +10419,35 @@ const App: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                  {getSelectedVillage('right') && (
+                    <button
+                      type="button"
+                      onClick={() => setShowRightVillageBoundary(true)}
+                      className="mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
+                    >
+                      Display boundary
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {splitScreenMode && selectedCrop === 'sugarcane' &&
+                leftSelectedDistrict &&
+                leftSelectedSubdistrict &&
+                leftSelectedVillage && (
+                <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Sugarcane area (predicted)
+                  </div>
+                  {predictSugarcaneAreaLoading ? (
+                    <div className="flex items-center justify-center py-2">
+                      <Loader2 className="animate-spin text-green-400" size={20} />
+                    </div>
+                  ) : predictSugarcaneAreaHa !== null && predictSugarcaneAreaHa !== undefined ? (
+                    <div className="text-lg font-bold text-green-400">{predictSugarcaneAreaHa.toFixed(2)} ha</div>
+                  ) : (
+                    <div className="text-sm text-gray-500">No sugarcane area data</div>
+                  )}
                 </div>
               )}
 
@@ -9365,7 +10491,7 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Percentage / Area (ha) — grid 2 per row; click loads tile on map */}
+              {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
               {['growth', 'water', 'soil', 'pest'].includes(getActiveTab('right') || '') && calculateAreaCards('right').length > 0 && (
                 <div className="mt-3">
                   <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">

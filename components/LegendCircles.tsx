@@ -93,10 +93,6 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
       // For water source, show overall water percentage in blue
       // Check for water_area_percentage first (from area_summary), then fall back to water_pixel_percentage
       const waterPercentage = data?.water_area_percentage ?? data?.water_pixel_percentage ?? 0;
-      console.log('🌊 LegendCircles - waterSource data:', data);
-      console.log('🌊 LegendCircles - water_area_percentage:', data?.water_area_percentage);
-      console.log('🌊 LegendCircles - water_pixel_percentage:', data?.water_pixel_percentage);
-      console.log('🌊 LegendCircles - final waterPercentage:', waterPercentage);
       items = [
         { label: 'Water %', value: waterPercentage, color: '#3b82f6' }, // Blue
       ];

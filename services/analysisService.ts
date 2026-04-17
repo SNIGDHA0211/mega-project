@@ -225,6 +225,7 @@ export const fetchFieldBoundaries = async (
 export interface PredictAreaCropData {
   crop_name: string;
   crop_area_ha: number;
+  sugarcane_area_ha?: number;
   color: string;
   identified_field_boundaries: Record<string, { field_id: number; field_area_ha: number }>;
 }
@@ -233,7 +234,9 @@ export interface PredictAreaResponse {
   district: string;
   subdistrict: string;
   village: string;
-  month: string;
+  month?: string;
+  /** Present when API returns total predicted sugarcane area at root (see predict-area). */
+  sugarcane_area_ha?: number;
   field_boundaries_geojson?: { type: string; features: unknown[]; note?: string };
   [cropKey: string]: unknown; // e.g. "sugarcane": PredictAreaCropData
 }
@@ -242,13 +245,13 @@ export const fetchPredictArea = async (
   district: string,
   subdistrict: string,
   village: string,
-  month: string
+  takeMonths: number = 1
 ): Promise<PredictAreaResponse> => {
   const params = new URLSearchParams({
     district,
     subdistrict,
     village,
-    month
+    take_months: String(takeMonths)
   });
   const url = `${BASE_URL}/predict-area?${params.toString()}`;
   const response = await fetch(url, {
@@ -629,7 +632,6 @@ export const fetchPestStoredSeries = async (
 ): Promise<PestStoredResponse> => {
   try {
     const url = `${BASE_URL}/api-stored/pest-detection?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
-    console.log('Fetching stored pest series from:', url);
 
     const response = await fetch(url, {
       method: 'GET',
@@ -793,8 +795,39 @@ export interface DashboardIndicesStoreResponse {
   current?: { status?: string; from_cache?: boolean };
   stored?: DashboardIndicesStoredItem[];
   indices?: string[];
+  /** Wide time series: one row per period with all index columns (API v2) */
+  series?: Array<Record<string, unknown>>;
+  count?: number;
+  filters?: Record<string, unknown>;
+  note?: string;
+  croptype_applied?: boolean;
   data?: unknown;
   [key: string]: unknown;
+}
+
+const SERIES_ROW_META_KEYS = new Set(['period', 'period_date']);
+
+function seriesRowsToStored(
+  series: Array<Record<string, unknown>>,
+  frequency: DashboardIndicesFrequency
+): DashboardIndicesStoredItem[] {
+  const stored: DashboardIndicesStoredItem[] = [];
+  for (const row of series) {
+    const period = String(row.period ?? row.period_date ?? '');
+    for (const [k, v] of Object.entries(row)) {
+      if (SERIES_ROW_META_KEYS.has(k.toLowerCase())) continue;
+      if (typeof v === 'number' && !Number.isNaN(v)) {
+        stored.push({
+          index_name: k,
+          period_date: period,
+          frequency,
+          value: v,
+          created_at: '',
+        });
+      }
+    }
+  }
+  return stored;
 }
 
 export const fetchDashboardIndicesStore = async (
@@ -809,8 +842,7 @@ export const fetchDashboardIndicesStore = async (
     if (subdistrict) params.set('subdistrict', subdistrict);
     if (village) params.set('village', village);
     params.set('frequency', frequency);
-    params.set('include_predictions', 'true');
-    const url = `${BASE_URL}/dashboard-indices?${params.toString()}`;
+    const url = `${BASE_URL}/indices/retrieve-aggregated?${params.toString()}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: { accept: 'application/json' },
@@ -819,8 +851,17 @@ export const fetchDashboardIndicesStore = async (
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
     const data = await response.json();
-    // GET /dashboard-indices returns { indices: [...] }; UI expects { stored: [...] }. Normalize.
-    const raw = data as { stored?: DashboardIndicesStoredItem[]; indices?: Array<Record<string, unknown>> };
+    // GET /indices/retrieve-aggregated: long { indices: [...] } or wide { series: [...] } → { stored: [...] }
+    const raw = data as {
+      stored?: DashboardIndicesStoredItem[];
+      indices?: Array<Record<string, unknown>>;
+      series?: Array<Record<string, unknown>>;
+    };
+    // Wide `series` format (possibly empty): always materialize `stored` so the UI can render charts / empty state.
+    if (Array.isArray(raw.series) && (!Array.isArray(raw.stored) || raw.stored.length === 0)) {
+      const stored = seriesRowsToStored(raw.series, frequency);
+      return { ...data, stored } as DashboardIndicesStoreResponse;
+    }
     if (Array.isArray(raw.indices) && !Array.isArray(raw.stored)) {
       const stored = raw.indices.map((item: Record<string, unknown>) => ({
         index_name: String(item.index_name ?? item.indexName ?? ''),
@@ -834,7 +875,7 @@ export const fetchDashboardIndicesStore = async (
     return data as DashboardIndicesStoreResponse;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${BASE_URL}/dashboard-indices`);
+      throw new Error(`Network error: Unable to connect to ${BASE_URL}/indices/retrieve-aggregated`);
     }
     throw error;
   }
@@ -1112,7 +1153,6 @@ export interface LoadTalukaResponse {
 export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaResponse> => {
   try {
     const url = `${BASE_URL}/load-taluka?taluka_name=${encodeURIComponent(talukaName)}`;
-    console.log('Loading taluka plots from:', url);
     
     const response = await fetch(url, {
       method: 'GET',
@@ -1129,8 +1169,6 @@ export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaRes
     let data: any;
     try {
       const responseText = await response.text();
-      console.log('Response text length:', responseText.length);
-      console.log('Response text preview (first 500 chars):', responseText.substring(0, 500));
       
       // Check if response is too large or empty
       if (!responseText || responseText.length === 0) {
@@ -1141,19 +1179,12 @@ export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaRes
       data = JSON.parse(responseText);
     } catch (parseError) {
       if (parseError instanceof SyntaxError) {
-        console.error('JSON parse error:', parseError);
-        const responseText = await response.text().catch(() => 'Unable to read response');
-        console.error('Response text:', responseText.substring(0, 1000));
         throw new Error(`Failed to parse JSON response: ${parseError.message}`);
       } else if (parseError instanceof Error && parseError.message.includes('Invalid string length')) {
         throw new Error('Response is too large to parse. Please contact support.');
       }
       throw parseError;
     }
-    
-    // Log the full response for debugging
-    console.log('loadTalukaPlots full response:', JSON.stringify(data, null, 2));
-    console.log('Response keys:', Object.keys(data));
     
     if (data.status === 'success') {
       // Handle two possible response formats:
@@ -1165,14 +1196,10 @@ export const loadTalukaPlots = async (talukaName: string): Promise<LoadTalukaRes
       if (data.plot_ids && Array.isArray(data.plot_ids)) {
         // Format 1: plot_ids is an array of strings
         plotIds = data.plot_ids;
-        console.log('Using plot_ids format, count:', plotIds.length);
       } else if (data.plots && Array.isArray(data.plots)) {
         // Format 2: plots is an array of objects with plot_id
         plotIds = data.plots.map((plot: LoadTalukaPlot) => String(plot.plot_id));
-        console.log('Using plots format, count:', plotIds.length);
       } else {
-        console.error('Neither plot_ids nor plots found in response. Available keys:', Object.keys(data));
-        console.error('Full response:', JSON.stringify(data, null, 2));
         throw new Error('Invalid response format: neither plot_ids array nor plots array found');
       }
       
@@ -1250,7 +1277,6 @@ export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: s
     const url = isDevelopment
       ? `/api/get-geojson/${encodeURIComponent(talukaName)}`
       : `https://web-production-72a7.up.railway.app/get-geojson/${encodeURIComponent(talukaName)}`;
-    console.log('Fetching taluka plots from:', url);
     
     const response = await fetch(url, {
       headers: {
@@ -1259,8 +1285,7 @@ export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: s
     });
     
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.error('API Error Response:', response.status, response.statusText, errorText);
+      await response.text().catch(() => '');
       throw new Error(`API Error: ${response.status} ${response.statusText}. URL: ${url}`);
     }
 
@@ -1287,7 +1312,6 @@ export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: s
       };
     });
 
-    console.log('Loaded', plots.length, 'plots for taluka:', talukaName);
     return plots;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
@@ -1359,9 +1383,6 @@ export const fetchNDWIDetection = async (
       url += `&village=${encodeURIComponent(village.trim())}`;
     }
     
-    console.log('Fetching NDWI detection from:', url);
-    console.log('NDWI Detection Parameters:', { district, subdistrict, village });
-    
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -1372,10 +1393,6 @@ export const fetchNDWIDetection = async (
     
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      console.error('NDWI API Error Response:', response.status, response.statusText);
-      console.error('NDWI API Error Details:', errorText);
-      console.error('NDWI API Request URL:', url);
-      console.error('NDWI API Request Parameters:', { district, subdistrict, village });
       
       // Try to parse error as JSON for more details
       let errorMessage = `NDWI API Error: ${response.status} ${response.statusText}`;
@@ -1395,10 +1412,6 @@ export const fetchNDWIDetection = async (
     }
 
     const data: NDWIDetectionResponse = await response.json();
-    console.log('🌊 NDWI Detection Response:', JSON.stringify(data, null, 2));
-    console.log('🌊 NDWI Detection - Response keys:', Object.keys(data));
-    console.log('🌊 NDWI Detection - water_area_hectare:', (data as any).water_area_hectare);
-    console.log('🌊 NDWI Detection - water_area_hectares:', (data as any).water_area_hectares);
     return data;
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
@@ -1512,39 +1525,102 @@ export interface ProcessedNDVISugarcaneResponse {
   subdistrict?: string;
 }
 
-// Fetch NDVI Sugarcane Detection
+/**
+ * Deployed API has no `/ndvi-sugarcane-detection` route (404). Use growth classwise tile for the same AOI.
+ */
+async function fetchSugarcaneTileFromGrowthFallback(
+  district: string,
+  subdistrict: string,
+  village: string
+): Promise<ProcessedNDVISugarcaneResponse> {
+  const growth = await fetchGrowthAnalysis1(district, subdistrict, village);
+  const plots = growth.plots ?? [];
+  for (const p of plots) {
+    const plot = p as GrowthPlotData;
+    const props = plot.properties;
+    const tileUrl = props?.tile_url ?? plot.tile_url;
+    if (typeof tileUrl === 'string' && tileUrl.length > 0) {
+      const plotId = String(props?.plot_id ?? plot.plot_id ?? 'growth-overlay');
+      let areaHa: number | undefined = growth.area_hectares ?? growth.pixel_summary?.area_hectares;
+      if (areaHa == null && props?.area_acres != null) {
+        areaHa = Number(props.area_acres) * 0.404685;
+      }
+      return {
+        tile_url: tileUrl,
+        area_ha: typeof areaHa === 'number' && !Number.isNaN(areaHa) ? areaHa : 0,
+        plot_id: plotId,
+        district,
+        subdistrict,
+      };
+    }
+  }
+  const cw = growth.classwise?.find((c) => c.tile_url);
+  if (cw?.tile_url) {
+    return {
+      tile_url: cw.tile_url,
+      area_ha: typeof cw.area_hectares === 'number' ? cw.area_hectares : 0,
+      plot_id: 'growth-classwise',
+      district,
+      subdistrict,
+    };
+  }
+  throw new Error(
+    'No raster tile URL in growth analysis for this village. The backend does not expose /ndvi-sugarcane-detection.'
+  );
+}
+
+/**
+ * Sugarcane map overlay tile. Tries legacy `/ndvi-sugarcane-detection`; on 404 uses `analyze_Growthclasswise` (same GEE-style tile for the village).
+ */
 export const fetchNDVISugarcaneDetection = async (
-  district: string
+  district: string,
+  subdistrict?: string,
+  village?: string
 ): Promise<ProcessedNDVISugarcaneResponse> => {
+  const url = `${BASE_URL}/ndvi-sugarcane-detection?district=${encodeURIComponent(district)}`;
   try {
-    const url = `${BASE_URL}/ndvi-sugarcane-detection?district=${encodeURIComponent(district)}`;
-    
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'accept': 'application/json'
+        accept: 'application/json',
       },
-      body: ''
+      body: '',
     });
-    
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+
+    if (response.ok) {
+      const data: NDVISugarcaneResponse = await response.json();
+      if (!data.tile_url || data.area_ha === undefined || !data.plot_id) {
+        throw new Error('Missing required fields in response: tile_url, area_ha, or plot_id');
+      }
+      return {
+        tile_url: data.tile_url,
+        area_ha: data.area_ha,
+        plot_id: data.plot_id,
+        district,
+        subdistrict,
+      };
     }
 
-    const data: NDVISugarcaneResponse = await response.json();
-    
-    if (!data.tile_url || data.area_ha === undefined || !data.plot_id) {
-      throw new Error('Missing required fields in response: tile_url, area_ha, or plot_id');
+    if (response.status === 404 && subdistrict && village) {
+      return fetchSugarcaneTileFromGrowthFallback(district, subdistrict, village);
     }
-    
-    return {
-      tile_url: data.tile_url,
-      area_ha: data.area_ha,
-      plot_id: data.plot_id,
-      district: district
-    };
+
+    if (response.status === 404) {
+      throw new Error(
+        'Sugarcane NDVI endpoint is not deployed (404). Choose subdistrict and village — the app will use the growth-analysis map tile instead.'
+      );
+    }
+
+    throw new Error(`API Error: ${response.status} ${response.statusText}`);
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
+      if (subdistrict && village) {
+        try {
+          return await fetchSugarcaneTileFromGrowthFallback(district, subdistrict, village);
+        } catch {
+          /* fall through */
+        }
+      }
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/ndvi-sugarcane-detection`);
     }
     throw error;

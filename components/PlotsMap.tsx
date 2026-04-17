@@ -12,6 +12,10 @@ interface WaterSource {
   water_pixel_percentage: number;
 }
 
+/** Predict-area API often returns very bright greens; use a readable dark green on the satellite basemap */
+const PREDICT_AREA_FIELD_STROKE = '#166534';
+const PREDICT_AREA_FIELD_FILL = '#14532d';
+
 interface PlotsMapProps {
   plots: Plot[];
   selectedPlotId: string | null;
@@ -122,7 +126,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
       zoomControl={false}
       className="h-full w-full z-0"
     >
-      {/* Google Hybrid - Satellite view with labels (like Streamlit HYBRID) */}
+      {/* Google Hybrid — satellite + labels */}
       <TileLayer
         url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
         maxZoom={20}
@@ -147,14 +151,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             // Google Earth Engine tile URLs use {z}/{x}/{y} format
             // Leaflet automatically replaces {z}, {x}, {y} with actual tile coordinates
             if (!url || typeof url !== 'string') {
-              console.warn(`Invalid tile URL for plot ${plotId}:`, url);
               return null;
             }
-            
-            // Verify URL format
             if (!url.includes('{z}') || !url.includes('{x}') || !url.includes('{y}')) {
-              // Keep a single warning for malformed URLs, but avoid noisy logs for normal tiles
-              console.warn(`Tile URL missing required placeholders for plot ${plotId}:`, url);
+              return null;
             }
             // Water Uptake: classwise GEE tiles (wu-*) or single card overlay (waterUptakeClass)
             const isWaterClassOverlay = plotId === 'waterUptakeClass' || plotId.startsWith('wu-');
@@ -180,7 +180,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
       {plots.map((plot) => {
         // Validate and convert coordinates: API returns [Lng, Lat], Leaflet needs [Lat, Lng]
         if (!plot.boundary || !Array.isArray(plot.boundary) || plot.boundary.length < 3) {
-          console.warn(`Plot ${plot.id} has invalid boundary coordinates`);
           return null;
         }
 
@@ -190,7 +189,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           .map((coord) => [coord[1], coord[0]]); // Swap to [Lat, Lng]
 
         if (polygonCoords.length < 3) {
-          console.warn(`Plot ${plot.id} has insufficient valid coordinates after conversion`);
           return null;
         }
 
@@ -218,14 +216,14 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     opacity: 1,
                   }
                 : {
-                    // Crop color from predict-area, or water sources: Blue, or regular: White/Yellow
+                    // Crop fields (predict-area): dark green fill/stroke (ignore API neon for readability)
                     color: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? cropColor! : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor ? PREDICT_AREA_FIELD_STROKE : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillColor: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? cropColor! : (isSelected ? '#FFD700' : '#FFFFFF')),
-                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.25 : 0),
+                      : (useCropColor ? PREDICT_AREA_FIELD_FILL : (isSelected ? '#FFD700' : '#FFFFFF')),
+                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.35 : 0),
                     weight: isSelected ? 4 : (isWaterSource ? 2 : 1),
                     opacity: 1,
                   }),
@@ -292,7 +290,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
       {/* Water Sources from NDWI Detection */}
       {waterSources.map((waterSource) => {
         if (!waterSource.coordinates || !Array.isArray(waterSource.coordinates) || waterSource.coordinates.length < 3) {
-          console.warn(`Water source ${waterSource.id} has invalid coordinates`);
           return null;
         }
 
@@ -302,7 +299,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           .map((coord) => [coord[1], coord[0]]); // Swap to [Lat, Lng]
 
         if (polygonCoords.length < 3) {
-          console.warn(`Water source ${waterSource.id} has insufficient valid coordinates`);
           return null;
         }
 

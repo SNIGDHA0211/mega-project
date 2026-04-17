@@ -1,5 +1,11 @@
 import { jsPDF } from 'jspdf';
 import type { DashboardIndicesFrequency } from '../services/analysisService';
+import { appendPdfBrandedHeader } from './pdfReportHeader';
+import {
+  DASHBOARD_INDEX_ORDER,
+  DASHBOARD_INDEX_LABELS,
+  DASHBOARD_INDEX_CARD_COLORS_RGB,
+} from './dashboardIndicesConfig';
 
 export interface DashboardIndicesPdfItem {
   index_name: string;
@@ -16,31 +22,9 @@ export interface DashboardIndicesPdfOptions {
   frequency?: DashboardIndicesFrequency;
 }
 
-const INDEX_ORDER = ['evi', 'bsi', 'gndvi', 'lst', 'ndbi', 'ndmi', 'ndre', 'ndvi', 'evi2'] as const;
-
-const INDEX_DISPLAY_LABELS: Record<(typeof INDEX_ORDER)[number], string> = {
-  ndvi: 'Crop Health (NDVI)',
-  evi: 'Plantation thickness (EVI)',
-  gndvi: 'Fertilizer status (GNDVI)',
-  lst: 'Heat Stress (LST)',
-  ndbi: 'Non Farm Area (NDBI)',
-  ndmi: 'Soil Moisture (NDMI)',
-  ndre: 'Crop Stress (NDRE)',
-  evi2: 'Crop Yield Potential (EVI2)',
-  bsi: 'Bare Soil Index (BSI)',
-};
-
-const CARD_COLORS: Record<string, [number, number, number]> = {
-  evi: [34, 197, 94],      // green
-  bsi: [245, 158, 11],     // orange
-  gndvi: [6, 182, 212],    // cyan
-  lst: [239, 68, 68],      // red
-  ndbi: [139, 92, 246],    // purple
-  ndmi: [236, 72, 153],    // pink
-  ndre: [20, 184, 166],    // teal
-  ndvi: [59, 130, 246],    // blue
-  evi2: [132, 204, 22],    // lime
-};
+const INDEX_ORDER = DASHBOARD_INDEX_ORDER;
+const INDEX_DISPLAY_LABELS = DASHBOARD_INDEX_LABELS;
+const CARD_COLORS = DASHBOARD_INDEX_CARD_COLORS_RGB;
 
 // A4 landscape in mm
 const A4_LANDSCAPE_WIDTH = 297;
@@ -89,7 +73,8 @@ function drawChart(
   const subtitleH = 4;
   const yAxisW = 14;
   const xAxisLabelH = 5;
-  const legendH = frequency === 'yearly' ? 0 : 6;
+  /** Reserve space for year legend (two rows when many years). */
+  const legendH = frequency === 'yearly' ? 0 : 14;
   const xAxisH = xAxisLabelH + legendH; // space for x-axis labels + legend below (no overlap)
   const plotLeft = x + pad + yAxisW;
   const plotRight = x + w - pad;
@@ -343,17 +328,22 @@ function drawChart(
     });
   });
 
-  // Legend: single row below x-axis, evenly spaced so labels don’t overlap or truncate
+  // Legend: up to two rows so year labels stay readable
   const legendY = plotBottom + xAxisLabelH + 1;
   const nYears = years.length;
-  const itemWidth = nYears > 0 ? plotW / nYears : plotW;
+  const pdfLegendRows = nYears > 6 ? 2 : 1;
+  const perRow = Math.ceil(nYears / pdfLegendRows);
   pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(6);
+  pdf.setFontSize(nYears > 10 ? 5.5 : 6.5);
   pdf.setTextColor(60, 60, 60);
   years.forEach((yearKey, idx) => {
     const rgb = YEAR_COLORS[idx % YEAR_COLORS.length];
-    const lx = plotLeft + idx * itemWidth + 2;
-    const ly = legendY + 2;
+    const row = Math.floor(idx / perRow);
+    const col = idx % perRow;
+    const rowCount = row === pdfLegendRows - 1 ? nYears - (pdfLegendRows - 1) * perRow : perRow;
+    const itemWidth = rowCount > 0 ? plotW / rowCount : plotW;
+    const lx = plotLeft + col * itemWidth + 2;
+    const ly = legendY + 2 + row * 5;
     const swatchW = 3;
     const swatchH = 1.5;
     pdf.setDrawColor(...rgb);
@@ -389,7 +379,7 @@ function addWrappedText(
  * Generates a PDF from dashboard indices data with a 3x3 grid of line charts (x-axis: dates, y-axis: values).
  * All pages A4 landscape.
  */
-export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions, filename: string): void {
+export async function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions, filename: string): Promise<void> {
   const { district, subdistrict, village, stored, frequency = 'monthly' } = options;
   const pdf = new jsPDF('landscape', 'mm', 'a4');
   const pageWidth = A4_LANDSCAPE_WIDTH;
@@ -399,13 +389,7 @@ export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions,
   const pageMargin = 12;
   let yPos = margin;
 
-  // Title: green, centered
-  pdf.setFontSize(20);
-  pdf.setFont('helvetica', 'bold');
-  pdf.setTextColor(0, 128, 0);
-  pdf.text('Nearlive crop Monitoring', pageWidth / 2, yPos, { align: 'center' });
-  pdf.setTextColor(0, 0, 0);
-  yPos += 10;
+  yPos = await appendPdfBrandedHeader(pdf, pageWidth, margin, yPos);
 
   // Location
   pdf.setFontSize(11);
@@ -421,7 +405,9 @@ export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions,
 
   // Group by index
   const byIndex: Record<string, Array<{ period_date: string; value: number }>> = {};
-  INDEX_ORDER.forEach((name) => { byIndex[name] = []; });
+  INDEX_ORDER.forEach((name) => {
+    byIndex[name] = [];
+  });
   stored.forEach((item) => {
     const key = String(item.index_name || '').toLowerCase();
     if (byIndex[key]) {
@@ -432,22 +418,55 @@ export function generateDashboardIndicesPdf(options: DashboardIndicesPdfOptions,
     byIndex[name].sort((a, b) => (a.period_date || '').localeCompare(b.period_date || ''));
   });
 
-  // 3x3 grid of charts on one page (below header)
-  const gridTop = yPos;
-  const gridH = pageHeight - gridTop - pageMargin;
-  const cardW = contentWidth / 3;
-  const cardH = gridH / 3;
   const gap = 2;
+  const cardW = (contentWidth - gap * 2) / 3;
+  const CARDS_PER_PAGE = 6;
 
-  INDEX_ORDER.forEach((indexName, i) => {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    const x = margin + col * (cardW + gap);
-    const y = gridTop + row * (cardH + gap);
-    const points = byIndex[indexName] || [];
-    const color = CARD_COLORS[indexName] ?? [100, 100, 100];
-    drawChart(pdf, x, y, cardW, cardH, INDEX_DISPLAY_LABELS[indexName] ?? indexName, points, color, frequency);
-  });
+  const drawRowBlock = (startCardIdx: number, rowCount: number, blockTop: number): void => {
+    const availH = pageHeight - blockTop - pageMargin;
+    const cardH = rowCount > 0 ? (availH - gap * Math.max(0, rowCount - 1)) / rowCount : availH;
+    for (let i = 0; i < rowCount * 3; i++) {
+      const cardIdx = startCardIdx + i;
+      if (cardIdx >= INDEX_ORDER.length) break;
+      const indexName = INDEX_ORDER[cardIdx];
+      const col = i % 3;
+      const row = Math.floor(i / 3);
+      const x = margin + col * (cardW + gap);
+      const y = blockTop + row * (cardH + gap);
+      const points = byIndex[indexName] || [];
+      const color = CARD_COLORS[indexName] ?? [100, 100, 100];
+      drawChart(
+        pdf,
+        x,
+        y,
+        cardW,
+        cardH,
+        INDEX_DISPLAY_LABELS[indexName as keyof typeof INDEX_DISPLAY_LABELS] ?? indexName,
+        points,
+        color,
+        frequency
+      );
+    }
+  };
+
+  let gridTop = yPos;
+  let cardOffset = 0;
+  while (cardOffset < INDEX_ORDER.length) {
+    if (cardOffset > 0) {
+      addPageA4Landscape(pdf);
+      gridTop = margin;
+      pdf.setFontSize(10);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(60, 60, 60);
+      pdf.text('Indices dashboard (continued)', margin, gridTop + 4);
+      gridTop += 8;
+    }
+    const remaining = INDEX_ORDER.length - cardOffset;
+    const nThisPage = Math.min(CARDS_PER_PAGE, remaining);
+    const rows = Math.ceil(nThisPage / 3);
+    drawRowBlock(cardOffset, rows, gridTop);
+    cardOffset += nThisPage;
+  }
 
   pdf.save(filename);
 }
