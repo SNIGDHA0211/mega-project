@@ -10,6 +10,8 @@ import {
   fetchFieldBoundaries,
   fetchPredictArea,
   formatPredictAreaCropName,
+  formatPredictAreaMonthLabel,
+  getCurrentPredictAreaMonth,
   type PredictAreaCropData,
   fetchGrowthAnalysis1,
   fetchWaterUptakeAnalysis,
@@ -179,7 +181,11 @@ const App: React.FC = () => {
     wheat: number | null;
   }>({ sugarcane: null, wheat: null });
   const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
-  
+  /** YYYY-MM sent as predict-area `month` (default: current calendar month). */
+  const [predictAreaMonthInput, setPredictAreaMonthInput] = useState<string>(getCurrentPredictAreaMonth);
+  /** Month confirmed from API `month` or last request (for display). */
+  const [predictAreaDataMonth, setPredictAreaDataMonth] = useState<string | null>(null);
+
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
   const [weatherData, setWeatherData] = useState<WeatherResponse | null>(null);
@@ -1593,16 +1599,27 @@ const App: React.FC = () => {
       setPredictAreaFieldAreas({});
       setPredictFieldFillByFieldId({});
       setPredictCropAreas({ sugarcane: null, wheat: null });
+      setPredictAreaDataMonth(null);
       setPredictCropAreaLoading(false);
       return;
     }
     let cancelled = false;
     setPredictCropAreaLoading(true);
     const cropParam = selectedCrop === 'all' ? null : formatPredictAreaCropName(selectedCrop);
+    const monthParam =
+      predictAreaMonthInput && /^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())
+        ? predictAreaMonthInput.trim()
+        : getCurrentPredictAreaMonth();
 
-    fetchPredictArea(district, subdistrict, village, 1, cropParam)
+    fetchPredictArea(district, subdistrict, village, 1, cropParam, monthParam)
       .then((res) => {
         if (cancelled) return;
+
+        const resolvedMonth =
+          typeof res.month === 'string' && /^\d{4}-\d{2}$/.test(res.month.trim())
+            ? res.month.trim()
+            : monthParam;
+        setPredictAreaDataMonth(resolvedMonth);
 
         const hexOk = (s: string | undefined | null) =>
           typeof s === 'string' && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s.trim());
@@ -1695,13 +1712,24 @@ const App: React.FC = () => {
           setPredictAreaFieldAreas({});
           setPredictFieldFillByFieldId({});
           setPredictCropAreas({ sugarcane: null, wheat: null });
+          setPredictAreaDataMonth(null);
         }
       })
       .finally(() => {
         if (!cancelled) setPredictCropAreaLoading(false);
       });
     return () => { cancelled = true; };
-  }, [selectedCrop, splitScreenMode, selectedDistrict, selectedSubdistrict, selectedVillage, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage]);
+  }, [
+    selectedCrop,
+    predictAreaMonthInput,
+    splitScreenMode,
+    selectedDistrict,
+    selectedSubdistrict,
+    selectedVillage,
+    leftSelectedDistrict,
+    leftSelectedSubdistrict,
+    leftSelectedVillage,
+  ]);
 
   // Clear analysis data when village changes; when village cleared, show subdistrict boundary
   useEffect(() => {
@@ -6073,6 +6101,38 @@ const App: React.FC = () => {
               <option value="wheat">Wheat</option>
               <option value="all">All</option>
             </select>
+            {selectedCrop && (
+              <div className="mt-3 space-y-1">
+                <label
+                  className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
+                >
+                  Prediction month
+                </label>
+                <input
+                  type="month"
+                  value={predictAreaMonthInput}
+                  onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                    isDarkMode
+                      ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
+                      : 'bg-white border border-emerald-100 text-slate-800'
+                  }`}
+                />
+                <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
+                  Defaults to the current month. Sent as{' '}
+                  <code className="text-[10px]">month=YYYY-MM</code> on predict-area.
+                  {predictAreaDataMonth && (
+                    <>
+                      {' '}
+                      Showing:{' '}
+                      <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                        {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                      </span>
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
           </div>
           )}
 
@@ -10439,6 +10499,31 @@ const App: React.FC = () => {
                   <option value="wheat">Wheat</option>
                   <option value="all">All</option>
                 </select>
+                {selectedCrop && (
+                  <div className="mt-3 space-y-1">
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      Prediction month
+                    </label>
+                    <input
+                      type="month"
+                      value={predictAreaMonthInput}
+                      onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
+                    />
+                    <p className="text-[11px] text-gray-500 leading-snug">
+                      Defaults to current month. API: <code className="text-[10px]">month=YYYY-MM</code>.
+                      {predictAreaDataMonth && (
+                        <>
+                          {' '}
+                          Showing:{' '}
+                          <span className="font-medium text-emerald-300">
+                            {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
               )}
 

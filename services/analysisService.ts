@@ -248,13 +248,31 @@ export function formatPredictAreaCropName(cropValue: string): string {
   return c.charAt(0).toUpperCase() + c.slice(1);
 }
 
+/** Local calendar month for predict-area `month=YYYY-MM` (defaults match API default). */
+export function getCurrentPredictAreaMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+export function formatPredictAreaMonthLabel(ym: string): string {
+  const t = ym.trim();
+  if (!/^\d{4}-\d{2}$/.test(t)) return ym;
+  const [ys, ms] = t.split('-');
+  const y = Number(ys);
+  const mo = Number(ms);
+  if (!y || mo < 1 || mo > 12) return ym;
+  return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+}
+
 export const fetchPredictArea = async (
   district: string,
   subdistrict: string,
   village: string,
   takeMonths: number = 1,
   /** When set, server returns crop-specific block (e.g. wheat, sugarcane) and village_wise_* lists */
-  cropName?: string | null
+  cropName?: string | null,
+  /** YYYY-MM; omit or invalid = API uses current month */
+  month?: string | null
 ): Promise<PredictAreaResponse> => {
   const params = new URLSearchParams({
     district,
@@ -264,6 +282,9 @@ export const fetchPredictArea = async (
   });
   if (cropName && cropName.trim()) {
     params.set('crop_name', cropName.trim());
+  }
+  if (month && /^\d{4}-\d{2}$/.test(month.trim())) {
+    params.set('month', month.trim());
   }
   const url = `${BASE_URL}/predict-area?${params.toString()}`;
   const response = await fetch(url, {
