@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import PlotsMap from './components/PlotsMap';
+import EarthView from './components/EarthView';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
 import { LoginPage } from './components/LoginPage';
 import { 
@@ -24,6 +25,7 @@ import {
   fetchWeather,
   fetchPestStoredSeries,
   fetchDashboardIndicesStore,
+  fetchNominatimBounds,
   fetchWeatherDaily,
   fetchWindDirect,
   GrowthAnalysisResponse,
@@ -43,7 +45,7 @@ import {
   PestStoredItem
 } from './services/analysisService';
 import { Coordinate } from './types';
-import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, BarChart3, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp } from 'lucide-react';
+import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, BarChart3, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp, Globe2 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, BarChart, Bar } from 'recharts';
@@ -314,6 +316,8 @@ const App: React.FC = () => {
   const [showAnalysisTrendsPage, setShowAnalysisTrendsPage] = useState<boolean>(false);
   const [showGraphFrequencyDropdown, setShowGraphFrequencyDropdown] = useState<boolean>(false);
   const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
+  /** Single-pane only: show Google Earth iframe + same predict card overlay instead of Leaflet */
+  const [useEarthViewMap, setUseEarthViewMap] = useState(false);
   /** Indices graph fullscreen: chart opened via icon vs chart chosen in toolbar dropdown (compare). */
   const [fullscreenIndicesOpenedFrom, setFullscreenIndicesOpenedFrom] = useState<DashboardIndexKey | null>(null);
   const [fullscreenIndicesCompare, setFullscreenIndicesCompare] = useState<DashboardIndexKey | null>(null);
@@ -1326,6 +1330,15 @@ const App: React.FC = () => {
         if (bounds.isValid()) setPlotBounds(bounds);
       } else {
         setAllPlots([]);
+        void (async () => {
+          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
+          if (!nb) return;
+          const b = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (b.isValid()) setPlotBounds(b);
+        })();
       }
     };
 
@@ -1371,14 +1384,40 @@ const App: React.FC = () => {
         setDistrictBoundary(coordinates);
       } catch (err) {
         setAllPlots([]);
+        void (async () => {
+          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
+          if (!nb) return;
+          const b = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (b.isValid()) setPlotBounds(b);
+        })();
       }
     } else {
-      // Fallback: fetch boundary from get-geojson API when list has no geometry
+      // Fallback: fetch boundary from get-geojson API when list has no geometry; then Nominatim
       let cancelled = false;
-      fetchBoundaryGeoJSON(selectedDistrict).then((coords) => {
+      fetchBoundaryGeoJSON(selectedDistrict).then(async (coords) => {
         if (cancelled) return;
-        if (coords && coords.length >= 3) setDistrictBoundary(coords);
-        else setAllPlots([]);
+        if (coords && coords.length >= 3) {
+          setDistrictBoundary(coords);
+          return;
+        }
+        const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
+        if (cancelled || !nb) {
+          setAllPlots([]);
+          return;
+        }
+        const b = L.latLngBounds(
+          L.latLng(nb.south, nb.west),
+          L.latLng(nb.north, nb.east)
+        );
+        if (b.isValid()) {
+          setPlotBounds(b);
+          setAllPlots([]);
+        } else {
+          setAllPlots([]);
+        }
       });
       return () => { cancelled = true; };
     }
@@ -1393,6 +1432,15 @@ const App: React.FC = () => {
       if (bounds.isValid()) setPlotBounds(bounds);
     } else {
       setAllPlots([]);
+      void (async () => {
+        const nb = await fetchNominatimBounds(`${id}, India`);
+        if (!nb) return;
+        const b = L.latLngBounds(
+          L.latLng(nb.south, nb.west),
+          L.latLng(nb.north, nb.east)
+        );
+        if (b.isValid()) setPlotBounds(b);
+      })();
     }
   };
 
@@ -1441,10 +1489,27 @@ const App: React.FC = () => {
         }
       } else {
         let cancelled = false;
-        fetchBoundaryGeoJSON(selectedSubdistrict).then((coords) => {
+        fetchBoundaryGeoJSON(selectedSubdistrict).then(async (coords) => {
           if (cancelled) return;
-          if (coords && coords.length >= 3) setBoundaryPlot(selectedSubdistrict, coords);
-          else setAllPlots([]);
+          if (coords && coords.length >= 3) {
+            setBoundaryPlot(selectedSubdistrict, coords);
+            return;
+          }
+          const nb = await fetchNominatimBounds(`${selectedSubdistrict}, ${selectedDistrict}, India`);
+          if (cancelled || !nb) {
+            setAllPlots([]);
+            return;
+          }
+          const b = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (b.isValid()) {
+            setPlotBounds(b);
+            setAllPlots([]);
+          } else {
+            setAllPlots([]);
+          }
         });
         return () => { cancelled = true; };
       }
@@ -1478,10 +1543,27 @@ const App: React.FC = () => {
         }
       } else {
         let cancelled = false;
-        fetchBoundaryGeoJSON(selectedDistrict).then((coords) => {
+        fetchBoundaryGeoJSON(selectedDistrict).then(async (coords) => {
           if (cancelled) return;
-          if (coords && coords.length >= 3) setBoundaryPlot(selectedDistrict, coords);
-          else setAllPlots([]);
+          if (coords && coords.length >= 3) {
+            setBoundaryPlot(selectedDistrict, coords);
+            return;
+          }
+          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
+          if (cancelled || !nb) {
+            setAllPlots([]);
+            return;
+          }
+          const b = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (b.isValid()) {
+            setPlotBounds(b);
+            setAllPlots([]);
+          } else {
+            setAllPlots([]);
+          }
         });
         return () => { cancelled = true; };
       }
@@ -1730,6 +1812,38 @@ const App: React.FC = () => {
     leftSelectedSubdistrict,
     leftSelectedVillage,
   ]);
+
+  const predictAreaMapCard = useMemo(() => {
+    const cropOk =
+      selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all';
+    if (!cropOk) return null;
+    const inScope = splitScreenMode
+      ? !!(leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
+      : !!(selectedDistrict && selectedSubdistrict && selectedVillage);
+    if (!inScope) return null;
+    return {
+      loading: predictCropAreaLoading,
+      regionLabel: splitScreenMode ? leftSelectedVillage : selectedVillage,
+      sugarcaneHa: predictCropAreas.sugarcane,
+      wheatHa: predictCropAreas.wheat,
+    };
+  }, [
+    selectedCrop,
+    splitScreenMode,
+    leftSelectedDistrict,
+    leftSelectedSubdistrict,
+    leftSelectedVillage,
+    selectedDistrict,
+    selectedSubdistrict,
+    selectedVillage,
+    predictCropAreaLoading,
+    predictCropAreas.sugarcane,
+    predictCropAreas.wheat,
+  ]);
+
+  useEffect(() => {
+    if (splitScreenMode) setUseEarthViewMap(false);
+  }, [splitScreenMode]);
 
   // Clear analysis data when village changes; when village cleared, show subdistrict boundary
   useEffect(() => {
@@ -2585,6 +2699,7 @@ const App: React.FC = () => {
 
   // Handle left district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
+    let cancelled = false;
     if (splitScreenMode && leftSelectedDistrict && !leftSelectedSubdistrict && !leftSelectedVillage) {
       // Find the selected district data
       const districtData = districts.find(d => d.district === leftSelectedDistrict);
@@ -2649,22 +2764,86 @@ const App: React.FC = () => {
               }
             }
           } else {
-            setLeftAllPlots([]);
+            void (async () => {
+              const ring = await fetchBoundaryGeoJSON(leftSelectedDistrict);
+              if (cancelled) return;
+              if (ring && ring.length >= 3) {
+                setLeftAllPlots([{ id: leftSelectedDistrict, area_ha: '0', boundary: ring }]);
+                const b = L.latLngBounds([]);
+                ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
+                if (b.isValid()) setPlotBounds(b);
+                return;
+              }
+              const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
+              if (cancelled || !nb) {
+                setLeftAllPlots([]);
+                return;
+              }
+              const nomBounds = L.latLngBounds(
+                L.latLng(nb.south, nb.west),
+                L.latLng(nb.north, nb.east)
+              );
+              if (nomBounds.isValid()) {
+                setPlotBounds(nomBounds);
+                setLeftAllPlots([]);
+              } else {
+                setLeftAllPlots([]);
+              }
+            })();
           }
         } catch (err) {
           setLeftAllPlots([]);
+          void (async () => {
+            const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
+            if (cancelled || !nb) return;
+            const nomB = L.latLngBounds(
+              L.latLng(nb.south, nb.west),
+              L.latLng(nb.north, nb.east)
+            );
+            if (nomB.isValid()) {
+              setPlotBounds(nomB);
+            }
+          })();
         }
       } else {
-        // No geometry available
-        setLeftAllPlots([]);
+        void (async () => {
+          const ring = await fetchBoundaryGeoJSON(leftSelectedDistrict);
+          if (cancelled) return;
+          if (ring && ring.length >= 3) {
+            setLeftAllPlots([{ id: leftSelectedDistrict, area_ha: '0', boundary: ring }]);
+            const b = L.latLngBounds([]);
+            ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
+            if (b.isValid()) setPlotBounds(b);
+            return;
+          }
+          const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
+          if (cancelled || !nb) {
+            setLeftAllPlots([]);
+            return;
+          }
+          const nomBoundsR = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (nomBoundsR.isValid()) {
+            setPlotBounds(nomBoundsR);
+            setLeftAllPlots([]);
+          } else {
+            setLeftAllPlots([]);
+          }
+        })();
       }
     } else if (splitScreenMode && (!leftSelectedDistrict || leftSelectedSubdistrict || leftSelectedVillage)) {
       if (!leftSelectedDistrict) setLeftAllPlots([]);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [splitScreenMode, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage, districts]);
 
   // Handle right district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
+    let cancelled = false;
     if (splitScreenMode && rightSelectedDistrict && !rightSelectedSubdistrict && !rightSelectedVillage) {
       // Find the selected district data
       const districtData = districts.find(d => d.district === rightSelectedDistrict);
@@ -2729,18 +2908,81 @@ const App: React.FC = () => {
               }
             }
           } else {
-            setRightAllPlots([]);
+            void (async () => {
+              const ring = await fetchBoundaryGeoJSON(rightSelectedDistrict);
+              if (cancelled) return;
+              if (ring && ring.length >= 3) {
+                setRightAllPlots([{ id: rightSelectedDistrict, area_ha: '0', boundary: ring }]);
+                const b = L.latLngBounds([]);
+                ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
+                if (b.isValid()) setPlotBounds(b);
+                return;
+              }
+              const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
+              if (cancelled || !nb) {
+                setRightAllPlots([]);
+                return;
+              }
+              const nomBoundsR0 = L.latLngBounds(
+                L.latLng(nb.south, nb.west),
+                L.latLng(nb.north, nb.east)
+              );
+              if (nomBoundsR0.isValid()) {
+                setPlotBounds(nomBoundsR0);
+                setRightAllPlots([]);
+              } else {
+                setRightAllPlots([]);
+              }
+            })();
           }
         } catch (err) {
           setRightAllPlots([]);
+          void (async () => {
+            const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
+            if (cancelled || !nb) return;
+            const nomB = L.latLngBounds(
+              L.latLng(nb.south, nb.west),
+              L.latLng(nb.north, nb.east)
+            );
+            if (nomB.isValid()) {
+              setPlotBounds(nomB);
+            }
+          })();
         }
       } else {
-        // No geometry available
-        setRightAllPlots([]);
+        void (async () => {
+          const ring = await fetchBoundaryGeoJSON(rightSelectedDistrict);
+          if (cancelled) return;
+          if (ring && ring.length >= 3) {
+            setRightAllPlots([{ id: rightSelectedDistrict, area_ha: '0', boundary: ring }]);
+            const b = L.latLngBounds([]);
+            ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
+            if (b.isValid()) setPlotBounds(b);
+            return;
+          }
+          const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
+          if (cancelled || !nb) {
+            setRightAllPlots([]);
+            return;
+          }
+          const nomBoundsR1 = L.latLngBounds(
+            L.latLng(nb.south, nb.west),
+            L.latLng(nb.north, nb.east)
+          );
+          if (nomBoundsR1.isValid()) {
+            setPlotBounds(nomBoundsR1);
+            setRightAllPlots([]);
+          } else {
+            setRightAllPlots([]);
+          }
+        })();
       }
     } else if (splitScreenMode && (!rightSelectedDistrict || rightSelectedSubdistrict || rightSelectedVillage)) {
       if (!rightSelectedDistrict) setRightAllPlots([]);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [splitScreenMode, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, districts]);
 
   // Handle left subdistrict boundary display in split screen mode (even without tab)
@@ -5795,6 +6037,24 @@ const App: React.FC = () => {
         <div className="flex items-center gap-1.5 md:gap-2 justify-self-end">
           <button
             type="button"
+            onClick={() => {
+              if (splitScreenMode) return;
+              setUseEarthViewMap((v) => !v);
+            }}
+            disabled={splitScreenMode}
+            className={`p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
+              splitScreenMode
+                ? 'cursor-not-allowed opacity-40 border-gray-600 bg-gray-800 text-gray-500'
+                : useEarthViewMap
+                  ? 'bg-cyan-600/30 border-cyan-400 text-cyan-200 hover:bg-cyan-600/40'
+                  : 'bg-gray-800 border-white/40 text-white hover:bg-gray-700'
+            }`}
+            title={splitScreenMode ? 'Google Earth: available in single view' : useEarthViewMap ? 'Switch to map view' : 'Google Earth + crop card'}
+          >
+            <Globe2 size={18} />
+          </button>
+          <button
+            type="button"
             onClick={() => setIsDarkMode((prev) => !prev)}
             className={`p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
               isDarkMode
@@ -5854,7 +6114,7 @@ const App: React.FC = () => {
         <div className="flex-shrink-0 h-2 bg-emerald-100 w-full" />
       )}
 
-      <div className="flex flex-1 min-h-0 relative">
+      <div className="relative flex h-full min-h-0 flex-1">
         {/* Mobile Overlay when sidebar is visible */}
         {sidebarVisible && (
           <div 
@@ -6516,7 +6776,7 @@ const App: React.FC = () => {
       {/* Main Map Area - Shows two maps in split screen mode; scroll at 1440/1024 so map is viewable */}
       <main
         ref={mainScrollRef}
-        className={`flex-1 w-full min-h-0 relative bg-gray-950 overflow-y-auto ${
+        className={`relative h-full min-h-0 w-full flex-1 bg-gray-950 overflow-y-auto ${
           splitScreenMode
             ? 'flex'
             : !isMapFullscreen &&
@@ -6531,7 +6791,7 @@ const App: React.FC = () => {
 
           {/* Map Container - Reduced height when not split so two cards show below; min-height so map is viewable */}
         <div
-          className={`relative w-full min-h-[min(320px,40vh)] ${
+          className={`relative flex min-h-0 w-full min-w-0 flex-col overflow-hidden min-h-[min(320px,40vh)] ${
             splitScreenMode
               ? 'flex-1 w-1/2 border-r border-gray-700'
               : isMapFullscreen
@@ -8636,10 +8896,19 @@ const App: React.FC = () => {
           </div>
           )}
 
-          {(splitScreenMode ? leftLoading : loading) && (splitScreenMode ? leftAllPlots : plots).length === 0 ? (
-            <div className="h-full w-full flex items-center justify-center bg-gray-900 text-green-500">
+          <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
+          {(splitScreenMode ? leftLoading : loading) &&
+          (splitScreenMode ? leftAllPlots : plots).length === 0 &&
+          !(useEarthViewMap && !splitScreenMode) ? (
+            <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
               <Loader2 className="animate-spin" size={48} />
             </div>
+          ) : !splitScreenMode && useEarthViewMap ? (
+            <EarthView
+              predictCard={predictAreaMapCard}
+              className="h-full w-full min-h-[50vh] flex-1"
+              height="100%"
+            />
           ) : (
             <PlotsMap
               plots={splitScreenMode ? leftAllPlots : plots}
@@ -8736,8 +9005,10 @@ const App: React.FC = () => {
               }}
               windDirectPayload={windDirectData}
               showWindFlowLayer={showWindFlowLayer}
+              predictAreaMapCard={predictAreaMapCard}
             />
           )}
+          </div>
 
           {/* Time series year-month tabs: show for Growth, Water, Soil, Pest (same bar style, shared selection) */}
           {/* Pest: year/month list */}
@@ -10422,8 +10693,9 @@ const App: React.FC = () => {
 
 
             {/* Map - Right Side */}
+            <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
             {rightLoading && rightAllPlots.length === 0 ? (
-              <div className="h-full w-full flex items-center justify-center bg-gray-900 text-green-500">
+              <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
                 <Loader2 className="animate-spin" size={48} />
               </div>
             ) : (
@@ -10451,8 +10723,10 @@ const App: React.FC = () => {
                 onSelectWaterSource={setSelectedWaterSource}
                 windDirectPayload={null}
                 showWindFlowLayer={false}
+                predictAreaMapCard={predictAreaMapCard}
               />
             )}
+            </div>
 
             {renderSplitScreenMapBottomGraph('right')}
           </div>

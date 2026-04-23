@@ -1305,6 +1305,38 @@ export const fetchBoundaryGeoJSON = async (name: string): Promise<Coordinate[] |
   }
 };
 
+/**
+ * Free-text geocoding (Nominatim) for map bounds when get-geojson has no boundary.
+ * Follow https://operations.osmfoundation.org/policies/nominatim/ — one request per user action is OK.
+ * Returns south/north/west/east in WGS84 (degrees).
+ */
+export async function fetchNominatimBounds(
+  freeTextQuery: string
+): Promise<{ south: number; north: number; west: number; east: number } | null> {
+  const q = encodeURIComponent(freeTextQuery.trim());
+  if (!q) return null;
+  const path = isDevelopment
+    ? `/nominatim/search?q=${q}&format=json&limit=1&addressdetails=0`
+    : `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&addressdetails=0`;
+  try {
+    const res = await fetch(path, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Array<{ boundingbox?: [string, string, string, string] }>;
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const b = data[0]?.boundingbox;
+    if (!b || b.length < 4) return null;
+    const south = parseFloat(b[0]);
+    const north = parseFloat(b[1]);
+    const west = parseFloat(b[2]);
+    const east = parseFloat(b[3]);
+    if (![south, north, west, east].every((n) => Number.isFinite(n))) return null;
+    if (Math.abs(north - south) < 1e-6 || Math.abs(east - west) < 1e-6) return null;
+    return { south, north, west, east };
+  } catch {
+    return null;
+  }
+}
+
 export const fetchTalukaPlots = async (talukaName: string): Promise<Array<{id: string; area_ha: string; boundary: Coordinate[]}>> => {
   try {
     const url = isDevelopment

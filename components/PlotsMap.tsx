@@ -4,6 +4,7 @@ import { Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
 import type { WindDirectResponse } from '../services/analysisService';
 import WindFlowOverlay from './WindFlowOverlay';
+import PredictAreaMapCard from './PredictAreaMapCard';
 
 interface WaterSource {
   id: string;
@@ -15,6 +16,10 @@ interface WaterSource {
 /** Predict-area crop fields: white outer border, dark green fill */
 const PREDICT_AREA_FIELD_STROKE = '#ffffff';
 const PREDICT_AREA_FIELD_FILL = '#166534';
+
+/** Default map: continental India (matches typical “open on India” satellite view) */
+const INDIA_DEFAULT_CENTER: LeafletCoordinate = [20.5937, 78.9629];
+const INDIA_DEFAULT_ZOOM = 5;
 
 interface PlotsMapProps {
   plots: Plot[];
@@ -37,6 +42,15 @@ interface PlotsMapProps {
   /** Open-Meteo wind AOI payload; when set with showWindFlowLayer, draws particles + markers on the map */
   windDirectPayload?: WindDirectResponse | null;
   showWindFlowLayer?: boolean;
+  /** Right-side overlay: sugarcane & wheat predicted areas (predict-area) */
+  predictAreaMapCard?: {
+    loading: boolean;
+    regionLabel: string;
+    sugarcaneHa: number | null;
+    wheatHa: number | null;
+    sugarcaneColor?: string;
+    wheatColor?: string;
+  } | null;
 }
 
 // Helper component to fit bounds when plots change (only on initial load, not after user interaction)
@@ -67,7 +81,10 @@ const MapBounds: React.FC<{ plots: Plot[]; plotBounds?: L.LatLngBounds | null }>
   useEffect(() => {
     // Create a hash of plot IDs to detect when plots actually change (not just re-render)
     const plotsHash = plots.map(p => p.id).sort().join(',');
-    
+    // New district / subdistrict / village → allow auto-fly again (selection changed)
+    if (lastPlotsHash.current !== '' && plotsHash !== lastPlotsHash.current) {
+      userHasInteracted.current = false;
+    }
     // Only fit bounds if:
     // 1. We haven't initialized yet AND user hasn't interacted, OR
     // 2. The plots have actually changed (different IDs) AND user hasn't interacted
@@ -101,6 +118,62 @@ const MapBounds: React.FC<{ plots: Plot[]; plotBounds?: L.LatLngBounds | null }>
   return null;
 };
 
+/** Recompute tile layout when the map panel is resized (fixes thin “strip” map). */
+const MapLayoutFix: React.FC = () => {
+  const map = useMap();
+  useEffect(() => {
+    const el = map.getContainer();
+    const applyFloorHeight = () => {
+      const h = el.getBoundingClientRect().height;
+      if (h < 280) {
+        const target = Math.max(400, Math.floor(window.innerHeight * 0.62));
+        el.style.minHeight = `${target}px`;
+      }
+    };
+    const invalidate = () => {
+      applyFloorHeight();
+      map.invalidateSize();
+    };
+    const onWinResize = () => invalidate();
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(invalidate);
+    });
+    ro.observe(el);
+    const root = el.closest('[data-plots-map-root]');
+    if (root) ro.observe(root);
+    if (el.parentElement) ro.observe(el.parentElement);
+    window.addEventListener('resize', onWinResize);
+    const t1 = window.setTimeout(invalidate, 0);
+    const t2 = window.setTimeout(invalidate, 200);
+    const t3 = window.setTimeout(invalidate, 800);
+    return () => {
+      ro.disconnect();
+      el.style.minHeight = '';
+      window.removeEventListener('resize', onWinResize);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+  }, [map]);
+  return null;
+};
+
+/** No field polygons: keep the broad India view. */
+const MapDefaultIndia: React.FC<{
+  plotBounds?: L.LatLngBounds | null;
+  hasPolygons: boolean;
+}> = ({ plotBounds, hasPolygons }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (hasPolygons) return;
+    if (plotBounds && plotBounds.isValid()) return;
+    map.setView(INDIA_DEFAULT_CENTER, INDIA_DEFAULT_ZOOM, { animate: false });
+    const id = requestAnimationFrame(() => map.invalidateSize());
+    return () => cancelAnimationFrame(id);
+  }, [map, hasPolygons, plotBounds]);
+  return null;
+};
+
 const PlotsMap: React.FC<PlotsMapProps> = ({ 
   plots, 
   selectedPlotId, 
@@ -116,19 +189,28 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   fieldFillByFieldId = {},
   hideFieldIdAreaCard = false,
   windDirectPayload = null,
-  showWindFlowLayer = false
+  showWindFlowLayer = false,
+  predictAreaMapCard = null
 }) => {
-  // Default center (Nashik/Maharashtra area based on coordinates provided in prompt)
-  const defaultCenter: LeafletCoordinate = [20.0130, 73.6620];
+  const hasFieldPolygons = plots.some(
+    (p) => p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
+  );
   
   return (
+    <div
+      className="plots-map-root relative z-0 flex w-full min-w-0 flex-1 flex-col"
+      data-plots-map-root
+    >
     <MapContainer 
-      center={defaultCenter} 
-      zoom={16} 
+      center={INDIA_DEFAULT_CENTER} 
+      zoom={INDIA_DEFAULT_ZOOM} 
       scrollWheelZoom={true}
       zoomControl={false}
-      className="h-full w-full z-0"
+      className="z-0 h-full w-full min-h-0 min-w-0 flex-1"
+      style={{ minHeight: 'max(45vh, 360px)' }}
     >
+      <MapLayoutFix />
+      <MapDefaultIndia plotBounds={plotBounds} hasPolygons={hasFieldPolygons} />
       {/* Google Hybrid — satellite + labels */}
       <TileLayer
         url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
@@ -360,6 +442,21 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           <WindFlowOverlay payload={windDirectPayload} particleCount={480} showMarkers />
         )}
     </MapContainer>
+    {predictAreaMapCard && (
+      <div className="pointer-events-none absolute right-2 top-2 z-[1000] max-w-[calc(100%-1rem)] sm:right-3 sm:top-3">
+        <div className="pointer-events-auto">
+          <PredictAreaMapCard
+            loading={predictAreaMapCard.loading}
+            regionLabel={predictAreaMapCard.regionLabel}
+            sugarcaneHa={predictAreaMapCard.sugarcaneHa}
+            wheatHa={predictAreaMapCard.wheatHa}
+            sugarcaneColor={predictAreaMapCard.sugarcaneColor}
+            wheatColor={predictAreaMapCard.wheatColor}
+          />
+        </div>
+      </div>
+    )}
+    </div>
   );
 };
 

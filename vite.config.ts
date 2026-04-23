@@ -27,6 +27,13 @@ export default defineConfig(({ mode }) => {
             secure: false,
             ws: true,
           },
+          // OpenStreetMap Nominatim (avoids CORS in dev) — for district/city map focus when get-geojson has no data
+          '/nominatim': {
+            target: 'https://nominatim.openstreetmap.org',
+            changeOrigin: true,
+            secure: true,
+            rewrite: (path) => path.replace(/^\/nominatim/, ''),
+          },
         },
       },
       plugins: [react()],
