@@ -46,10 +46,10 @@ interface PlotsMapProps {
   predictAreaMapCard?: {
     loading: boolean;
     regionLabel: string;
-    sugarcaneHa: number | null;
-    wheatHa: number | null;
-    sugarcaneColor?: string;
-    wheatColor?: string;
+    cropAreas: Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', number | null>;
+    cropColors?: Partial<Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', string>>;
+    selectedCrops: Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', boolean>;
+    onToggleCrop: (crop: 'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango') => void;
   } | null;
 }
 
@@ -292,7 +292,8 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             ? fillFromPredict.trim()
             : PREDICT_AREA_FIELD_FILL;
         // When hideFieldIdAreaCard is true, this is a district/subdistrict boundary – use visible stroke and light fill
-        const isBoundaryOnly = hideFieldIdAreaCard && !isWaterSource;
+        const isOutlineBoundary = plot.id.startsWith('outline:');
+        const isBoundaryOnly = ((hideFieldIdAreaCard && !isWaterSource) || isOutlineBoundary);
 
         return (
           <Polygon
@@ -326,14 +327,14 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             }}
           >
             {/* Hover tooltip: show plot area (ha) on boundary hover – hidden when hideFieldIdAreaCard (e.g. district/subdistrict) */}
-            {!plot.id.startsWith('water-source-') && !hideFieldIdAreaCard && (
+            {!plot.id.startsWith('water-source-') && !hideFieldIdAreaCard && !plot.id.startsWith('outline:') && (
               <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent={false}>
                 <span className="font-medium">Field ID: {plot.id}</span>
                 <br />
                 <span className="text-emerald-600 font-semibold">Area: {(displayAreaHa != null ? displayAreaHa : Number(plot.area_ha) || 0).toFixed(2)} ha</span>
               </Tooltip>
             )}
-            {!hideFieldIdAreaCard && (
+            {!hideFieldIdAreaCard && !plot.id.startsWith('outline:') && (
             <Popup className="font-sans font-medium text-sm">
               <div className="text-center">
                 {plot.id.startsWith('water-source-') ? (
@@ -448,10 +449,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           <PredictAreaMapCard
             loading={predictAreaMapCard.loading}
             regionLabel={predictAreaMapCard.regionLabel}
-            sugarcaneHa={predictAreaMapCard.sugarcaneHa}
-            wheatHa={predictAreaMapCard.wheatHa}
-            sugarcaneColor={predictAreaMapCard.sugarcaneColor}
-            wheatColor={predictAreaMapCard.wheatColor}
+            cropAreas={predictAreaMapCard.cropAreas}
+            cropColors={predictAreaMapCard.cropColors}
+            selectedCrops={predictAreaMapCard.selectedCrops}
+            onToggleCrop={predictAreaMapCard.onToggleCrop}
           />
         </div>
       </div>

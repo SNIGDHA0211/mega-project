@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { ChevronUp, ChevronDown, Loader2 } from 'lucide-react';
-
-/** Default legend swatches: sugarcane = blue, wheat = red (when API does not pass colors) */
-const SUGARCANE_SWATCH = '#2563eb';
-const WHEAT_SWATCH = '#dc2626';
+import {
+  CROP_SELECTION_OPTIONS,
+  type CropSelectionKey,
+  type CropSelectionState,
+} from './CropDropdownChecklist';
 
 function formatAreaHa(ha: number | null | undefined): string {
   if (ha == null || Number.isNaN(ha)) {
@@ -16,27 +17,29 @@ export interface PredictAreaMapCardProps {
   loading: boolean;
   /** e.g. village name under the title */
   regionLabel: string;
-  sugarcaneHa: number | null;
-  wheatHa: number | null;
-  /** Optional; defaults match map legend */
-  sugarcaneColor?: string;
-  wheatColor?: string;
+  cropAreas: Record<CropSelectionKey, number | null>;
+  cropColors?: Partial<Record<CropSelectionKey, string>>;
+  selectedCrops: CropSelectionState;
+  onToggleCrop: (crop: CropSelectionKey) => void;
 }
 
 const PredictAreaMapCard: React.FC<PredictAreaMapCardProps> = ({
   loading,
   regionLabel,
-  sugarcaneHa,
-  wheatHa,
-  sugarcaneColor = SUGARCANE_SWATCH,
-  wheatColor = WHEAT_SWATCH,
+  cropAreas,
+  cropColors = {},
+  selectedCrops,
+  onToggleCrop,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
 
-  const rows: { index: number; name: string; color: string; area: number | null }[] = [
-    { index: 1, name: 'Sugarcane', color: sugarcaneColor, area: sugarcaneHa },
-    { index: 2, name: 'Wheat', color: wheatColor, area: wheatHa },
-  ];
+  const rows = CROP_SELECTION_OPTIONS.map((crop, index) => ({
+    key: crop.key,
+    index: index + 1,
+    name: crop.label,
+    color: cropColors[crop.key] ?? crop.color ?? '#166534',
+    area: cropAreas[crop.key] ?? null,
+  }));
 
   return (
     <div
@@ -75,7 +78,7 @@ const PredictAreaMapCard: React.FC<PredictAreaMapCardProps> = ({
       </div>
 
       {!collapsed && (
-        <div className="px-2 pb-2.5">
+        <div className="px-2 pb-2.5 max-h-[min(50vh,280px)] overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-4" style={{ color: '#ffffff' }}>
               <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-400" />
@@ -87,63 +90,62 @@ const PredictAreaMapCard: React.FC<PredictAreaMapCardProps> = ({
             <table className="w-full text-left text-[11px]" style={{ color: '#ffffff' }}>
               <thead>
                 <tr>
-                  <th
-                    className="w-8 py-1.5 pl-0.5 !text-white"
-                    style={{ color: '#ffffff' }}
-                  >
-                    Row
+                  <th className="w-8 py-1.5 pl-0.5 !text-white" style={{ color: '#ffffff' }}>
+                    Show
                   </th>
                   <th className="py-1.5 !text-white" style={{ color: '#ffffff' }}>
                     Crop
                   </th>
-                  <th
-                    className="py-1.5 pr-0.5 text-right !text-white"
-                    style={{ color: '#ffffff' }}
-                  >
+                  <th className="py-1.5 pr-0.5 text-right !text-white" style={{ color: '#ffffff' }}>
                     Total area
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr
-                    key={row.name}
-                    className="border-t border-zinc-600/80"
-                  >
-                    <td className="py-1.5 align-middle">
-                      <span
-                        className="inline-flex min-w-[1.5rem] items-center justify-center rounded border border-zinc-600/80 bg-zinc-800/90 px-1 py-0.5 text-[10px] font-semibold !text-white"
+                {rows.map((row) => {
+                  const checked = selectedCrops[row.key];
+                  return (
+                    <tr
+                      key={row.key}
+                      className={`border-t border-zinc-600/80 ${checked ? 'bg-white/5' : ''}`}
+                    >
+                      <td className="py-1.5 align-middle">
+                        <label className="inline-flex cursor-pointer items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => onToggleCrop(row.key)}
+                            className="h-3.5 w-3.5 rounded border-zinc-500 accent-amber-500"
+                            aria-label={`Show ${row.name} on map`}
+                          />
+                        </label>
+                      </td>
+                      <td className="py-1.5 align-middle">
+                        <label
+                          className="flex cursor-pointer items-center gap-1.5"
+                          onClick={() => onToggleCrop(row.key)}
+                        >
+                          <span
+                            className="h-2.5 w-2.5 flex-shrink-0 rounded-full border border-white/30"
+                            style={{ backgroundColor: row.color }}
+                          />
+                          <span
+                            className={`font-medium !text-white ${checked ? 'opacity-100' : 'opacity-70'}`}
+                            style={{ color: '#ffffff' }}
+                          >
+                            {row.name}
+                          </span>
+                        </label>
+                      </td>
+                      <td
+                        className="py-1.5 text-right align-middle tabular-nums !text-white"
                         style={{ color: '#ffffff' }}
                       >
-                        {row.index}
-                      </span>
-                    </td>
-                    <td className="py-1.5 align-middle">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="h-2.5 w-2.5 flex-shrink-0 rounded-full border border-white/30"
-                          style={{ backgroundColor: row.color }}
-                        />
-                        <span
-                          className="font-medium !text-white"
-                          style={{ color: '#ffffff' }}
-                        >
-                          {row.name}
-                        </span>
-                      </div>
-                    </td>
-                    <td
-                      className="py-1.5 text-right align-middle tabular-nums !text-white"
-                      style={{ color: '#ffffff' }}
-                    >
-                      {row.area == null || Number.isNaN(row.area) ? (
-                        '—'
-                      ) : (
-                        formatAreaHa(row.area)
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        {row.area == null || Number.isNaN(row.area) ? '—' : formatAreaHa(row.area)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

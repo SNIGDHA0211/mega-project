@@ -116,6 +116,50 @@ export interface VillagesResponse {
   villages: VillageItem[];
 }
 
+/** Parse village polygon from /villages API item into [lng, lat][] rings */
+export const parseVillageBoundaryCoordinates = (village: VillageItem): Coordinate[] => {
+  if (!village) return [];
+
+  if (village.coordinates && village.geom_type) {
+    const coords = village.coordinates;
+    const geomType = village.geom_type.toUpperCase();
+    if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
+      if (Array.isArray(coords) && coords.length > 0) {
+        if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+          const outerRing = coords[0] as number[][];
+          return outerRing
+            .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+            .map((c) => [c[0], c[1]] as Coordinate);
+        }
+        return (coords as number[][])
+          .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+          .map((c) => [c[0], c[1]] as Coordinate);
+      }
+    }
+  }
+
+  if (village.geometry) {
+    const g = village.geometry;
+    if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+      const c = g.coordinates;
+      if (g.type === 'Polygon') {
+        const outerRing = (c && c[0]) || [];
+        return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+      }
+      const firstPolygon = (c && c[0]) || [];
+      const outerRing = firstPolygon[0] || [];
+      return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+    }
+    if (g.coordinates) {
+      const c = g.coordinates;
+      const outerRing = Array.isArray(c[0]) && Array.isArray(c[0][0]) ? c[0] : c;
+      return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
+    }
+  }
+
+  return [];
+};
+
 export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]> => {
   try {
     const response = await fetch(`${BASE_URL}/villages?subdistrict=${encodeURIComponent(subdistrict)}`, {
@@ -129,16 +173,18 @@ export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]>
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    const data: VillagesResponse = await response.json();
-    const villagesArray = data.villages || [];
+    const data: VillagesResponse | VillageItem[] = await response.json();
+    const villagesArray = Array.isArray(data) ? data : (data.villages || []);
     
-    // Return villages with geom_type and coordinates (or geometry for backward compatibility)
-    return villagesArray.map(item => ({
-      village: item.village,
-      geom_type: item.geom_type,
-      coordinates: item.coordinates,
-      geometry: item.geometry // For backward compatibility
-    }));
+    return villagesArray
+      .filter((item) => item.village && item.village.trim())
+      .map((item) => ({
+        village: item.village,
+        geom_type: item.geom_type,
+        coordinates: item.coordinates,
+        geometry: item.geometry
+      }))
+      .sort((a, b) => a.village.localeCompare(b.village));
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${BASE_URL}/villages`);
@@ -147,7 +193,9 @@ export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]>
   }
 };
 
-// Field boundaries API response: district, subdistrict, village, count, fields[]
+const VILLAGE_OUTLINE_ID_PREFIX = 'outline:';
+export const villageOutlinePlotId = (village: string) => `${VILLAGE_OUTLINE_ID_PREFIX}${village}`;
+export const isVillageOutlinePlotId = (id: string) => id.startsWith(VILLAGE_OUTLINE_ID_PREFIX);
 export interface FieldBoundariesResponse {
   district: string;
   subdistrict: string;

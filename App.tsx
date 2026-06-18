@@ -1,16 +1,25 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import PlotsMap from './components/PlotsMap';
 import EarthView from './components/EarthView';
+import CropDropdownChecklist, {
+  CROP_SELECTION_KEYS,
+  type CropSelectionKey,
+  type CropSelectionState,
+  emptyCropSelection,
+  hasAnyCropSelected,
+} from './components/CropDropdownChecklist';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
 import { LoginPage } from './components/LoginPage';
 import { 
   fetchDistricts, 
   fetchSubdistricts, 
   fetchVillages,
+  parseVillageBoundaryCoordinates,
+  villageOutlinePlotId,
+  isVillageOutlinePlotId,
   fetchBoundaryGeoJSON, 
   fetchFieldBoundaries,
   fetchPredictArea,
-  formatPredictAreaCropName,
   formatPredictAreaMonthLabel,
   getCurrentPredictAreaMonth,
   type PredictAreaCropData,
@@ -90,6 +99,47 @@ const GoGraph: React.FC<{ size?: number; className?: string }> = ({ size = 18, c
 import BlurText from './components/BlurText';
 import L from 'leaflet';
 
+type PredictCropLayer = {
+  areas: Record<string, number>;
+  fills: Record<string, string>;
+  totalHa: number | null;
+  color: string;
+};
+
+const CROP_DEFAULT_COLORS: Record<CropSelectionKey, string> = {
+  sugarcane: '#2563eb',
+  wheat: '#dc2626',
+  Soyabean: '#16a34a',
+  Onion: '#eab308',
+  Mango: '#f97316',
+};
+
+const cropResponseKey = (key: CropSelectionKey): string => key.toLowerCase();
+
+const hexColorOk = (s: string | undefined | null) =>
+  typeof s === 'string' && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s.trim());
+
+const parsePredictCropLayer = (
+  cd: PredictAreaCropData | undefined,
+  fallbackColor: string
+): PredictCropLayer | null => {
+  if (!cd || typeof cd !== 'object') return null;
+  const color = hexColorOk(cd.color) ? cd.color!.trim() : fallbackColor;
+  const areas: Record<string, number> = {};
+  const fills: Record<string, string> = {};
+  const boundaries = cd.identified_field_boundaries ?? {};
+  Object.values(boundaries).forEach((item) => {
+    const fid = String(item.field_id);
+    areas[fid] = item.field_area_ha;
+    fills[fid] = color;
+  });
+  let totalHa: number | null = null;
+  if (typeof cd.crop_area_ha === 'number' && !Number.isNaN(cd.crop_area_ha)) {
+    totalHa = cd.crop_area_ha;
+  }
+  return { areas, fills, totalHa, color };
+};
+
 const App: React.FC = () => {
   // Authentication state - load from localStorage on mount
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -118,7 +168,7 @@ const App: React.FC = () => {
   // State for villages
   const [villages, setVillages] = useState<Array<{village: string; geom_type?: string; coordinates?: any; geometry?: any}>>([]);
   const [selectedVillage, setSelectedVillage] = useState<string>('');
-  /** When true, village boundary is shown on map (user must click "Display boundary") */
+  /** When true, village boundary from /villages API is shown on map (user clicks "Display boundary") */
   const [showVillageBoundary, setShowVillageBoundary] = useState(false);
   const [showLeftVillageBoundary, setShowLeftVillageBoundary] = useState(false);
   const [showRightVillageBoundary, setShowRightVillageBoundary] = useState(false);
@@ -160,8 +210,9 @@ const App: React.FC = () => {
   const [selectedWaterSource, setSelectedWaterSource] = useState<string | null>(null);
   const [waterAreaHectares, setWaterAreaHectares] = useState<number | null>(null);
 
-  // State for crops
-  const [selectedCrop, setSelectedCrop] = useState<string>('');
+  // State for crops: checklist dropdown (multi-select) + map layers for sugarcane/wheat
+  const [selectedCrops, setSelectedCrops] = useState<CropSelectionState>(emptyCropSelection);
+  const [predictAreaByCrop, setPredictAreaByCrop] = useState<Partial<Record<CropSelectionKey, PredictCropLayer>>>({});
   const [cropTileUrl, setCropTileUrl] = useState<string | null>(null);
   const [cropAreaHa, setCropAreaHa] = useState<number | null>(null);
   
@@ -178,10 +229,13 @@ const App: React.FC = () => {
   const [predictAreaCropColor, setPredictAreaCropColor] = useState<string | null>(null);
   const [predictAreaFieldAreas, setPredictAreaFieldAreas] = useState<Record<string, number>>({});
   const [predictFieldFillByFieldId, setPredictFieldFillByFieldId] = useState<Record<string, string>>({});
-  const [predictCropAreas, setPredictCropAreas] = useState<{
-    sugarcane: number | null;
-    wheat: number | null;
-  }>({ sugarcane: null, wheat: null });
+  const [predictCropAreas, setPredictCropAreas] = useState<Record<CropSelectionKey, number | null>>({
+    sugarcane: null,
+    wheat: null,
+    Soyabean: null,
+    Onion: null,
+    Mango: null,
+  });
   const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
   /** YYYY-MM sent as predict-area `month` (default: current calendar month). */
   const [predictAreaMonthInput, setPredictAreaMonthInput] = useState<string>(getCurrentPredictAreaMonth);
@@ -1273,10 +1327,10 @@ const App: React.FC = () => {
     setShowRightVillageBoundary(false);
   }, [rightSelectedVillage]);
 
-  // When a village is selected but boundary not confirmed, keep subdistrict boundary on map (non–split-screen)
+  // When no village is selected, keep subdistrict boundary on map (non–split-screen)
   useEffect(() => {
     if (splitScreenMode) return;
-    if (!selectedVillage || showVillageBoundary) return;
+    if (selectedVillage) return;
     if (!selectedSubdistrict || subdistricts.length === 0) return;
     const subdistrictData = subdistricts.find((s) => s.subdistrict === selectedSubdistrict);
     if (!subdistrictData?.geometry) return;
@@ -1306,7 +1360,7 @@ const App: React.FC = () => {
     } catch {
       /* keep previous map state */
     }
-  }, [selectedVillage, selectedSubdistrict, showVillageBoundary, splitScreenMode, subdistricts]);
+  }, [selectedVillage, selectedSubdistrict, splitScreenMode, subdistricts]);
 
   // Handle district selection and display coordinates on map (from list geometry or get-geojson API)
   useEffect(() => {
@@ -1570,130 +1624,103 @@ const App: React.FC = () => {
     }
   }, [selectedSubdistrict, subdistricts, selectedDistrict, districts]);
 
-  // Handle village selection: fetch field boundaries from API and display on map
+  // Village outline from /villages API when village is selected (before field plots)
   useEffect(() => {
-    if (!selectedVillage) return;
-    if (!selectedDistrict || !selectedSubdistrict) {
+    if (splitScreenMode) return;
+    if (!selectedVillage || showVillageBoundary) return;
+
+    const villageData = villages.find((v) => v.village === selectedVillage);
+    if (!villageData) {
       setAllPlots([]);
       return;
     }
-    if (!showVillageBoundary) return;
+
+    const coordinates = parseVillageBoundaryCoordinates(villageData);
+    if (coordinates.length >= 3) {
+      setAllPlots([{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: coordinates }]);
+      const bounds = L.latLngBounds([]);
+      coordinates.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+      if (bounds.isValid()) setPlotBounds(bounds);
+    } else {
+      setAllPlots([]);
+    }
+  }, [selectedVillage, villages, showVillageBoundary, splitScreenMode]);
+
+  // Field plot boundaries from /field-boundaries API when "Display boundary" is clicked
+  useEffect(() => {
+    if (splitScreenMode) return;
+    if (!selectedVillage || !showVillageBoundary) return;
+    if (!selectedDistrict || !selectedSubdistrict) return;
 
     let cancelled = false;
 
-    const loadVillageBoundary = async () => {
+    const loadFieldPlots = async () => {
       try {
-        // Prefer field-boundaries API for village boundaries (any village)
-        const plots = await fetchFieldBoundaries(selectedDistrict, selectedSubdistrict, selectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(selectedDistrict, selectedSubdistrict, selectedVillage);
         if (cancelled) return;
 
-        if (plots.length > 0) {
-          setAllPlots(plots);
-          const bounds = L.latLngBounds([]);
-          plots.forEach((plot) => {
-            (plot.boundary || []).forEach((coord: Coordinate) => {
-              bounds.extend([coord[1], coord[0]]);
-            });
-          });
-          if (bounds.isValid()) {
-            setPlotBounds(bounds);
-          }
-          return;
-        }
-      } catch (err) {
+        const villageData = villages.find((v) => v.village === selectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        const outlinePlot =
+          outlineCoords.length >= 3
+            ? [{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]
+            : [];
+
+        const combined = [...outlinePlot, ...fieldPlots];
+        setAllPlots(combined);
+
+        const bounds = L.latLngBounds([]);
+        combined.forEach((plot) => {
+          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        });
+        if (bounds.isValid()) setPlotBounds(bounds);
+      } catch {
         if (cancelled) return;
-      }
-
-      // Fallback: use village geometry from villages list if API returned nothing or failed
-      if (villages.length === 0) {
-        setAllPlots([]);
-        return;
-      }
-      const villageData = villages.find((v) => v.village === selectedVillage);
-      if (!villageData?.coordinates && !villageData?.geometry) {
-        setAllPlots([]);
-        return;
-      }
-
-      try {
-        let coordinates: Coordinate[] = [];
-        if (villageData.coordinates && villageData.geom_type) {
-          const coords = villageData.coordinates;
-          const geomType = villageData.geom_type.toUpperCase();
-          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-            if (Array.isArray(coords) && coords.length > 0) {
-              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) =>
-                  Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
-                ).filter((c): c is Coordinate => c !== null);
-              } else {
-                coordinates = coords.map((coord: number[]) =>
-                  Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
-                ).filter((c): c is Coordinate => c !== null);
-              }
-            }
-          }
-        } else if (villageData.geometry) {
-          const g = villageData.geometry;
-          if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
-            const c = g.coordinates;
-            if (g.type === 'Polygon') {
-              const outerRing = (c && c[0]) || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              const firstPolygon = (c && c[0]) || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (g.coordinates) {
-            const c = g.coordinates;
-            const outerRing = Array.isArray(c[0]) && Array.isArray(c[0][0]) ? c[0] : c;
-            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-          }
+        const villageData = villages.find((v) => v.village === selectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        if (outlineCoords.length >= 3) {
+          setAllPlots([{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]);
         }
-
-        if (coordinates.length >= 3) {
-          setAllPlots([{ id: selectedVillage, area_ha: '0', boundary: coordinates }]);
-          const bounds = L.latLngBounds([]);
-          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-          if (bounds.isValid()) setPlotBounds(bounds);
-        } else {
-          setAllPlots([]);
-        }
-      } catch (err) {
-        setAllPlots([]);
       }
     };
 
-    loadVillageBoundary();
-    return () => { cancelled = true; };
-  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary]);
+    void loadFieldPlots();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary, splitScreenMode]);
 
-  // When crop type + village selected, fetch predict-area for color and field_area_ha per field_id
+  // When village + crop + location set, fetch predict-area (checklist controls map display)
   useEffect(() => {
     const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
     const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
     const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
 
-    if (!selectedCrop || !district || !subdistrict || !village) {
+    if (!hasAnyCropSelected(selectedCrops) || !district || !subdistrict || !village) {
+      setPredictAreaByCrop({});
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
       setPredictFieldFillByFieldId({});
-      setPredictCropAreas({ sugarcane: null, wheat: null });
+      setPredictCropAreas({
+        sugarcane: null,
+        wheat: null,
+        Soyabean: null,
+        Onion: null,
+        Mango: null,
+      });
       setPredictAreaDataMonth(null);
       setPredictCropAreaLoading(false);
       return;
     }
+
     let cancelled = false;
     setPredictCropAreaLoading(true);
-    const cropParam = selectedCrop === 'all' ? null : formatPredictAreaCropName(selectedCrop);
     const monthParam =
       predictAreaMonthInput && /^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())
         ? predictAreaMonthInput.trim()
         : getCurrentPredictAreaMonth();
 
-    fetchPredictArea(district, subdistrict, village, 1, cropParam, monthParam)
+    fetchPredictArea(district, subdistrict, village, 1, null, monthParam)
       .then((res) => {
         if (cancelled) return;
 
@@ -1703,106 +1730,59 @@ const App: React.FC = () => {
             : monthParam;
         setPredictAreaDataMonth(resolvedMonth);
 
-        const hexOk = (s: string | undefined | null) =>
-          typeof s === 'string' && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s.trim());
+        const next: Partial<Record<CropSelectionKey, PredictCropLayer>> = {};
+        const areas: Record<CropSelectionKey, number | null> = {
+          sugarcane: null,
+          wheat: null,
+          Soyabean: null,
+          Onion: null,
+          Mango: null,
+        };
 
-        if (selectedCrop === 'all') {
-          const areas: Record<string, number> = {};
-          const fills: Record<string, string> = {};
-          const mergeCropBlock = (key: 'wheat' | 'sugarcane') => {
-            const cd = res[key] as PredictAreaCropData | undefined;
-            if (!cd || typeof cd !== 'object') return;
-            const color = hexOk(cd.color) ? cd.color!.trim() : '#166534';
-            const boundaries = cd.identified_field_boundaries ?? {};
-            Object.values(boundaries).forEach((item) => {
-              const fid = String(item.field_id);
-              areas[fid] = item.field_area_ha;
-              fills[fid] = color;
-            });
-          };
-          mergeCropBlock('wheat');
-          mergeCropBlock('sugarcane');
-
-          let sugarHa: number | null = null;
-          const sc = res.sugarcane as PredictAreaCropData | undefined;
-          if (sc && typeof sc.crop_area_ha === 'number' && !Number.isNaN(sc.crop_area_ha)) {
-            sugarHa = sc.crop_area_ha;
+        CROP_SELECTION_KEYS.forEach((key) => {
+          const layer = parsePredictCropLayer(
+            res[cropResponseKey(key)] as PredictAreaCropData | undefined,
+            CROP_DEFAULT_COLORS[key]
+          );
+          if (layer) {
+            next[key] = layer;
+            areas[key] = layer.totalHa;
           }
-          if (sugarHa == null && typeof res.sugarcane_area_ha === 'number' && !Number.isNaN(res.sugarcane_area_ha)) {
-            sugarHa = res.sugarcane_area_ha;
-          }
+        });
 
-          let wheatHa: number | null = null;
-          const wh = res.wheat as PredictAreaCropData | undefined;
-          if (wh && typeof wh.crop_area_ha === 'number' && !Number.isNaN(wh.crop_area_ha)) {
-            wheatHa = wh.crop_area_ha;
-          }
-
-          setPredictAreaCropColor(null);
-          setPredictAreaFieldAreas(areas);
-          setPredictFieldFillByFieldId(fills);
-          setPredictCropAreas({ sugarcane: sugarHa, wheat: wheatHa });
-          return;
-        }
-
-        const cropKey = selectedCrop.toLowerCase();
-        const cropData = res[cropKey] as PredictAreaCropData | undefined;
-        if (!cropData || typeof cropData !== 'object') {
-          setPredictAreaCropColor(null);
-          setPredictAreaFieldAreas({});
-          setPredictFieldFillByFieldId({});
-          setPredictCropAreas({ sugarcane: null, wheat: null });
-        } else {
-          setPredictAreaCropColor(cropData.color ?? null);
-          const areas: Record<string, number> = {};
-          const fills: Record<string, string> = {};
-          const boundaries = cropData.identified_field_boundaries ?? {};
-          const fillHex = hexOk(cropData.color) ? cropData.color!.trim() : '#166534';
-          Object.values(boundaries).forEach((item) => {
-            const fid = String(item.field_id);
-            areas[fid] = item.field_area_ha;
-            fills[fid] = fillHex;
-          });
-          setPredictAreaFieldAreas(areas);
-          setPredictFieldFillByFieldId(fills);
-        }
-
-        let areaHa: number | null = null;
-        if (cropData && typeof cropData.crop_area_ha === 'number' && !Number.isNaN(cropData.crop_area_ha)) {
-          areaHa = cropData.crop_area_ha;
-        }
-        if (areaHa == null && selectedCrop === 'sugarcane' && cropData) {
-          const rootHa = res.sugarcane_area_ha;
-          if (typeof rootHa === 'number' && !Number.isNaN(rootHa)) {
-            areaHa = rootHa;
-          } else if (typeof cropData.sugarcane_area_ha === 'number' && !Number.isNaN(cropData.sugarcane_area_ha)) {
-            areaHa = cropData.sugarcane_area_ha;
+        if (areas.sugarcane == null && typeof res.sugarcane_area_ha === 'number' && !Number.isNaN(res.sugarcane_area_ha)) {
+          areas.sugarcane = res.sugarcane_area_ha;
+          if (next.sugarcane) {
+            next.sugarcane = { ...next.sugarcane, totalHa: res.sugarcane_area_ha };
           }
         }
 
-        if (selectedCrop === 'sugarcane') {
-          setPredictCropAreas({ sugarcane: areaHa, wheat: null });
-        } else if (selectedCrop === 'wheat') {
-          setPredictCropAreas({ sugarcane: null, wheat: areaHa });
-        } else {
-          setPredictCropAreas({ sugarcane: null, wheat: null });
-        }
+        setPredictAreaByCrop(next);
+        setPredictCropAreas(areas);
       })
       .catch(() => {
         if (!cancelled) {
+          setPredictAreaByCrop({});
           setPredictAreaCropColor(null);
-          setPredictAreaFieldAreas({});
-          setPredictFieldFillByFieldId({});
-          setPredictCropAreas({ sugarcane: null, wheat: null });
+          setPredictCropAreas({
+            sugarcane: null,
+            wheat: null,
+            Soyabean: null,
+            Onion: null,
+            Mango: null,
+          });
           setPredictAreaDataMonth(null);
         }
       })
       .finally(() => {
         if (!cancelled) setPredictCropAreaLoading(false);
       });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, [
-    selectedCrop,
+    selectedCrops,
     predictAreaMonthInput,
     splitScreenMode,
     selectedDistrict,
@@ -1813,22 +1793,64 @@ const App: React.FC = () => {
     leftSelectedVillage,
   ]);
 
+  // Apply checked crops to map field colors
+  useEffect(() => {
+    const areas: Record<string, number> = {};
+    const fills: Record<string, string> = {};
+
+    CROP_SELECTION_KEYS.forEach((key) => {
+      if (selectedCrops[key] && predictAreaByCrop[key]) {
+        Object.assign(areas, predictAreaByCrop[key]!.areas);
+        Object.assign(fills, predictAreaByCrop[key]!.fills);
+      }
+    });
+
+    setPredictAreaFieldAreas(areas);
+    setPredictFieldFillByFieldId(fills);
+    setPredictAreaCropColor(null);
+  }, [selectedCrops, predictAreaByCrop]);
+
+  const toggleSelectedCrop = useCallback((crop: CropSelectionKey) => {
+    setSelectedCrops((prev) => ({ ...prev, [crop]: !prev[crop] }));
+  }, []);
+
+  const toggleAllCrops = useCallback(() => {
+    setSelectedCrops((prev) => {
+      const allOn = CROP_SELECTION_KEYS.every((key) => prev[key]);
+      const next = emptyCropSelection();
+      CROP_SELECTION_KEYS.forEach((key) => {
+        next[key] = !allOn;
+      });
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setSelectedCrops(emptyCropSelection());
+  }, [selectedVillage, leftSelectedVillage, rightSelectedVillage]);
+
   const predictAreaMapCard = useMemo(() => {
-    const cropOk =
-      selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all';
-    if (!cropOk) return null;
+    if (!hasAnyCropSelected(selectedCrops)) return null;
     const inScope = splitScreenMode
       ? !!(leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
       : !!(selectedDistrict && selectedSubdistrict && selectedVillage);
     if (!inScope) return null;
+
+    const cropColors = CROP_SELECTION_KEYS.reduce<Partial<Record<CropSelectionKey, string>>>((acc, key) => {
+      if (predictAreaByCrop[key]?.color) acc[key] = predictAreaByCrop[key]!.color;
+      return acc;
+    }, {});
+
     return {
       loading: predictCropAreaLoading,
       regionLabel: splitScreenMode ? leftSelectedVillage : selectedVillage,
-      sugarcaneHa: predictCropAreas.sugarcane,
-      wheatHa: predictCropAreas.wheat,
+      cropAreas: predictCropAreas,
+      cropColors,
+      selectedCrops,
+      onToggleCrop: toggleSelectedCrop,
     };
   }, [
-    selectedCrop,
+    selectedCrops,
     splitScreenMode,
     leftSelectedDistrict,
     leftSelectedSubdistrict,
@@ -1837,8 +1859,9 @@ const App: React.FC = () => {
     selectedSubdistrict,
     selectedVillage,
     predictCropAreaLoading,
-    predictCropAreas.sugarcane,
-    predictCropAreas.wheat,
+    predictCropAreas,
+    predictAreaByCrop,
+    toggleSelectedCrop,
   ]);
 
   useEffect(() => {
@@ -2987,7 +3010,7 @@ const App: React.FC = () => {
 
   // Handle left subdistrict boundary display in split screen mode (even without tab)
   useEffect(() => {
-    if (splitScreenMode && leftSelectedSubdistrict && leftSubdistricts.length > 0 && !leftActiveTab && (!leftSelectedVillage || !showLeftVillageBoundary)) {
+    if (splitScreenMode && leftSelectedSubdistrict && leftSubdistricts.length > 0 && !leftActiveTab && !leftSelectedVillage) {
       // Find the selected subdistrict data
       const subdistrictData = leftSubdistricts.find(s => s.subdistrict === leftSelectedSubdistrict);
       
@@ -3084,93 +3107,67 @@ const App: React.FC = () => {
         }
       }
     }
-  }, [splitScreenMode, leftSelectedSubdistrict, leftSubdistricts, leftSelectedDistrict, leftSelectedVillage, leftActiveTab, districts, showLeftVillageBoundary]);
+  }, [splitScreenMode, leftSelectedSubdistrict, leftSubdistricts, leftSelectedDistrict, leftSelectedVillage, leftActiveTab, districts]);
 
-  // Handle left village boundary in split screen (after "Display boundary" — same logic as main map)
+  // Left village outline from /villages API when village is selected
+  useEffect(() => {
+    if (!splitScreenMode || !leftSelectedVillage || showLeftVillageBoundary || !leftVillages.length || leftActiveTab) return;
+
+    const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
+    if (!villageData) {
+      setLeftAllPlots([]);
+      return;
+    }
+
+    const coordinates = parseVillageBoundaryCoordinates(villageData);
+    if (coordinates.length >= 3) {
+      setLeftAllPlots([{ id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: coordinates }]);
+      const bounds = L.latLngBounds([]);
+      coordinates.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+      if (bounds.isValid()) setPlotBounds(bounds);
+    } else {
+      setLeftAllPlots([]);
+    }
+  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, leftVillages, leftActiveTab]);
+
+  // Left field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
     if (!splitScreenMode || !leftSelectedVillage || !showLeftVillageBoundary || !leftVillages.length || leftActiveTab) return;
     if (!leftSelectedDistrict || !leftSelectedSubdistrict) return;
 
     let cancelled = false;
 
-    const run = async () => {
+    const loadFieldPlots = async () => {
       try {
-        const plots = await fetchFieldBoundaries(leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage);
         if (cancelled) return;
-        if (plots.length > 0) {
-          setLeftAllPlots(plots);
-          const bounds = L.latLngBounds([]);
-          plots.forEach((plot) => {
-            (plot.boundary || []).forEach((coord: Coordinate) => {
-              bounds.extend([coord[1], coord[0]]);
-            });
-          });
-          if (bounds.isValid()) setPlotBounds(bounds);
-          return;
-        }
+
+        const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        const outlinePlot =
+          outlineCoords.length >= 3
+            ? [{ id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: outlineCoords }]
+            : [];
+
+        const combined = [...outlinePlot, ...fieldPlots];
+        setLeftAllPlots(combined);
+
+        const bounds = L.latLngBounds([]);
+        combined.forEach((plot) => {
+          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        });
+        if (bounds.isValid()) setPlotBounds(bounds);
       } catch {
         if (cancelled) return;
-      }
-
-      const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
-      if (!villageData?.coordinates && !villageData?.geometry) {
-        setLeftAllPlots([]);
-        return;
-      }
-
-      try {
-        let coordinates: Coordinate[] = [];
-        if (villageData.coordinates && villageData.geom_type) {
-          const coords = villageData.coordinates;
-          const geomType = villageData.geom_type.toUpperCase();
-          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-            if (Array.isArray(coords) && coords.length > 0) {
-              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => {
-                  if (Array.isArray(coord) && coord.length >= 2) {
-                    return [coord[0], coord[1]] as Coordinate;
-                  }
-                  return null;
-                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-              } else {
-                coordinates = coords.map((coord: number[]) => {
-                  if (Array.isArray(coord) && coord.length >= 2) {
-                    return [coord[0], coord[1]] as Coordinate;
-                  }
-                  return null;
-                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-              }
-            }
-          }
-        } else if (villageData.geometry) {
-          if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-            const coords = villageData.geometry.coordinates;
-            if (villageData.geometry.type === 'Polygon') {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (villageData.geometry.type === 'MultiPolygon') {
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
+        const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        if (outlineCoords.length >= 3) {
+          setLeftAllPlots([{ id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: outlineCoords }]);
         }
-
-        if (coordinates.length >= 3) {
-          setLeftAllPlots([{ id: leftSelectedVillage, area_ha: '0', boundary: coordinates }]);
-          const bounds = L.latLngBounds([]);
-          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-          if (bounds.isValid()) setPlotBounds(bounds);
-        } else {
-          setLeftAllPlots([]);
-        }
-      } catch {
-        setLeftAllPlots([]);
       }
     };
 
-    void run();
+    void loadFieldPlots();
     return () => {
       cancelled = true;
     };
@@ -3220,7 +3217,7 @@ const App: React.FC = () => {
 
   // Handle right subdistrict boundary display in split screen mode (even without tab)
   useEffect(() => {
-    if (splitScreenMode && rightSelectedSubdistrict && rightSubdistricts.length > 0 && !rightActiveTab && (!rightSelectedVillage || !showRightVillageBoundary)) {
+    if (splitScreenMode && rightSelectedSubdistrict && rightSubdistricts.length > 0 && !rightActiveTab && !rightSelectedVillage) {
       // Find the selected subdistrict data
       const subdistrictData = rightSubdistricts.find(s => s.subdistrict === rightSelectedSubdistrict);
       
@@ -3317,93 +3314,67 @@ const App: React.FC = () => {
         }
       }
     }
-  }, [splitScreenMode, rightSelectedSubdistrict, rightSubdistricts, rightSelectedDistrict, rightSelectedVillage, rightActiveTab, districts, showRightVillageBoundary]);
+  }, [splitScreenMode, rightSelectedSubdistrict, rightSubdistricts, rightSelectedDistrict, rightSelectedVillage, rightActiveTab, districts]);
 
-  // Handle right village boundary in split screen (after "Display boundary")
+  // Right village outline from /villages API when village is selected
+  useEffect(() => {
+    if (!splitScreenMode || !rightSelectedVillage || showRightVillageBoundary || !rightVillages.length || rightActiveTab) return;
+
+    const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
+    if (!villageData) {
+      setRightAllPlots([]);
+      return;
+    }
+
+    const coordinates = parseVillageBoundaryCoordinates(villageData);
+    if (coordinates.length >= 3) {
+      setRightAllPlots([{ id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: coordinates }]);
+      const bounds = L.latLngBounds([]);
+      coordinates.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+      if (bounds.isValid()) setPlotBounds(bounds);
+    } else {
+      setRightAllPlots([]);
+    }
+  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, rightVillages, rightActiveTab]);
+
+  // Right field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
     if (!splitScreenMode || !rightSelectedVillage || !showRightVillageBoundary || !rightVillages.length || rightActiveTab) return;
     if (!rightSelectedDistrict || !rightSelectedSubdistrict) return;
 
     let cancelled = false;
 
-    const run = async () => {
+    const loadFieldPlots = async () => {
       try {
-        const plots = await fetchFieldBoundaries(rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage);
         if (cancelled) return;
-        if (plots.length > 0) {
-          setRightAllPlots(plots);
-          const bounds = L.latLngBounds([]);
-          plots.forEach((plot) => {
-            (plot.boundary || []).forEach((coord: Coordinate) => {
-              bounds.extend([coord[1], coord[0]]);
-            });
-          });
-          if (bounds.isValid()) setPlotBounds(bounds);
-          return;
-        }
+
+        const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        const outlinePlot =
+          outlineCoords.length >= 3
+            ? [{ id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: outlineCoords }]
+            : [];
+
+        const combined = [...outlinePlot, ...fieldPlots];
+        setRightAllPlots(combined);
+
+        const bounds = L.latLngBounds([]);
+        combined.forEach((plot) => {
+          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        });
+        if (bounds.isValid()) setPlotBounds(bounds);
       } catch {
         if (cancelled) return;
-      }
-
-      const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
-      if (!villageData?.coordinates && !villageData?.geometry) {
-        setRightAllPlots([]);
-        return;
-      }
-
-      try {
-        let coordinates: Coordinate[] = [];
-        if (villageData.coordinates && villageData.geom_type) {
-          const coords = villageData.coordinates;
-          const geomType = villageData.geom_type.toUpperCase();
-          if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-            if (Array.isArray(coords) && coords.length > 0) {
-              if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                const outerRing = coords[0] || [];
-                coordinates = outerRing.map((coord: number[]) => {
-                  if (Array.isArray(coord) && coord.length >= 2) {
-                    return [coord[0], coord[1]] as Coordinate;
-                  }
-                  return null;
-                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-              } else {
-                coordinates = coords.map((coord: number[]) => {
-                  if (Array.isArray(coord) && coord.length >= 2) {
-                    return [coord[0], coord[1]] as Coordinate;
-                  }
-                  return null;
-                }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-              }
-            }
-          }
-        } else if (villageData.geometry) {
-          if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-            const coords = villageData.geometry.coordinates;
-            if (villageData.geometry.type === 'Polygon') {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (villageData.geometry.type === 'MultiPolygon') {
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
+        const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        if (outlineCoords.length >= 3) {
+          setRightAllPlots([{ id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: outlineCoords }]);
         }
-
-        if (coordinates.length >= 3) {
-          setRightAllPlots([{ id: rightSelectedVillage, area_ha: '0', boundary: coordinates }]);
-          const bounds = L.latLngBounds([]);
-          coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-          if (bounds.isValid()) setPlotBounds(bounds);
-        } else {
-          setRightAllPlots([]);
-        }
-      } catch {
-        setRightAllPlots([]);
       }
     };
 
-    void run();
+    void loadFieldPlots();
     return () => {
       cancelled = true;
     };
@@ -4417,7 +4388,7 @@ const App: React.FC = () => {
       delete next['sugarcane'];
       return next;
     });
-  }, [selectedCrop, selectedDistrict, selectedSubdistrict, selectedVillage]);
+  }, [selectedCrops, selectedDistrict, selectedSubdistrict, selectedVillage]);
 
   // Pest stored year_month now comes from analyze_pestclasswise response (set in loadAnalysisData). Clear when switching away.
   useEffect(() => {
@@ -6337,31 +6308,19 @@ const App: React.FC = () => {
                 <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
                   CONFIGURATION
                 </div>
-          {/* Crops Dropdown - before District, independent */}
+          {/* Crops checklist dropdown */}
           {!showGraphPage && !showAnalysisTrendsPage && (
             <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
               Crops
             </label>
-            <select
-              value={selectedCrop}
-              onChange={(e) => {
-                setSelectedCrop(e.target.value);
-                setSelectedVillage('');
-                if (splitScreenMode) setLeftSelectedVillage('');
-              }}
-              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                isDarkMode
-                  ? 'bg-gray-700 border border-gray-600 text-white'
-                  : 'bg-white border border-emerald-100 text-slate-800'
-              }`}
-            >
-              <option value="">-- Select Crop --</option>
-              <option value="sugarcane">Sugarcane</option>
-              <option value="wheat">Wheat</option>
-              <option value="all">All</option>
-            </select>
-            {selectedCrop && (
+            <CropDropdownChecklist
+              selectedCrops={selectedCrops}
+              onToggleCrop={toggleSelectedCrop}
+              onToggleAll={toggleAllCrops}
+              isDarkMode={isDarkMode}
+            />
+            {hasAnyCropSelected(selectedCrops) && (
               <div className="mt-3 space-y-1">
                 <label
                   className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
@@ -6514,75 +6473,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {(selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all') && (splitScreenMode
-            ? (leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
-            : (selectedDistrict && selectedSubdistrict && selectedVillage)) && (
-            <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-emerald-100 shadow-sm'}`}>
-              {predictCropAreaLoading ? (
-                <div className="flex items-center justify-center py-2">
-                  <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
-                </div>
-              ) : selectedCrop === 'all' ? (
-                <div className="space-y-3">
-                  <div>
-                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                      Sugarcane area (predicted)
-                    </div>
-                    {predictCropAreas.sugarcane != null && !Number.isNaN(predictCropAreas.sugarcane) ? (
-                      <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
-                        {predictCropAreas.sugarcane.toFixed(2)} ha
-                      </div>
-                    ) : (
-                      <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No data</div>
-                    )}
-                  </div>
-                  <div>
-                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                      Wheat area (predicted)
-                    </div>
-                    {predictCropAreas.wheat != null && !Number.isNaN(predictCropAreas.wheat) ? (
-                      <div className={`text-lg font-bold ${isDarkMode ? 'text-amber-400' : 'text-amber-700'}`}>
-                        {predictCropAreas.wheat.toFixed(2)} ha
-                      </div>
-                    ) : (
-                      <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No data</div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                    {selectedCrop === 'wheat'
-                      ? 'Wheat area (predicted)'
-                      : selectedCrop === 'sugarcane'
-                        ? 'Sugarcane area (predicted)'
-                        : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
-                  </div>
-                  {(selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) != null &&
-                  (selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) !== undefined &&
-                  !Number.isNaN(
-                    (selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number
-                  ) ? (
-                    <div
-                      className={`text-lg font-bold ${
-                        selectedCrop === 'wheat'
-                          ? isDarkMode
-                            ? 'text-amber-400'
-                            : 'text-amber-700'
-                          : isDarkMode
-                            ? 'text-green-400'
-                            : 'text-emerald-700'
-                      }`}
-                    >
-                      {((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number).toFixed(2)} ha
-                    </div>
-                  ) : (
-                    <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>No crop area data</div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
               </div>
 
           {/* Total Area Card */}
@@ -8921,7 +8811,12 @@ const App: React.FC = () => {
                 const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
                 const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
                 const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
-                return p.length === 1 && (p[0].id === district || p[0].id === subdistrict || p[0].id === village);
+                return p.length === 1 && (
+                  p[0].id === district ||
+                  p[0].id === subdistrict ||
+                  p[0].id === village ||
+                  isVillageOutlinePlotId(p[0].id)
+                );
               })()}
               onSelectPlot={async (id) => {
                 setSelectedPlotId(id);
@@ -10705,7 +10600,12 @@ const App: React.FC = () => {
                 cropColor={predictAreaCropColor}
                 fieldAreaByFieldId={predictAreaFieldAreas}
                 fieldFillByFieldId={predictFieldFillByFieldId}
-                hideFieldIdAreaCard={rightAllPlots.length === 1 && (rightAllPlots[0].id === rightSelectedDistrict || rightAllPlots[0].id === rightSelectedSubdistrict || rightAllPlots[0].id === rightSelectedVillage)}
+                hideFieldIdAreaCard={rightAllPlots.length === 1 && (
+                  rightAllPlots[0].id === rightSelectedDistrict ||
+                  rightAllPlots[0].id === rightSelectedSubdistrict ||
+                  rightAllPlots[0].id === rightSelectedVillage ||
+                  isVillageOutlinePlotId(rightAllPlots[0].id)
+                )}
                 onSelectPlot={async (id) => {
                   setSelectedPlotId(id);
                   const selectedPlot = rightAllPlots.find(p => p.id === id);
@@ -10753,27 +10653,19 @@ const App: React.FC = () => {
             {/* Header section removed - no title or logout icon for right sidebar */}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* Crops Dropdown - before District, independent */}
+              {/* Crops checklist dropdown */}
               {!showGraphPage && !showAnalysisTrendsPage && (
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                   Crops
                 </label>
-                <select
-                  value={selectedCrop}
-                  onChange={(e) => {
-                    setSelectedCrop(e.target.value);
-                    setSelectedVillage('');
-                    setRightSelectedVillage('');
-                  }}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                >
-                  <option value="">-- Select Crop --</option>
-                  <option value="sugarcane">Sugarcane</option>
-                  <option value="wheat">Wheat</option>
-                  <option value="all">All</option>
-                </select>
-                {selectedCrop && (
+                <CropDropdownChecklist
+                  selectedCrops={selectedCrops}
+                  onToggleCrop={toggleSelectedCrop}
+                  onToggleAll={toggleAllCrops}
+                  isDarkMode
+                />
+                {hasAnyCropSelected(selectedCrops) && (
                   <div className="mt-3 space-y-1">
                     <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
                       Prediction month
@@ -10876,58 +10768,6 @@ const App: React.FC = () => {
                     >
                       Display boundary
                     </button>
-                  )}
-                </div>
-              )}
-
-              {splitScreenMode && (selectedCrop === 'sugarcane' || selectedCrop === 'wheat' || selectedCrop === 'all') &&
-                leftSelectedDistrict &&
-                leftSelectedSubdistrict &&
-                leftSelectedVillage && (
-                <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
-                  {predictCropAreaLoading ? (
-                    <div className="flex items-center justify-center py-2">
-                      <Loader2 className="animate-spin text-green-400" size={20} />
-                    </div>
-                  ) : selectedCrop === 'all' ? (
-                    <div className="space-y-3">
-                      <div>
-                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Sugarcane area (predicted)</div>
-                        {predictCropAreas.sugarcane != null && !Number.isNaN(predictCropAreas.sugarcane) ? (
-                          <div className="text-lg font-bold text-green-400">{predictCropAreas.sugarcane.toFixed(2)} ha</div>
-                        ) : (
-                          <div className="text-sm text-gray-500">No data</div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Wheat area (predicted)</div>
-                        {predictCropAreas.wheat != null && !Number.isNaN(predictCropAreas.wheat) ? (
-                          <div className="text-lg font-bold text-amber-400">{predictCropAreas.wheat.toFixed(2)} ha</div>
-                        ) : (
-                          <div className="text-sm text-gray-500">No data</div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                        {selectedCrop === 'wheat'
-                          ? 'Wheat area (predicted)'
-                          : selectedCrop === 'sugarcane'
-                            ? 'Sugarcane area (predicted)'
-                            : `${selectedCrop.charAt(0).toUpperCase() + selectedCrop.slice(1)} area (predicted)`}
-                      </div>
-                      {(selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) != null &&
-                      !Number.isNaN((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number) ? (
-                        <div
-                          className={`text-lg font-bold ${selectedCrop === 'wheat' ? 'text-amber-400' : 'text-green-400'}`}
-                        >
-                          {((selectedCrop === 'sugarcane' ? predictCropAreas.sugarcane : predictCropAreas.wheat) as number).toFixed(2)} ha
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500">No crop area data</div>
-                      )}
-                    </>
                   )}
                 </div>
               )}
