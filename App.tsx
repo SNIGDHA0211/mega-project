@@ -2604,7 +2604,8 @@ const App: React.FC = () => {
             }
             
             if (plotsForMap.length > 0) {
-              const finalPlots = locationBoundary ? [locationBoundary, ...plotsForMap] : plotsForMap;
+              // One boundary only: use village/subdistrict outline; skip duplicate AOI polygon from analysis API
+              const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
               setAllPlots(finalPlots);
               const plotIds = plotsForMap.map(p => p.id);
               setAvailablePlots(plotIds);
@@ -3716,10 +3717,8 @@ const App: React.FC = () => {
               })
               .filter((plot): plot is { id: string; area_ha: string; boundary: Coordinate[] } => plot !== null);
             
-            // Merge location boundary with analysis plots
-            const finalPlots = locationBoundary 
-              ? [locationBoundary, ...plotsForMap]
-              : plotsForMap;
+            // Single boundary only — skip duplicate AOI polygon from analysis API when outline exists
+            const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
             
             if (finalPlots.length > 0) {
               setLeftAllPlots(finalPlots);
@@ -4015,10 +4014,8 @@ const App: React.FC = () => {
               })
               .filter((plot): plot is { id: string; area_ha: string; boundary: Coordinate[] } => plot !== null);
             
-            // Merge location boundary with analysis plots
-            const finalPlots = locationBoundary 
-              ? [locationBoundary, ...plotsForMap]
-              : plotsForMap;
+            // Single boundary only — skip duplicate AOI polygon from analysis API when outline exists
+            const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
             
             if (finalPlots.length > 0) {
               setRightAllPlots(finalPlots);
@@ -6460,22 +6457,22 @@ const App: React.FC = () => {
                     }
                   }}
                   style={{ backgroundColor: cardBg, color: cardFg }}
-                  className={`px-1.5 py-1 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[48px] ${
+                  className={`px-2 py-1.5 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[56px] ${
                     ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
                       ? 'cursor-pointer hover:brightness-95 transition-all'
                       : ''
                   }`}
                 >
                   <div className="flex items-center justify-center w-full min-w-0">
-                    <span className="text-[10px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
+                    <span className="text-[12px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
                       {item.label}
                     </span>
                   </div>
                   <div className="flex flex-col gap-0 w-full">
-                    <span className="font-bold text-[11px] leading-tight" style={{ color: cardFg }}>
+                    <span className="font-bold text-[14px] leading-tight" style={{ color: cardFg }}>
                       {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                     </span>
-                    <span className="font-medium text-[10px] leading-tight" style={{ color: cardFg }}>
+                    <span className="font-medium text-[12px] leading-tight" style={{ color: cardFg }}>
                       {item.value.toFixed(2)} ha
                     </span>
                   </div>
@@ -8707,7 +8704,7 @@ const App: React.FC = () => {
         ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && (
           <div
             ref={bottomCardsRef}
-            className="flex w-full flex-col gap-2 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[270px] md:min-w-[250px] md:max-w-[300px] md:flex-shrink-0 p-2 min-h-0 md:h-full md:min-h-[calc(100vh-140px)] md:self-stretch md:overflow-y-auto"
+            className="flex w-full flex-col gap-2 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[340px] md:min-w-[320px] md:max-w-[380px] md:flex-shrink-0 p-2.5 min-h-0 md:h-full md:min-h-[calc(100vh-140px)] md:self-stretch md:overflow-y-auto"
             style={{ scrollMarginTop: 96 }}
           >
             {calculateAreaCards('left').length > 0 && (
@@ -8722,12 +8719,12 @@ const App: React.FC = () => {
                     return (
                       <div
                         key={`pct-area-${item.label}-${idx}`}
-                        className="rounded-md px-1 py-2 flex flex-col items-center justify-center text-center min-h-[68px]"
+                        className="rounded-md px-2 py-2.5 flex flex-col items-center justify-center text-center min-h-[80px]"
                         style={{ backgroundColor: cardBg, color: cardFg }}
                       >
-                        <span className="text-[9px] font-semibold leading-tight">{item.label}</span>
-                        <span className="font-bold text-[10px] leading-tight mt-1">{item.percentage?.toFixed(2) ?? '0.00'}%</span>
-                        <span className="font-medium text-[9px] leading-tight mt-0.5">{item.value.toFixed(2)} ha</span>
+                        <span className="text-[12px] font-semibold leading-tight">{item.label}</span>
+                        <span className="font-bold text-[14px] leading-tight mt-1">{item.percentage?.toFixed(2) ?? '0.00'}%</span>
+                        <span className="font-medium text-[12px] leading-tight mt-0.5">{item.value.toFixed(2)} ha</span>
                       </div>
                     );
                   })}
@@ -8883,7 +8880,7 @@ const App: React.FC = () => {
                     const maxVal = areaValues.length > 0 ? Math.max(...areaValues.filter(v => !Number.isNaN(v) && v >= 0)) : 1;
                     const paddedMax = maxVal > 0 ? maxVal * 1.1 : 1;
                     const numBars = classNames.length;
-                    const barWidth = 16;
+                    const barWidth = 20;
                     const barGap = 3;
                     const compactChartW = numBars * barWidth + barGap * (numBars - 1);
                     const compactW = paddingLeft + compactChartW + paddingRight;
@@ -8893,7 +8890,7 @@ const App: React.FC = () => {
                       <div className="w-full min-h-0 flex flex-col flex-1 h-full">
                         <div className="text-[8px] text-gray-400 mb-0.5 flex-shrink-0 leading-tight">Area (ha) by growth class · {selectedLabel}</div>
                         <div className="flex-1 min-h-[220px] w-full flex justify-center items-stretch">
-                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[230px]" viewBox={`0 0 ${compactW} ${H}`} preserveAspectRatio="xMidYMid meet">
+                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[300px]" viewBox={`0 0 ${compactW} ${H}`} preserveAspectRatio="xMidYMid meet">
                             <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={compactChartW} height={chartH} /></clipPath></defs>
                             <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
                             <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + compactChartW} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
@@ -9121,7 +9118,7 @@ const App: React.FC = () => {
                       <div className="w-full min-h-0 flex flex-col flex-1 h-full">
                         <div className="text-[8px] text-gray-400 mb-0.5 flex-shrink-0 leading-tight">Area (ha) by water uptake class · {selectedLabel}</div>
                         <div className="flex-1 min-h-[220px] w-full flex justify-center items-stretch">
-                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[230px]" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[300px]" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
                             <defs><clipPath id="water-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
                             <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
                             <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
@@ -10275,7 +10272,7 @@ const App: React.FC = () => {
                             }
                           }}
                           style={{ backgroundColor: cardBg, color: cardFg }}
-                          className={`px-1.5 py-1 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[48px] ${
+                          className={`px-2 py-1.5 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[56px] ${
                             (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
                             (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null)
                               ? 'cursor-pointer hover:brightness-95 transition-all'
@@ -10283,15 +10280,15 @@ const App: React.FC = () => {
                           }`}
                         >
                           <div className="flex items-center justify-center w-full min-w-0">
-                            <span className="text-[10px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
+                            <span className="text-[12px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
                               {item.label}
                             </span>
                           </div>
                           <div className="flex flex-col gap-0 w-full">
-                            <span className="font-bold text-[11px] leading-tight" style={{ color: cardFg }}>
+                            <span className="font-bold text-[14px] leading-tight" style={{ color: cardFg }}>
                               {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                             </span>
-                            <span className="font-medium text-[10px] leading-tight" style={{ color: cardFg }}>
+                            <span className="font-medium text-[12px] leading-tight" style={{ color: cardFg }}>
                               {item.value.toFixed(2)} ha
                             </span>
                           </div>
