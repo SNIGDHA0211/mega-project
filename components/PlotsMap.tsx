@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Polygon, Popup, Tooltip, useMap } from 'react-leaflet';
 import { Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
-import type { WindDirectResponse } from '../services/analysisService';
+import { isFieldPlotId, type WindDirectResponse } from '../services/analysisService';
 import WindFlowOverlay from './WindFlowOverlay';
 import PredictAreaMapCard from './PredictAreaMapCard';
 
@@ -279,11 +279,19 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
 
         const isSelected = selectedPlotId === plot.id;
         const isWaterSource = plot.id.startsWith('water-source-');
+        const isFieldPlot = isFieldPlotId(plot.id);
+        const isOutlineBoundary = plot.id.startsWith('outline:');
         // Only color fields that are in identified_field_boundaries (predict-area); others stay default
         const isInIdentifiedBoundaries = plot.id in fieldAreaByFieldId;
         // Highlight predict-area fields whenever field_id matches; cropColor is optional (fill falls back to dark green)
         const useCropColor = !isWaterSource && isInIdentifiedBoundaries;
         const displayAreaHa = fieldAreaByFieldId[plot.id] ?? (plot.area_ha ? Number(plot.area_ha) : undefined);
+        const displayArea =
+          displayAreaHa != null && !Number.isNaN(displayAreaHa)
+            ? displayAreaHa
+            : plot.area_ha
+              ? Number(plot.area_ha)
+              : 0;
         const fillFromPredict =
           fieldFillByFieldId[plot.id] ?? cropColor ?? '';
         const resolvedFillHex =
@@ -291,9 +299,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(fillFromPredict.trim())
             ? fillFromPredict.trim()
             : PREDICT_AREA_FIELD_FILL;
-        // When hideFieldIdAreaCard is true, this is a district/subdistrict boundary – use visible stroke and light fill
-        const isOutlineBoundary = plot.id.startsWith('outline:');
-        const isBoundaryOnly = ((hideFieldIdAreaCard && !isWaterSource) || isOutlineBoundary);
+        // Village / district outline only – not field polygons
+        const isBoundaryOnly = isOutlineBoundary;
+        const showFieldMeta = isFieldPlot && !isWaterSource;
 
         return (
           <Polygon
@@ -326,15 +334,20 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               click: () => onSelectPlot(plot.id),
             }}
           >
-            {/* Hover tooltip: show plot area (ha) on boundary hover – hidden when hideFieldIdAreaCard (e.g. district/subdistrict) */}
-            {!plot.id.startsWith('water-source-') && !hideFieldIdAreaCard && !plot.id.startsWith('outline:') && (
-              <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent={false}>
-                <span className="font-medium">Field ID: {plot.id}</span>
+            {/* Hover tooltip: Field ID + area (same format, shown only on hover) */}
+            {showFieldMeta && (
+              <Tooltip
+                direction="top"
+                offset={[0, -8]}
+                opacity={0.92}
+                className="field-plot-onmap-label"
+              >
+                <span className="font-medium">ID: {plot.id}</span>
                 <br />
-                <span className="text-emerald-600 font-semibold">Area: {(displayAreaHa != null ? displayAreaHa : Number(plot.area_ha) || 0).toFixed(2)} ha</span>
+                <span className="text-emerald-600 font-semibold">{displayArea.toFixed(2)} ha</span>
               </Tooltip>
             )}
-            {!hideFieldIdAreaCard && !plot.id.startsWith('outline:') && (
+            {showFieldMeta && (
             <Popup className="font-sans font-medium text-sm">
               <div className="text-center">
                 {plot.id.startsWith('water-source-') ? (
@@ -366,10 +379,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                   <>
                     <span className="block font-bold text-gray-700 uppercase mb-1">Field ID</span>
                     <span className="text-emerald-600 font-semibold">{plot.id}</span>
-                    {(displayAreaHa != null && displayAreaHa > 0) || (plot.area_ha && Number(plot.area_ha) > 0) ? (
+                    {(displayArea > 0) ? (
                       <div className="mt-2">
                         <span className="text-xs text-gray-600">Area: </span>
-                        <span className="text-emerald-600 font-semibold">{(displayAreaHa != null ? displayAreaHa : Number(plot.area_ha)).toFixed(2)} ha</span>
+                        <span className="text-emerald-600 font-semibold">{displayArea.toFixed(2)} ha</span>
                       </div>
                     ) : null}
                   </>

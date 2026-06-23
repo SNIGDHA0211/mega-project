@@ -17,6 +17,8 @@ import {
   parseVillageBoundaryCoordinates,
   villageOutlinePlotId,
   isVillageOutlinePlotId,
+  shouldHideFieldIdAreaOnMap,
+  type VillageItem,
   fetchBoundaryGeoJSON, 
   fetchFieldBoundaries,
   fetchPredictArea,
@@ -115,6 +117,102 @@ const CROP_DEFAULT_COLORS: Record<CropSelectionKey, string> = {
 };
 
 const cropResponseKey = (key: CropSelectionKey): string => key.toLowerCase();
+
+const ANALYSIS_TABS_WITH_VILLAGE_OUTLINE: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
+
+type OutlinePlot = { id: string; area_ha: string; boundary: Coordinate[] };
+
+const buildVillageOutlinePlot = (
+  villageName: string,
+  villageList: VillageItem[]
+): OutlinePlot | null => {
+  const villageData = villageList.find((v) => v.village === villageName);
+  if (!villageData) return null;
+  const coordinates = parseVillageBoundaryCoordinates(villageData);
+  if (coordinates.length < 3) return null;
+  return { id: villageOutlinePlotId(villageName), area_ha: '0', boundary: coordinates };
+};
+
+type BoundaryGeometrySource = { geometry?: unknown };
+
+const parseGeometryToCoordinates = (geometry: unknown): Coordinate[] => {
+  if (!geometry || typeof geometry !== 'object') return [];
+  const geom = geometry as { type?: string; coordinates?: unknown };
+  try {
+    if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+      const coords = geom.coordinates as number[][][] | number[][][][];
+      if (geom.type === 'Polygon') {
+        const outerRing = (coords as number[][][])?.[0] || [];
+        return outerRing
+          .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+          .map((c) => [c[0], c[1]] as Coordinate);
+      }
+      const firstPolygon = (coords as number[][][][])?.[0] || [];
+      const outerRing = firstPolygon[0] || [];
+      return outerRing
+        .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+        .map((c) => [c[0], c[1]] as Coordinate);
+    }
+    if (geom.coordinates) {
+      const coords = geom.coordinates as number[][] | number[][][];
+      if (Array.isArray(coords[0]) && Array.isArray((coords[0] as number[][])[0])) {
+        const outerRing = coords[0] as number[][];
+        return outerRing.map((coord) => [coord[0], coord[1]] as Coordinate);
+      }
+      return (coords as number[][])
+        .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+        .map((coord) => [coord[0], coord[1]] as Coordinate);
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+  return [];
+};
+
+/** Village → /villages API; else subdistrict/district geometry from loaded lists */
+const fetchAnalysisLocationBoundary = async (
+  district: string,
+  subdistrict: string,
+  village: string,
+  districtList: BoundaryGeometrySource[],
+  subdistrictList: Array<BoundaryGeometrySource & { subdistrict?: string }>,
+  villageList: VillageItem[],
+  districtName: string,
+  onVillagesLoaded?: (v: VillageItem[]) => void,
+): Promise<OutlinePlot | null> => {
+  if (village && subdistrict) {
+    let list = villageList;
+    try {
+      list = await fetchVillages(subdistrict);
+      onVillagesLoaded?.(list);
+    } catch {
+      /* use cached list */
+    }
+    const fromVillage = buildVillageOutlinePlot(village, list);
+    if (fromVillage) return fromVillage;
+  }
+  if (subdistrict) {
+    const sub = subdistrictList.find((s) => s.subdistrict === subdistrict);
+    const coords = parseGeometryToCoordinates(sub?.geometry);
+    if (coords.length >= 3) {
+      return { id: villageOutlinePlotId(`subdistrict:${subdistrict}`), area_ha: '0', boundary: coords };
+    }
+  }
+  const dist = districtList.find(
+    (d) => (d as { district?: string }).district === districtName
+  );
+  const coords = parseGeometryToCoordinates(dist?.geometry);
+  if (coords.length >= 3) {
+    return { id: villageOutlinePlotId(`district:${districtName}`), area_ha: '0', boundary: coords };
+  }
+  return null;
+};
+
+const applyOutlineBounds = (outline: OutlinePlot, setBounds: (b: L.LatLngBounds) => void) => {
+  const bounds = L.latLngBounds([]);
+  outline.boundary.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+  if (bounds.isValid()) setBounds(bounds);
+};
 
 const hexColorOk = (s: string | undefined | null) =>
   typeof s === 'string' && /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s.trim());
@@ -1628,6 +1726,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (splitScreenMode) return;
     if (!selectedVillage || showVillageBoundary) return;
+    if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) return;
 
     const villageData = villages.find((v) => v.village === selectedVillage);
     if (!villageData) {
@@ -1644,7 +1743,7 @@ const App: React.FC = () => {
     } else {
       setAllPlots([]);
     }
-  }, [selectedVillage, villages, showVillageBoundary, splitScreenMode]);
+  }, [selectedVillage, villages, showVillageBoundary, splitScreenMode, activeTab]);
 
   // Field plot boundaries from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
@@ -1720,7 +1819,11 @@ const App: React.FC = () => {
         ? predictAreaMonthInput.trim()
         : getCurrentPredictAreaMonth();
 
-    fetchPredictArea(district, subdistrict, village, 1, null, monthParam)
+    fetchPredictArea(district, subdistrict, village, monthParam, {
+      includeBoundaries: false,
+      limit: 20,
+      offset: 0,
+    })
       .then((res) => {
         if (cancelled) return;
 
@@ -2255,6 +2358,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (selectedDistrict && activeTab) {
     const loadAnalysisData = async () => {
+      let locationBoundary: OutlinePlot | null = null;
+
       try {
         setLoading(true);
         setError(null);
@@ -2264,6 +2369,13 @@ const App: React.FC = () => {
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
         setWaterAreaHectares(null); // Clear water area when location changes
+        if (activeTab && ['growth', 'water', 'soil', 'pest'].includes(activeTab)) {
+          setSelectedTimeSeriesYearMonth(null);
+          setSelectedGrowthYearMonth(null);
+          setSelectedWaterYearMonth(null);
+          setSelectedSoilYearMonth(null);
+          setSelectedPestYearMonth(null);
+        }
         if (activeTab !== 'pest') {
           setPestHierarchy(null);
           setPestTileUrl(null);
@@ -2275,6 +2387,24 @@ const App: React.FC = () => {
           setPestTileUrl(null);
           setSelectedPestCategory(null);
           setShowPestChildren(false);
+        }
+
+        // Location outline: /villages API when village selected, else subdistrict/district geometry
+        if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) {
+          locationBoundary = await fetchAnalysisLocationBoundary(
+            selectedDistrict,
+            selectedSubdistrict || '',
+            selectedVillage || '',
+            districts,
+            subdistricts,
+            villages,
+            selectedDistrict,
+            setVillages,
+          );
+          if (locationBoundary) {
+            setAllPlots([locationBoundary]);
+            applyOutlineBounds(locationBoundary, setPlotBounds);
+          }
         }
 
          // Fetch data based on active tab
@@ -2474,18 +2604,21 @@ const App: React.FC = () => {
             }
             
             if (plotsForMap.length > 0) {
-              setAllPlots(plotsForMap);
+              const finalPlots = locationBoundary ? [locationBoundary, ...plotsForMap] : plotsForMap;
+              setAllPlots(finalPlots);
               const plotIds = plotsForMap.map(p => p.id);
               setAvailablePlots(plotIds);
               setTotalPlotsCount(plotIds.length);
             } else {
-              // Keep existing boundary (district/subdistrict) visible when we have tile URLs but no boundaries from API
+              // Keep village boundary visible when we have tile URLs but no field boundaries from API
               if (Object.keys(tileUrlsMap).length === 0) {
-                setAllPlots([]);
+                setAllPlots(locationBoundary ? [locationBoundary] : []);
+              } else if (locationBoundary) {
+                setAllPlots([locationBoundary]);
               }
             }
           } else {
-            setAllPlots([]);
+            setAllPlots(locationBoundary ? [locationBoundary] : []);
             setAllPlotsTileUrls({});
           }
 
@@ -2540,12 +2673,7 @@ const App: React.FC = () => {
               // Time series: use stored year_month from same response (Current + all stored dates on tab)
               const stored = Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : [];
               setPestStoredSeries(stored);
-              // Keep selectedPestYearMonth in sync if it exists in stored; default to null so "Current" is shown
-              if (stored.length > 0 && selectedTimeSeriesYearMonth && stored.some((x: PestStoredItem) => x.year_month === selectedTimeSeriesYearMonth)) {
-                setSelectedPestYearMonth(selectedTimeSeriesYearMonth);
-              } else {
-                setSelectedPestYearMonth(null);
-              }
+              setSelectedPestYearMonth(null);
             } else {
               // Legacy: percentage_summary and area_summary_hectare
               const pct = pestResponse.percentage_summary || {};
@@ -2595,12 +2723,7 @@ const App: React.FC = () => {
             } else if (activeTab === 'water') {
               const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
               setWaterStoredSeries(wStored);
-              const inList = Boolean(
-                selectedTimeSeriesYearMonth && wStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth)
-              );
-              // Default to Current so sidebar + map use API current.classwise (includes tile_url per class).
-              // Auto-selecting first stored month overwrote that with response_data often missing tile_url.
-              setSelectedWaterYearMonth(inList ? selectedTimeSeriesYearMonth : null);
+              setSelectedWaterYearMonth(null);
               setWaterCurrentSnapshot({ ...tabData });
               const wuTiles = waterClasswiseToTileUrlMap(tabData.classwise);
               if (Object.keys(wuTiles).length > 0) {
@@ -2617,19 +2740,11 @@ const App: React.FC = () => {
             } else if (activeTab === 'soil') {
               const sStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
               setSoilStoredSeries(sStored);
-              if (sStored.length > 0) {
-                const inList = selectedTimeSeriesYearMonth && sStored.some((x: GrowthStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
-                setSelectedSoilYearMonth(inList ? selectedTimeSeriesYearMonth : null);
-              } else setSelectedSoilYearMonth(null);
+              setSelectedSoilYearMonth(null);
             } else if (activeTab === 'pest' && Array.isArray(storedResponse.stored)) {
               const stored = storedResponse.stored as PestStoredResponse;
               setPestStoredSeries(stored);
-              if (stored.length > 0) {
-                const inList = selectedTimeSeriesYearMonth && stored.some((x: PestStoredItem) => x.year_month === selectedTimeSeriesYearMonth);
-                setSelectedPestYearMonth(inList ? selectedTimeSeriesYearMonth! : null);
-              } else {
-                setSelectedPestYearMonth(null);
-              }
+              setSelectedPestYearMonth(null);
             }
           } else {
             setAllPlotsAnalysisData(prev => ({
@@ -2691,7 +2806,7 @@ const App: React.FC = () => {
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
           setError(`Failed to load plots: ${errorMessage}`);
-          setAllPlots([]);
+          setAllPlots(locationBoundary ? [locationBoundary] : []);
           setAvailablePlots([]);
           setTotalPlotsCount(0);
           setAllPlotsTileUrls({});
@@ -3432,144 +3547,21 @@ const App: React.FC = () => {
           // Clear old data when location changes
           setLeftAllPlotsTileUrls({});
           
-          // Preserve boundary - priority: Village > Subdistrict > District
-          let locationBoundary: {id: string; area_ha: string; boundary: Coordinate[]} | null = null;
-          
-          // Check village first
-          if (leftSelectedVillage && leftVillages.length > 0) {
-            const villageData = leftVillages.find(v => v.village === leftSelectedVillage);
-            if (villageData?.coordinates || villageData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (villageData.coordinates && villageData.geom_type) {
-                  const coords = villageData.coordinates;
-                  const geomType = villageData.geom_type.toUpperCase();
-                  if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-                    if (Array.isArray(coords) && coords.length > 0) {
-                      if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                        const outerRing = coords[0] || [];
-                        coordinates = outerRing.map((coord: number[]) => {
-                          if (Array.isArray(coord) && coord.length >= 2) {
-                            return [coord[0], coord[1]] as Coordinate;
-                          }
-                          return null;
-                        }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                      } else {
-                        coordinates = coords.map((coord: number[]) => {
-                          if (Array.isArray(coord) && coord.length >= 2) {
-                            return [coord[0], coord[1]] as Coordinate;
-                          }
-                          return null;
-                        }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                      }
-                    }
-                  }
-                } else if (villageData.geometry) {
-                  if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-                    const coords = villageData.geometry.coordinates;
-                    if (villageData.geometry.type === 'Polygon') {
-                      const outerRing = coords[0] || [];
-                      coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                    } else if (villageData.geometry.type === 'MultiPolygon') {
-                      const firstPolygon = coords[0] || [];
-                      const outerRing = firstPolygon[0] || [];
-                      coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                    }
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: leftSelectedVillage,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
-            }
-          }
-          // Check subdistrict second
-          else if (leftSelectedSubdistrict && leftSubdistricts.length > 0) {
-            const subdistrictData = leftSubdistricts.find(s => s.subdistrict === leftSelectedSubdistrict);
-            if (subdistrictData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (subdistrictData.geometry.type === 'Polygon' || subdistrictData.geometry.type === 'MultiPolygon') {
-                  const coords = subdistrictData.geometry.coordinates;
-                  if (subdistrictData.geometry.type === 'Polygon') {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else if (subdistrictData.geometry.type === 'MultiPolygon') {
-                    const firstPolygon = coords[0] || [];
-                    const outerRing = firstPolygon[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                } else if (subdistrictData.geometry.coordinates) {
-                  const coords = subdistrictData.geometry.coordinates;
-                  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else {
-                    coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: leftSelectedSubdistrict,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
-            }
-          }
-          // Check district last
-          else if (leftSelectedDistrict) {
-            const districtData = districts.find(d => d.district === leftSelectedDistrict);
-            if (districtData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-                  const coords = districtData.geometry.coordinates;
-                  if (districtData.geometry.type === 'Polygon') {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else if (districtData.geometry.type === 'MultiPolygon') {
-                    const firstPolygon = coords[0] || [];
-                    const outerRing = firstPolygon[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                } else if (Array.isArray(districtData.geometry)) {
-                  coordinates = districtData.geometry.map((coord: number[]) => 
-                    Array.isArray(coord) && coord.length >= 2 
-                      ? [coord[0], coord[1]] as Coordinate 
-                      : null
-                  ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                } else if (districtData.geometry.coordinates) {
-                  const coords = districtData.geometry.coordinates;
-                  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else {
-                    coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: leftSelectedDistrict,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
+          let locationBoundary: OutlinePlot | null = null;
+
+          if (leftActiveTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(leftActiveTab)) {
+            locationBoundary = await fetchAnalysisLocationBoundary(
+              leftSelectedDistrict,
+              leftSelectedSubdistrict || '',
+              leftSelectedVillage || '',
+              districts,
+              leftSubdistricts,
+              leftVillages,
+              leftSelectedDistrict,
+              setLeftVillages,
+            );
+            if (locationBoundary) {
+              applyOutlineBounds(locationBoundary, setPlotBounds);
             }
           }
           
@@ -3854,144 +3846,21 @@ const App: React.FC = () => {
           // Clear old data when location changes
           setRightAllPlotsTileUrls({});
           
-          // Preserve boundary - priority: Village > Subdistrict > District
-          let locationBoundary: {id: string; area_ha: string; boundary: Coordinate[]} | null = null;
-          
-          // Check village first
-          if (rightSelectedVillage && rightVillages.length > 0) {
-            const villageData = rightVillages.find(v => v.village === rightSelectedVillage);
-            if (villageData?.coordinates || villageData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (villageData.coordinates && villageData.geom_type) {
-                  const coords = villageData.coordinates;
-                  const geomType = villageData.geom_type.toUpperCase();
-                  if (geomType === 'POLYGON' || geomType === 'MULTIPOLYGON') {
-                    if (Array.isArray(coords) && coords.length > 0) {
-                      if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                        const outerRing = coords[0] || [];
-                        coordinates = outerRing.map((coord: number[]) => {
-                          if (Array.isArray(coord) && coord.length >= 2) {
-                            return [coord[0], coord[1]] as Coordinate;
-                          }
-                          return null;
-                        }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                      } else {
-                        coordinates = coords.map((coord: number[]) => {
-                          if (Array.isArray(coord) && coord.length >= 2) {
-                            return [coord[0], coord[1]] as Coordinate;
-                          }
-                          return null;
-                        }).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                      }
-                    }
-                  }
-                } else if (villageData.geometry) {
-                  if (villageData.geometry.type === 'Polygon' || villageData.geometry.type === 'MultiPolygon') {
-                    const coords = villageData.geometry.coordinates;
-                    if (villageData.geometry.type === 'Polygon') {
-                      const outerRing = coords[0] || [];
-                      coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                    } else if (villageData.geometry.type === 'MultiPolygon') {
-                      const firstPolygon = coords[0] || [];
-                      const outerRing = firstPolygon[0] || [];
-                      coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                    }
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: rightSelectedVillage,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
-            }
-          }
-          // Check subdistrict second
-          else if (rightSelectedSubdistrict && rightSubdistricts.length > 0) {
-            const subdistrictData = rightSubdistricts.find(s => s.subdistrict === rightSelectedSubdistrict);
-            if (subdistrictData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (subdistrictData.geometry.type === 'Polygon' || subdistrictData.geometry.type === 'MultiPolygon') {
-                  const coords = subdistrictData.geometry.coordinates;
-                  if (subdistrictData.geometry.type === 'Polygon') {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else if (subdistrictData.geometry.type === 'MultiPolygon') {
-                    const firstPolygon = coords[0] || [];
-                    const outerRing = firstPolygon[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                } else if (subdistrictData.geometry.coordinates) {
-                  const coords = subdistrictData.geometry.coordinates;
-                  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else {
-                    coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: rightSelectedSubdistrict,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
-            }
-          }
-          // Check district last
-          else if (rightSelectedDistrict) {
-            const districtData = districts.find(d => d.district === rightSelectedDistrict);
-            if (districtData?.geometry) {
-              try {
-                let coordinates: Coordinate[] = [];
-                
-                if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-                  const coords = districtData.geometry.coordinates;
-                  if (districtData.geometry.type === 'Polygon') {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else if (districtData.geometry.type === 'MultiPolygon') {
-                    const firstPolygon = coords[0] || [];
-                    const outerRing = firstPolygon[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                } else if (Array.isArray(districtData.geometry)) {
-                  coordinates = districtData.geometry.map((coord: number[]) => 
-                    Array.isArray(coord) && coord.length >= 2 
-                      ? [coord[0], coord[1]] as Coordinate 
-                      : null
-                  ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-                } else if (districtData.geometry.coordinates) {
-                  const coords = districtData.geometry.coordinates;
-                  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-                    const outerRing = coords[0] || [];
-                    coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  } else {
-                    coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-                  }
-                }
-                
-                if (coordinates.length >= 3) {
-                  locationBoundary = {
-                    id: rightSelectedDistrict,
-                    area_ha: '0',
-                    boundary: coordinates
-                  };
-                }
-              } catch (err) {
-              }
+          let locationBoundary: OutlinePlot | null = null;
+
+          if (rightActiveTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(rightActiveTab)) {
+            locationBoundary = await fetchAnalysisLocationBoundary(
+              rightSelectedDistrict,
+              rightSelectedSubdistrict || '',
+              rightSelectedVillage || '',
+              districts,
+              rightSubdistricts,
+              rightVillages,
+              rightSelectedDistrict,
+              setRightVillages,
+            );
+            if (locationBoundary) {
+              applyOutlineBounds(locationBoundary, setPlotBounds);
             }
           }
           
@@ -4478,7 +4347,7 @@ const App: React.FC = () => {
         const data = await fetchPestStoredSeries(leftSelectedDistrict, leftSelectedSubdistrict, 50);
         if (!cancelled) {
           setLeftPestStoredSeries(data);
-          setLeftSelectedPestYearMonth(data.length > 0 ? data[0].year_month : null);
+          setLeftSelectedPestYearMonth(null);
           
           // Auto-select first pest category from first month's data if available
           if (data.length > 0 && data[0].response_data?.hierarchy) {
@@ -4529,7 +4398,7 @@ const App: React.FC = () => {
         const data = await fetchPestStoredSeries(rightSelectedDistrict, rightSelectedSubdistrict, 50);
         if (!cancelled) {
           setRightPestStoredSeries(data);
-          setRightSelectedPestYearMonth(data.length > 0 ? data[0].year_month : null);
+          setRightSelectedPestYearMonth(null);
           
           // Auto-select first pest category from first month's data if available
           if (data.length > 0 && data[0].response_data?.hierarchy) {
@@ -6339,7 +6208,7 @@ const App: React.FC = () => {
                 />
                 <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
                   Defaults to the current month. Sent as{' '}
-                  <code className="text-[10px]">month=YYYY-MM</code> on predict-area.
+                  <code className="text-[10px]">month=YYYY-MM</code> on predict-area/stored-responses.
                   {predictAreaDataMonth && (
                     <>
                       {' '}
@@ -6524,11 +6393,11 @@ const App: React.FC = () => {
 
           {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
           {splitScreenMode && ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && calculateAreaCards('left').length > 0 && (
-            <div className="mt-3">
-              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            <div className="mt-2">
+              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
                 Percentage / Area (ha)
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1.5">
               {calculateAreaCards('left').map((item, idx) => {
                 const currentTab = getActiveTab('left');
                 const cardBg = item.color || '#f97316';
@@ -6591,22 +6460,22 @@ const App: React.FC = () => {
                     }
                   }}
                   style={{ backgroundColor: cardBg, color: cardFg }}
-                  className={`p-3 rounded-xl border border-black/15 flex flex-col items-center text-center gap-1.5 min-w-0 ${
+                  className={`px-1.5 py-1 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[48px] ${
                     ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
                       ? 'cursor-pointer hover:brightness-95 transition-all'
                       : ''
                   }`}
                 >
                   <div className="flex items-center justify-center w-full min-w-0">
-                    <span className="text-xs font-medium truncate w-full" style={{ color: cardFg }}>
+                    <span className="text-[10px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
                       {item.label}
                     </span>
                   </div>
-                  <div className="flex flex-col gap-0.5 mt-1 w-full">
-                    <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
+                  <div className="flex flex-col gap-0 w-full">
+                    <span className="font-bold text-[11px] leading-tight" style={{ color: cardFg }}>
                       {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                     </span>
-                    <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
+                    <span className="font-medium text-[10px] leading-tight" style={{ color: cardFg }}>
                       {item.value.toFixed(2)} ha
                     </span>
                   </div>
@@ -7865,79 +7734,6 @@ const App: React.FC = () => {
           </div>
           )}
 
-          {/* Timeseries Tabs - Separate container in splitscreen (80% width) */}
-          {splitScreenMode && getActiveTab('left') === 'pest' && (leftPestStoredSeries && leftPestStoredSeries.length > 0) && (
-            <div className="absolute top-28 md:top-20 left-1/2 transform -translate-x-1/2 z-[1000] w-[80%] max-w-[calc(50vw-120px)]">
-              <div className="bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1.5">
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                    Year / Month Series
-                  </div>
-                  {leftPestStoredLoading && (
-                    <div className="text-[9px] text-gray-400">Loadingâ€¦</div>
-                  )}
-                </div>
-                {leftPestStoredError ? (
-                  <div className="text-[9px] text-red-300">{leftPestStoredError}</div>
-                ) : (
-                  <div className="flex items-center gap-1">
-                    {/* Left Arrow */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (timeSeriesScrollRef.current) {
-                          timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
-                        }
-                      }}
-                      className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
-                      title="Scroll left"
-                    >
-                      <ChevronLeft size={14} />
-                    </button>
-                    
-                    {/* Scrollable Container */}
-                    <div 
-                      ref={timeSeriesScrollRef}
-                      className="flex gap-1 overflow-x-auto scrollbar-hide flex-1"
-                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                    >
-                      {leftPestStoredSeries.map((item: PestStoredItem, idx: number) => (
-                        <button
-                          key={`${item.year_month}-${idx}`}
-                          type="button"
-                          onClick={() => {
-                            setLeftSelectedPestYearMonth(item.year_month);
-                          }}
-                          className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 ${
-                            leftSelectedPestYearMonth === item.year_month
-                              ? 'bg-emerald-500/80 border-emerald-400 text-black'
-                              : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
-                          }`}
-                        >
-                          {item.year_month}
-                        </button>
-                      ))}
-                    </div>
-                    
-                    {/* Right Arrow */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (timeSeriesScrollRef.current) {
-                          timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
-                        }
-                      }}
-                      className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
-                      title="Scroll right"
-                    >
-                      <ChevronRight size={14} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Pest time series chart: only on map in split-screen; in single view it is shown in the bottom PEST card */}
           {splitScreenMode && getActiveTab('left') === 'pest' && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries) && (splitScreenMode ? leftPestStoredSeries : pestStoredSeries)!.length > 0 && (splitScreenMode ? leftSelectedPestCategory : selectedPestCategory) && (splitScreenMode ? leftShowPestSeries : showPestSeries) && (
             (() => {
@@ -8806,18 +8602,12 @@ const App: React.FC = () => {
               cropColor={predictAreaCropColor}
               fieldAreaByFieldId={predictAreaFieldAreas}
               fieldFillByFieldId={predictFieldFillByFieldId}
-              hideFieldIdAreaCard={(() => {
-                const p = splitScreenMode ? leftAllPlots : plots;
-                const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
-                const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
-                const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
-                return p.length === 1 && (
-                  p[0].id === district ||
-                  p[0].id === subdistrict ||
-                  p[0].id === village ||
-                  isVillageOutlinePlotId(p[0].id)
-                );
-              })()}
+              hideFieldIdAreaCard={shouldHideFieldIdAreaOnMap(
+                splitScreenMode ? leftAllPlots : plots,
+                splitScreenMode ? leftSelectedDistrict : selectedDistrict,
+                splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict,
+                splitScreenMode ? leftSelectedVillage : selectedVillage
+              )}
               onSelectPlot={async (id) => {
                 setSelectedPlotId(id);
                 
@@ -8905,311 +8695,6 @@ const App: React.FC = () => {
           )}
           </div>
 
-          {/* Time series year-month tabs: show for Growth, Water, Soil, Pest (same bar style, shared selection) */}
-          {/* Pest: year/month list */}
-          {!splitScreenMode && getActiveTab('left') === 'pest' && pestStoredSeries && pestStoredSeries.length >= 0 && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
-                  PEST - YEAR / MONTH SERIES
-                </div>
-                {pestStoredLoading && (
-                  <div className="text-[9px] text-gray-600">Loadingâ€¦</div>
-                )}
-              </div>
-              {pestStoredError ? (
-                <div className="text-[9px] text-red-600">{pestStoredError}</div>
-              ) : (
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
-                    className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                    title="Scroll left"
-                  >
-                    <ChevronLeft size={14} />
-                  </button>
-                  <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                    {[...(pestStoredSeries || [])].sort((a, b) => a.year_month.localeCompare(b.year_month)).map((item: PestStoredItem, idx: number) => (
-                      <button
-                        key={`${item.year_month}-${idx}`}
-                        type="button"
-                        onClick={() => {
-                          setPestChartViewMode('selected');
-                          setSelectedTimeSeriesYearMonth(item.year_month);
-                          setSelectedPestYearMonth(item.year_month);
-                        }}
-                        className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                          (selectedTimeSeriesYearMonth ?? selectedPestYearMonth) === item.year_month
-                            ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
-                            : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                        }`}
-                      >
-                        {item.year_month}
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
-                    className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                    title="Scroll right"
-                  >
-                    <ChevronRight size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPestChartViewMode('selected');
-                      setSelectedPestYearMonth(null);
-                      setSelectedTimeSeriesYearMonth(null);
-                    }}
-                    className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                      pestChartViewMode === 'selected' && selectedPestYearMonth == null
-                        ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
-                        : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                    }`}
-                    title="Show current snapshot"
-                  >
-                    Current
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Growth: Current + year/month list (show for district-only or district+subdistrict) */}
-          {!splitScreenMode && getActiveTab('left') === 'growth' && selectedDistrict && (growthStoredSeries && growthStoredSeries.length > 0) && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
-                  GROWTH - YEAR / MONTH SERIES
-                </div>
-                {growthStoredLoading && (
-                  <span className="text-[9px] text-amber-700">Loading year_monthâ€¦</span>
-                )}
-                {!growthStoredLoading && growthStoredError && (
-                  <span className="text-[9px] text-red-600" title={growthStoredError}>Error</span>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (timeSeriesScrollRef.current) {
-                      timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
-                    }
-                  }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll left to older dates"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <div
-                  ref={timeSeriesScrollRef}
-                  className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0"
-                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                >
-                  {/* Stored year_month â€“ display only year-month */}
-                  {[...(growthStoredSeries || [])]
-                    .sort((a, b) => b.year_month.localeCompare(a.year_month))
-                    .map((item: GrowthStoredItem, idx: number) => (
-                    <button
-                      key={`${item.year_month}-${item.id ?? idx}`}
-                      type="button"
-                      onClick={() => {
-                        setSelectedTimeSeriesYearMonth(item.year_month);
-                        setSelectedGrowthYearMonth(item.year_month);
-                        setGrowthChartViewMode('selected');
-                      }}
-                      title={item.year_month}
-                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                        growthChartViewMode === 'selected' && selectedTimeSeriesYearMonth === item.year_month
-                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
-                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                      }`}
-                    >
-                      {item.year_month}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (timeSeriesScrollRef.current) {
-                      timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
-                    }
-                  }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll right to older dates"
-                >
-                  <ChevronRight size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setGrowthChartViewMode('selected');
-                    setSelectedGrowthYearMonth(null);
-                    setSelectedTimeSeriesYearMonth(null);
-                  }}
-                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    growthChartViewMode === 'selected' && selectedGrowthYearMonth == null
-                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
-                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                  }`}
-                  title="Show current snapshot"
-                >
-                  Current
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Water Uptake: time series bar â€“ year_month from analyze_wateruptakeclasswise */}
-          {!splitScreenMode && getActiveTab('left') === 'water' && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
-                  WATER UPTAKE - YEAR / MONTH SERIES
-                </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll left"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setWaterChartViewMode('selected');
-                      setSelectedWaterYearMonth(null);
-                      setSelectedTimeSeriesYearMonth(null);
-                    }}
-                    className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                      waterChartViewMode === 'selected' && selectedWaterYearMonth == null
-                        ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
-                        : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                    }`}
-                  >
-                    Current
-                  </button>
-                  {[...(waterStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
-                    <button
-                      key={`water-${item.year_month}-${idx}`}
-                      type="button"
-                      onClick={() => {
-                        setWaterChartViewMode('selected');
-                        setSelectedTimeSeriesYearMonth(item.year_month);
-                        setSelectedWaterYearMonth(item.year_month);
-                      }}
-                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                        selectedWaterYearMonth === item.year_month
-                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
-                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                      }`}
-                    >
-                      {item.year_month}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll right"
-                >
-                  <ChevronRight size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWaterChartViewMode('selected');
-                    setSelectedWaterYearMonth(null);
-                    setSelectedTimeSeriesYearMonth(null);
-                  }}
-                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    waterChartViewMode === 'selected' && selectedWaterYearMonth == null
-                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
-                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                  }`}
-                  title="Show current snapshot"
-                >
-                  Current
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Soil Moisture: time series bar â€“ year_month from analyze_soilmoistureclasswise */}
-          {!splitScreenMode && getActiveTab('left') === 'soil' && selectedDistrict && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[92vw] md:max-w-[860px] bg-white/95 backdrop-blur-sm rounded-2xl border border-gray-200 shadow-2xl px-3 py-2">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <div className="text-[10px] font-semibold text-gray-900 uppercase tracking-wider">
-                  SOIL MOISTURE - YEAR / MONTH SERIES
-                </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' }); }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll left"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <div ref={timeSeriesScrollRef} className="flex gap-1 overflow-x-auto scrollbar-hide flex-1 min-w-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                  {[...(soilStoredSeries || [])].sort((a, b) => b.year_month.localeCompare(a.year_month)).map((item: GrowthStoredItem, idx: number) => (
-                    <button
-                      key={`soil-${item.year_month}-${idx}`}
-                      type="button"
-                      onClick={() => {
-                        setSoilChartViewMode('selected');
-                        setSelectedTimeSeriesYearMonth(item.year_month);
-                        setSelectedSoilYearMonth(item.year_month);
-                      }}
-                      className={`px-3 py-1 rounded-xl text-[10px] border flex-shrink-0 whitespace-nowrap ${
-                        selectedSoilYearMonth === item.year_month
-                          ? 'bg-white text-black border-emerald-700 shadow-sm font-semibold'
-                          : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                      }`}
-                    >
-                      {item.year_month}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { if (timeSeriesScrollRef.current) timeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' }); }}
-                  className="flex-shrink-0 h-8 w-8 rounded-xl bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-900 transition-colors flex items-center justify-center"
-                  title="Scroll right"
-                >
-                  <ChevronRight size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSoilChartViewMode('selected');
-                    setSelectedSoilYearMonth(null);
-                    setSelectedTimeSeriesYearMonth(null);
-                  }}
-                  className={`flex-shrink-0 px-4 py-1.5 rounded-xl text-[10px] font-semibold border ${
-                    soilChartViewMode === 'selected' && selectedSoilYearMonth == null
-                      ? 'bg-emerald-900 text-white border-emerald-950 hover:bg-emerald-800'
-                      : 'bg-gray-100 border-gray-300 text-gray-900 hover:bg-gray-200'
-                  }`}
-                  title="Show current snapshot"
-                >
-                  Current
-                </button>
-              </div>
-            </div>
-          )}
-
           {renderSplitScreenMapBottomGraph('left')}
 
         </div>
@@ -9222,17 +8707,42 @@ const App: React.FC = () => {
         ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && (
           <div
             ref={bottomCardsRef}
-            className="grid w-full grid-cols-1 gap-3 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[38%] md:min-w-[360px] md:max-w-[560px] p-3 flex-shrink-0 min-h-0 md:overflow-y-auto md:self-start"
+            className="flex w-full flex-col gap-2 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[270px] md:min-w-[250px] md:max-w-[300px] md:flex-shrink-0 p-2 min-h-0 md:h-full md:min-h-[calc(100vh-140px)] md:self-stretch md:overflow-y-auto"
             style={{ scrollMarginTop: 96 }}
           >
-            {/* Health Trends card â€“ header shows selected tab name (e.g. Growth, Water, Pest) */}
-            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col min-h-[320px] md:order-2">
-              <div className="px-4 py-2 border-b border-gray-700 bg-gray-800/90">
-                <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+            {calculateAreaCards('left').length > 0 && (
+              <div className="p-1.5 bg-gray-800/80 rounded-lg border border-gray-700 flex-shrink-0">
+                <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                  Percentage / Area (ha)
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {calculateAreaCards('left').map((item, idx) => {
+                    const cardBg = item.color || '#f97316';
+                    const cardFg = textColorOnBackground(cardBg);
+                    return (
+                      <div
+                        key={`pct-area-${item.label}-${idx}`}
+                        className="rounded-md px-1 py-2 flex flex-col items-center justify-center text-center min-h-[68px]"
+                        style={{ backgroundColor: cardBg, color: cardFg }}
+                      >
+                        <span className="text-[9px] font-semibold leading-tight">{item.label}</span>
+                        <span className="font-bold text-[10px] leading-tight mt-1">{item.percentage?.toFixed(2) ?? '0.00'}%</span>
+                        <span className="font-medium text-[9px] leading-tight mt-0.5">{item.value.toFixed(2)} ha</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
+            <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col flex-1 min-h-[280px]">
+              <div className="px-2 py-1 border-b border-gray-700 bg-gray-800/90 flex-shrink-0">
+                <h3 className="text-[9px] font-semibold text-gray-300 uppercase tracking-wider">
                   {getActiveTabDisplayName('left')}
                 </h3>
               </div>
-              <div id="health-trends-chart" className="flex-1 p-4 min-h-0 flex flex-col">
+              <div id="health-trends-chart" className="flex-1 p-1.5 min-h-0 flex flex-col">
                 {getActiveTab('left') === 'growth' && showGrowthSeries && (getCurrentPixelData('left')?.classwise?.length > 0 || growthStoredSeries?.length > 0) ? (
                   (() => {
                     const classNames = ['Weak', 'Stress', 'Moderate', 'Healthy'];
@@ -9255,12 +8765,12 @@ const App: React.FC = () => {
                       const shortYear = y && y.length >= 2 ? y.slice(-2) : y;
                       return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
                     };
-                    // Increase height for \"View all\" growth time-series chart so all dates are more readable
-                    const H = 340;
-                    const paddingLeft = 48;
-                    const paddingRight = 12;
-                    const paddingTop = 12;
-                    const paddingBottom = 32;
+                    // Tall narrow chart — fills vertical space in slim sidebar
+                    const H = 280;
+                    const paddingLeft = 28;
+                    const paddingRight = 4;
+                    const paddingTop = 8;
+                    const paddingBottom = 24;
                     // Base width: scale with number of periods to reduce crowding
                     // (also helps fill the card width so the chart doesn't look "stuck" to the left)
                     const baseW = 900;
@@ -9311,7 +8821,7 @@ const App: React.FC = () => {
                                   y={y + 4}
                                   textAnchor="end"
                                   className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
-                                  fontSize={11}
+                                  fontSize={9}
                                   fontWeight="600"
                                 >
                                   {value.toFixed(0)}
@@ -9342,7 +8852,7 @@ const App: React.FC = () => {
                                   y={H - 10}
                                   textAnchor="middle"
                                   className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
-                                  fontSize={11}
+                                  fontSize={9}
                                   fontWeight="600"
                                 >
                                   {formatMonthLabel(p.yearMonth)}
@@ -9373,18 +8883,20 @@ const App: React.FC = () => {
                     const maxVal = areaValues.length > 0 ? Math.max(...areaValues.filter(v => !Number.isNaN(v) && v >= 0)) : 1;
                     const paddedMax = maxVal > 0 ? maxVal * 1.1 : 1;
                     const numBars = classNames.length;
-                    const barGap = 8;
-                    const barWidth = (chartW - barGap * (numBars - 1)) / numBars;
+                    const barWidth = 16;
+                    const barGap = 3;
+                    const compactChartW = numBars * barWidth + barGap * (numBars - 1);
+                    const compactW = paddingLeft + compactChartW + paddingRight;
                     const yTicks = [0, 0.25, 0.5, 0.75, 1].map(r => ({ ratio: r, value: paddedMax * r }));
                     const selectedLabel = formatMonthLabel(selectedGrowthYearMonth);
                     return (
-                      <div className="w-full min-h-0 flex flex-col flex-1">
-                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by growth class Â· {selectedLabel}</div>
-                        <div className="flex-1 min-h-0 w-full">
-                          <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-                            <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
+                      <div className="w-full min-h-0 flex flex-col flex-1 h-full">
+                        <div className="text-[8px] text-gray-400 mb-0.5 flex-shrink-0 leading-tight">Area (ha) by growth class · {selectedLabel}</div>
+                        <div className="flex-1 min-h-[220px] w-full flex justify-center items-stretch">
+                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[230px]" viewBox={`0 0 ${compactW} ${H}`} preserveAspectRatio="xMidYMid meet">
+                            <defs><clipPath id="growth-chart-clip"><rect x={paddingLeft} y={paddingTop} width={compactChartW} height={chartH} /></clipPath></defs>
                             <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
-                            <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
+                            <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + compactChartW} y2={H - paddingBottom} stroke={growthAxisMain} strokeWidth={1} />
                             {yTicks.map(({ ratio, value }) => {
                               const y = paddingTop + chartH - ratio * chartH;
                               return (
@@ -9395,7 +8907,7 @@ const App: React.FC = () => {
                                     y={y + 4}
                                     textAnchor="end"
                                     className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
-                                    fontSize={11}
+                                    fontSize={9}
                                     fontWeight="600"
                                   >
                                     {value.toFixed(0)}
@@ -9417,21 +8929,21 @@ const App: React.FC = () => {
                               })}
                             </g>
                             <text
-                              x={paddingLeft + chartW / 2}
+                              x={paddingLeft + compactChartW / 2}
                               y={H - 10}
                               textAnchor="middle"
                               className={isDarkMode ? 'fill-gray-200' : 'fill-gray-900'}
-                              fontSize={11}
+                              fontSize={9}
                               fontWeight="600"
                             >
                               {selectedLabel}
                             </text>
                           </svg>
                         </div>
-                        <div className="flex flex-wrap gap-2 mt-2 flex-shrink-0">
+                        <div className="flex flex-wrap gap-1.5 mt-1 flex-shrink-0">
                           {classNames.map(cn => (
-                            <span key={cn} className="flex items-center gap-1 text-[9px]">
-                              <span className="w-2 h-2 rounded" style={{ backgroundColor: classColors[cn] }} />
+                            <span key={cn} className="flex items-center gap-0.5 text-[8px]">
+                              <span className="w-1.5 h-1.5 rounded" style={{ backgroundColor: classColors[cn] }} />
                               {cn}
                             </span>
                           ))}
@@ -9592,24 +9104,24 @@ const App: React.FC = () => {
                     const areaValues = waterClassNames.map(cn => areaCardsForWater.find(ac => ac.label.toLowerCase() === cn.toLowerCase())?.value ?? 0);
                     const maxVal = areaValues.length > 0 ? Math.max(...areaValues.filter(v => !Number.isNaN(v) && v >= 0), 1) : 1;
                     const paddedMax = maxVal * 1.1;
-                    const H = 240;
-                    const W = 400;
-                    const paddingLeft = 48;
-                    const paddingRight = 12;
-                    const paddingTop = 12;
-                    const paddingBottom = 28;
-                    const chartW = W - paddingLeft - paddingRight;
+                    const H = 280;
+                    const paddingLeft = 28;
+                    const paddingRight = 4;
+                    const paddingTop = 8;
+                    const paddingBottom = 24;
                     const chartH = H - paddingTop - paddingBottom;
-                    const barGap = 6;
-                    const barWidth = (chartW - barGap * (waterClassNames.length - 1)) / waterClassNames.length;
+                    const barWidth = 10;
+                    const barGap = 2;
+                    const chartW = waterClassNames.length * barWidth + barGap * (waterClassNames.length - 1);
+                    const W = paddingLeft + chartW + paddingRight;
                     const selectedLabel = formatMonthLabel(selectedWaterYearMonth || null);
                     const waterAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
                     const waterAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
-                      <div className="w-full min-h-0 flex flex-col flex-1">
-                        <div className="text-[10px] text-gray-400 mb-1 flex-shrink-0">Area (ha) by water uptake class Â· {selectedLabel}</div>
-                        <div className="flex-1 min-h-0 w-full">
-                          <svg width="100%" height={H} className="w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+                      <div className="w-full min-h-0 flex flex-col flex-1 h-full">
+                        <div className="text-[8px] text-gray-400 mb-0.5 flex-shrink-0 leading-tight">Area (ha) by water uptake class · {selectedLabel}</div>
+                        <div className="flex-1 min-h-[220px] w-full flex justify-center items-stretch">
+                          <svg width="100%" height="100%" className="min-h-[220px] w-full max-w-[230px]" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
                             <defs><clipPath id="water-chart-clip"><rect x={paddingLeft} y={paddingTop} width={chartW} height={chartH} /></clipPath></defs>
                             <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
                             <line x1={paddingLeft} y1={H - paddingBottom} x2={paddingLeft + chartW} y2={H - paddingBottom} stroke={waterAxisMain} strokeWidth={1} />
@@ -9661,46 +9173,21 @@ const App: React.FC = () => {
             </div>
 
             {getSelectedDistrict('left') && (
-              <div className="p-4 bg-gray-800/80 rounded-lg border border-gray-700">
-                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              <div className="p-2 bg-gray-800/80 rounded-lg border border-gray-700 flex-shrink-0">
+                <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
                   {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
                 </div>
                 {selectedPlotArea !== null ? (
-                  <div className="text-xl font-bold text-green-400">{selectedPlotArea.toFixed(2)} ha</div>
+                  <div className="text-base font-bold text-green-400">{selectedPlotArea.toFixed(2)} ha</div>
                 ) : getTotalAreaLoading('left') ? (
-                  <div className="flex items-center justify-center py-4">
-                    <Loader2 className="animate-spin text-green-400" size={20} />
+                  <div className="flex items-center justify-center py-3">
+                    <Loader2 className="animate-spin text-green-400" size={18} />
                   </div>
                 ) : getTotalAreaHectares('left') !== null && getTotalAreaHectares('left') !== undefined ? (
-                  <div className="text-xl font-bold text-green-400">{getTotalAreaHectares('left')!.toFixed(2)} ha</div>
+                  <div className="text-base font-bold text-green-400">{getTotalAreaHectares('left')!.toFixed(2)} ha</div>
                 ) : (
                   <div className="text-sm text-gray-500">No area data available</div>
                 )}
-              </div>
-            )}
-
-            {calculateAreaCards('left').length > 0 && (
-              <div className="p-4 bg-gray-800/80 rounded-lg border border-gray-700">
-                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Percentage / Area (ha)
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {calculateAreaCards('left').map((item, idx) => {
-                    const cardBg = item.color || '#f97316';
-                    const cardFg = textColorOnBackground(cardBg);
-                    return (
-                      <div
-                        key={`right-pct-${item.label}-${idx}`}
-                        className="rounded-xl p-3 flex flex-col items-center justify-center text-center min-h-[86px]"
-                        style={{ backgroundColor: cardBg, color: cardFg }}
-                      >
-                        <span className="text-sm font-semibold">{item.label}</span>
-                        <span className="font-bold text-base mt-1">{item.percentage.toFixed(2)}%</span>
-                        <span className="font-semibold text-base mt-0.5">{item.value.toFixed(2)} ha</span>
-                      </div>
-                    );
-                  })}
-                </div>
               </div>
             )}
 
@@ -9966,77 +9453,6 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
-
-            {/* Timeseries Tabs - Separate container in splitscreen (80% width) */}
-            {getActiveTab('right') === 'pest' && (rightPestStoredSeries && rightPestStoredSeries.length > 0) && (
-              <div className="absolute top-28 md:top-20 left-1/2 transform -translate-x-1/2 z-[1000] w-[80%] max-w-[calc(50vw-120px)]">
-                <div className="bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1.5">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <div className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">
-                      Year / Month Series
-                    </div>
-                    {rightPestStoredLoading && (
-                      <div className="text-[9px] text-gray-400">Loadingâ€¦</div>
-                    )}
-                  </div>
-                  {rightPestStoredError ? (
-                    <div className="text-[9px] text-red-300">{rightPestStoredError}</div>
-                  ) : (
-                    <div className="flex items-center gap-1">
-                      {/* Left Arrow */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (rightTimeSeriesScrollRef.current) {
-                            rightTimeSeriesScrollRef.current.scrollBy({ left: -150, behavior: 'smooth' });
-                          }
-                        }}
-                        className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
-                        title="Scroll left"
-                      >
-                        <ChevronLeft size={14} />
-                      </button>
-                      
-                      {/* Scrollable Container */}
-                      <div 
-                        ref={rightTimeSeriesScrollRef}
-                        className="flex gap-1 overflow-x-auto scrollbar-hide flex-1"
-                        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                      >
-                        {rightPestStoredSeries.map((item: PestStoredItem, idx: number) => (
-                          <button
-                            key={`right-${item.year_month}-${idx}`}
-                            type="button"
-                            onClick={() => setRightSelectedPestYearMonth(item.year_month)}
-                            className={`px-1.5 py-0.5 rounded-full text-[9px] border flex-shrink-0 ${
-                              rightSelectedPestYearMonth === item.year_month
-                                ? 'bg-emerald-500/80 border-emerald-400 text-black'
-                                : 'bg-gray-800/80 border-gray-600 text-gray-200 hover:bg-gray-700'
-                            }`}
-                          >
-                            {item.year_month}
-                          </button>
-                        ))}
-                      </div>
-                      
-                      {/* Right Arrow */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (rightTimeSeriesScrollRef.current) {
-                            rightTimeSeriesScrollRef.current.scrollBy({ left: 150, behavior: 'smooth' });
-                          }
-                        }}
-                        className="flex-shrink-0 p-1 rounded bg-gray-800/80 hover:bg-gray-700 border border-gray-600 text-gray-300 hover:text-white transition-colors"
-                        title="Scroll right"
-                      >
-                        <ChevronRight size={14} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Pest Time Series Graph - Right Side */}
             {getActiveTab('right') === 'pest' && rightPestStoredSeries && rightPestStoredSeries.length > 0 && rightSelectedPestCategory && rightShowPestSeries && (
@@ -10600,11 +10016,11 @@ const App: React.FC = () => {
                 cropColor={predictAreaCropColor}
                 fieldAreaByFieldId={predictAreaFieldAreas}
                 fieldFillByFieldId={predictFieldFillByFieldId}
-                hideFieldIdAreaCard={rightAllPlots.length === 1 && (
-                  rightAllPlots[0].id === rightSelectedDistrict ||
-                  rightAllPlots[0].id === rightSelectedSubdistrict ||
-                  rightAllPlots[0].id === rightSelectedVillage ||
-                  isVillageOutlinePlotId(rightAllPlots[0].id)
+                hideFieldIdAreaCard={shouldHideFieldIdAreaOnMap(
+                  rightAllPlots,
+                  rightSelectedDistrict,
+                  rightSelectedSubdistrict,
+                  rightSelectedVillage
                 )}
                 onSelectPlot={async (id) => {
                   setSelectedPlotId(id);
@@ -10814,11 +10230,11 @@ const App: React.FC = () => {
 
               {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
               {['growth', 'water', 'soil', 'pest'].includes(getActiveTab('right') || '') && calculateAreaCards('right').length > 0 && (
-                <div className="mt-3">
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                <div className="mt-2">
+                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
                     Percentage / Area (ha)
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-1.5">
                     {calculateAreaCards('right').map((item, idx) => {
                       const currentTab = getActiveTab('right');
                       const cardBg = item.color || '#f97316';
@@ -10859,7 +10275,7 @@ const App: React.FC = () => {
                             }
                           }}
                           style={{ backgroundColor: cardBg, color: cardFg }}
-                          className={`p-3 rounded-xl border border-black/15 flex flex-col items-center text-center gap-1.5 min-w-0 ${
+                          className={`px-1.5 py-1 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[48px] ${
                             (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
                             (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null)
                               ? 'cursor-pointer hover:brightness-95 transition-all'
@@ -10867,15 +10283,15 @@ const App: React.FC = () => {
                           }`}
                         >
                           <div className="flex items-center justify-center w-full min-w-0">
-                            <span className="text-xs font-medium truncate w-full" style={{ color: cardFg }}>
+                            <span className="text-[10px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
                               {item.label}
                             </span>
                           </div>
-                          <div className="flex flex-col gap-0.5 mt-1 w-full">
-                            <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
+                          <div className="flex flex-col gap-0 w-full">
+                            <span className="font-bold text-[11px] leading-tight" style={{ color: cardFg }}>
                               {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
                             </span>
-                            <span className="font-semibold text-xs md:text-sm break-words" style={{ color: cardFg }}>
+                            <span className="font-medium text-[10px] leading-tight" style={{ color: cardFg }}>
                               {item.value.toFixed(2)} ha
                             </span>
                           </div>

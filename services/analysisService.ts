@@ -196,6 +196,29 @@ export const fetchVillages = async (subdistrict: string): Promise<VillageItem[]>
 const VILLAGE_OUTLINE_ID_PREFIX = 'outline:';
 export const villageOutlinePlotId = (village: string) => `${VILLAGE_OUTLINE_ID_PREFIX}${village}`;
 export const isVillageOutlinePlotId = (id: string) => id.startsWith(VILLAGE_OUTLINE_ID_PREFIX);
+
+/** Numeric field id from /field-boundaries (e.g. "159") */
+export const isFieldPlotId = (id: string) => /^\d+$/.test(id);
+
+/** Hide Field ID / Area only on pure admin-boundary views (no field polygons). */
+export const shouldHideFieldIdAreaOnMap = (
+  plots: Array<{ id: string }>,
+  district: string,
+  subdistrict: string,
+  village: string
+): boolean => {
+  if (plots.some((plot) => isFieldPlotId(plot.id))) return false;
+  return (
+    plots.length >= 1 &&
+    plots.some(
+      (plot) =>
+        plot.id === district ||
+        plot.id === subdistrict ||
+        plot.id === village ||
+        isVillageOutlinePlotId(plot.id)
+    )
+  );
+};
 export interface FieldBoundariesResponse {
   district: string;
   subdistrict: string;
@@ -289,7 +312,7 @@ export interface PredictAreaResponse {
   [cropKey: string]: unknown; // e.g. "sugarcane": PredictAreaCropData
 }
 
-/** Query param for predict-area, e.g. Wheat, Sugarcane (must match backend). */
+/** Query param crop keys in stored-responses body, e.g. wheat, sugarcane (lowercase). */
 export function formatPredictAreaCropName(cropValue: string): string {
   const c = cropValue.trim().toLowerCase();
   if (!c) return '';
@@ -312,36 +335,37 @@ export function formatPredictAreaMonthLabel(ym: string): string {
   return new Date(y, mo - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
 }
 
+/** GET /predict-area/stored-responses — crop areas + field IDs for map coloring */
 export const fetchPredictArea = async (
   district: string,
   subdistrict: string,
   village: string,
-  takeMonths: number = 1,
-  /** When set, server returns crop-specific block (e.g. wheat, sugarcane) and village_wise_* lists */
-  cropName?: string | null,
   /** YYYY-MM; omit or invalid = API uses current month */
-  month?: string | null
+  month?: string | null,
+  options?: {
+    includeBoundaries?: boolean;
+    limit?: number;
+    offset?: number;
+  }
 ): Promise<PredictAreaResponse> => {
   const params = new URLSearchParams({
     district,
     subdistrict,
     village,
-    take_months: String(takeMonths)
+    include_boundaries: String(options?.includeBoundaries ?? false),
+    limit: String(options?.limit ?? 20),
+    offset: String(options?.offset ?? 0),
   });
-  if (cropName && cropName.trim()) {
-    params.set('crop_name', cropName.trim());
-  }
   if (month && /^\d{4}-\d{2}$/.test(month.trim())) {
     params.set('month', month.trim());
   }
-  const url = `${BASE_URL}/predict-area?${params.toString()}`;
+  const url = `${BASE_URL}/predict-area/stored-responses?${params.toString()}`;
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'accept': 'application/json', 'Content-Type': 'application/json' },
-    body: ''
+    method: 'GET',
+    headers: { accept: 'application/json' },
   });
   if (!response.ok) {
-    throw new Error(`Predict-area API Error: ${response.status} ${response.statusText}`);
+    throw new Error(`Predict-area stored-responses API Error: ${response.status} ${response.statusText}`);
   }
   return response.json();
 };

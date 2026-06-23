@@ -159,3 +159,17 @@ html, body {
   scrollbar-width: thin;
   scrollbar-color: rgba(156, 163, 175, 0.5) rgba(255, 255, 255, 0.05);
 }
+
+/* Field ID + area labels drawn on each plot polygon */
+.leaflet-tooltip.field-plot-onmap-label {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  color: #111827;
+  font-size: 10px;
+  line-height: 1.25;
+  padding: 2px 5px;
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+}
