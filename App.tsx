@@ -9,6 +9,7 @@ import CropDropdownChecklist, {
   hasAnyCropSelected,
 } from './components/CropDropdownChecklist';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
+import ForestAgeClassMapCards from './components/ForestAgeClassMapCards';
 import { LoginPage } from './components/LoginPage';
 import { 
   fetchDistricts, 
@@ -26,6 +27,8 @@ import {
   getCurrentPredictAreaMonth,
   type PredictAreaCropData,
   fetchGrowthAnalysis1,
+  fetchLocationTotalAreaHectares,
+  extractGrowthAreaHectares,
   fetchWaterUptakeAnalysis,
   fetchSoilMoistureAnalysis,
   fetchPestDetectionAnalysis,
@@ -121,6 +124,12 @@ const cropResponseKey = (key: CropSelectionKey): string => key.toLowerCase();
 const ANALYSIS_TABS_WITH_VILLAGE_OUTLINE: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
 
 type OutlinePlot = { id: string; area_ha: string; boundary: Coordinate[] };
+
+const buildForestOutlinePlot = (plotName: string, geometry: unknown): OutlinePlot | null => {
+  const coordinates = parseGeometryToCoordinates(geometry);
+  if (coordinates.length < 3) return null;
+  return { id: villageOutlinePlotId(`forest:${plotName}`), area_ha: '0', boundary: coordinates };
+};
 
 const buildVillageOutlinePlot = (
   villageName: string,
@@ -236,6 +245,15 @@ const parsePredictCropLayer = (
     totalHa = cd.crop_area_ha;
   }
   return { areas, fills, totalHa, color };
+};
+
+const buildClasswiseTabSnapshot = (response: GrowthAnalysisWithStoredResponse): Record<string, unknown> => {
+  const tabData = { ...(response.pixel_summary || {}) } as Record<string, unknown>;
+  const classwise = response.classwise;
+  if (classwise && Array.isArray(classwise) && classwise.length > 0) {
+    tabData.classwise = classwise;
+  }
+  return tabData;
 };
 
 const App: React.FC = () => {
@@ -466,6 +484,7 @@ const App: React.FC = () => {
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
   const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
   const [showAnalysisTrendsPage, setShowAnalysisTrendsPage] = useState<boolean>(false);
+  const [analysisTrendsLoading, setAnalysisTrendsLoading] = useState<boolean>(false);
   const [showGraphFrequencyDropdown, setShowGraphFrequencyDropdown] = useState<boolean>(false);
   const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
   /** Single-pane only: show Google Earth iframe + same predict card overlay instead of Leaflet */
@@ -475,6 +494,8 @@ const App: React.FC = () => {
   const [fullscreenIndicesCompare, setFullscreenIndicesCompare] = useState<DashboardIndexKey | null>(null);
   const [fullscreenAnalysisTrendCard, setFullscreenAnalysisTrendCard] = useState<string | null>(null);
   const [analysisTrendSeriesFilter, setAnalysisTrendSeriesFilter] = useState<Record<string, string | null>>({});
+  /** Per trend card: null = all dates; otherwise row label e.g. "Current" or "Jun '26" */
+  const [analysisTrendDateFilter, setAnalysisTrendDateFilter] = useState<Record<string, string | null>>({});
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && window.localStorage) {
       const saved = localStorage.getItem('ui-theme-mode');
@@ -682,8 +703,16 @@ const App: React.FC = () => {
   };
 
   const getTotalAreaHectares = (side: 'left' | 'right' = 'left') => {
-    if (!splitScreenMode) return totalAreaHectares;
-    return side === 'left' ? leftTotalAreaHectares : rightTotalAreaHectares;
+    const direct = !splitScreenMode
+      ? totalAreaHectares
+      : side === 'left'
+        ? leftTotalAreaHectares
+        : rightTotalAreaHectares;
+    if (direct != null && !Number.isNaN(direct)) return direct;
+    const growthSummary = getAllPlotsAnalysisData(side)?.growth;
+    const fromGrowth = growthSummary?.area_hectares;
+    if (fromGrowth != null && !Number.isNaN(fromGrowth)) return fromGrowth;
+    return null;
   };
 
   const getTotalAreaLoading = (side: 'left' | 'right' = 'left') => {
@@ -1913,6 +1942,14 @@ const App: React.FC = () => {
     setPredictAreaCropColor(null);
   }, [selectedCrops, predictAreaByCrop]);
 
+  const selectForestAgeClass = useCallback((ageClass: string, tileUrl: string, areaHa: number) => {
+    setSelectedForestAgeClass(ageClass);
+    setForestTileUrl(tileUrl);
+    setForestAreaHa(areaHa);
+    setAllPlotsTileUrls({ forest: tileUrl });
+    setShowTileLayers(true);
+  }, []);
+
   const toggleSelectedCrop = useCallback((crop: CropSelectionKey) => {
     setSelectedCrops((prev) => ({ ...prev, [crop]: !prev[crop] }));
   }, []);
@@ -2018,76 +2055,33 @@ const App: React.FC = () => {
     }
   }, [selectedVillage, selectedSubdistrict, subdistricts]);
 
-  // Fetch total area when district/subdistrict/village changes
+  // Fetch total area when district/subdistrict/village changes (analyze_Growthclasswise → pixel_summary.area_hectares)
   useEffect(() => {
-    if (selectedDistrict) {
-      const fetchTotalArea = async () => {
-        try {
-          setTotalAreaLoading(true);
-          setError(null);
-          
-          const response = await fetchGrowthAnalysis1(
-            selectedDistrict,
-            selectedSubdistrict || undefined,
-            selectedVillage || undefined
-          );
-          
-          // Check for area_hectares in various possible locations
-          let areaValue: number | null = null;
-          
-          // Check root level with different possible field names
-          if (response.area_hectares !== undefined && response.area_hectares !== null) {
-            areaValue = response.area_hectares;
-          } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
-            areaValue = (response as any).total_area_hectares;
-          } else if ((response as any).area !== undefined && (response as any).area !== null) {
-            areaValue = (response as any).area;
-          } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
-            areaValue = (response as any).total_area;
-          }
-          // Check in pixel_summary
-          else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
-            areaValue = (response.pixel_summary as any).area_hectares;
-          }
-          // If not in root, check if it's calculated from plots
-          else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
-            let totalArea = 0;
-            response.plots.forEach((plot: any) => {
-              // Check for area_acres and convert to hectares, or area_hectares directly
-              if (plot.properties?.area_acres) {
-                totalArea += plot.properties.area_acres / 2.47105; // Convert acres to hectares
-              } else if (plot.area_acres) {
-                totalArea += plot.area_acres / 2.47105;
-              } else if (plot.properties?.area_hectares) {
-                totalArea += plot.properties.area_hectares;
-              } else if (plot.area_hectares) {
-                totalArea += plot.area_hectares;
-              }
-            });
-            if (totalArea > 0) {
-              areaValue = totalArea;
-            }
-          }
-          
-          if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
-            setTotalAreaHectares(areaValue);
-          } else {
-            setTotalAreaHectares(null);
-          }
-        } catch (err) {
-          void err;
-          // Don't set error here as it might interfere with other operations
-          setTotalAreaHectares(null);
-        } finally {
-          setTotalAreaLoading(false);
-        }
-      };
-
-      fetchTotalArea();
-    } else {
+    if (!selectedDistrict) {
       setTotalAreaHectares(null);
-      setSelectedPlotArea(null); // Clear plot area when location changes
+      setSelectedPlotArea(null);
+      return;
     }
+    let cancelled = false;
+    const fetchTotalArea = async () => {
+      try {
+        setTotalAreaLoading(true);
+        const areaValue = await fetchLocationTotalAreaHectares(
+          selectedDistrict,
+          selectedSubdistrict || undefined,
+          selectedVillage || undefined
+        );
+        if (!cancelled) setTotalAreaHectares(areaValue);
+      } catch {
+        if (!cancelled) setTotalAreaHectares(null);
+      } finally {
+        if (!cancelled) setTotalAreaLoading(false);
+      }
+    };
+    fetchTotalArea();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedDistrict, selectedSubdistrict, selectedVillage]);
   
   // Fetch subdistricts for left side when district is selected (split screen mode)
@@ -2150,72 +2144,30 @@ const App: React.FC = () => {
 
   // Fetch total area for left side (split screen mode)
   useEffect(() => {
-    if (splitScreenMode && leftSelectedDistrict) {
-      const fetchTotalArea = async () => {
-        try {
-          setLeftTotalAreaLoading(true);
-          setLeftError(null);
-          
-          const response = await fetchGrowthAnalysis1(
-            leftSelectedDistrict,
-            leftSelectedSubdistrict || undefined,
-            leftSelectedVillage || undefined
-          );
-          
-          // Check for area_hectares in various possible locations
-          let areaValue: number | null = null;
-          
-          // Check root level with different possible field names
-          if (response.area_hectares !== undefined && response.area_hectares !== null) {
-            areaValue = response.area_hectares;
-          } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
-            areaValue = (response as any).total_area_hectares;
-          } else if ((response as any).area !== undefined && (response as any).area !== null) {
-            areaValue = (response as any).area;
-          } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
-            areaValue = (response as any).total_area;
-          }
-          // Check in pixel_summary
-          else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
-            areaValue = (response.pixel_summary as any).area_hectares;
-          }
-          // If not in root, check if it's calculated from plots
-          else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
-            let totalArea = 0;
-            response.plots.forEach((plot: any) => {
-              // Check for area_acres and convert to hectares, or area_hectares directly
-              if (plot.properties?.area_acres) {
-                totalArea += plot.properties.area_acres / 2.47105; // Convert acres to hectares
-              } else if (plot.area_acres) {
-                totalArea += plot.area_acres / 2.47105;
-              } else if (plot.properties?.area_hectares) {
-                totalArea += plot.properties.area_hectares;
-              } else if (plot.area_hectares) {
-                totalArea += plot.area_hectares;
-              }
-            });
-            if (totalArea > 0) {
-              areaValue = totalArea;
-            }
-          }
-          
-          if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
-            setLeftTotalAreaHectares(areaValue);
-          } else {
-            setLeftTotalAreaHectares(null);
-          }
-        } catch (err) {
-          void err;
-          // Don't set error here as it might interfere with other operations
-          setLeftTotalAreaHectares(null);
-        } finally {
-          setLeftTotalAreaLoading(false);
-        }
-      };
-      fetchTotalArea();
-    } else {
+    if (!splitScreenMode || !leftSelectedDistrict) {
       setLeftTotalAreaHectares(null);
+      return;
     }
+    let cancelled = false;
+    const fetchTotalArea = async () => {
+      try {
+        setLeftTotalAreaLoading(true);
+        const areaValue = await fetchLocationTotalAreaHectares(
+          leftSelectedDistrict,
+          leftSelectedSubdistrict || undefined,
+          leftSelectedVillage || undefined
+        );
+        if (!cancelled) setLeftTotalAreaHectares(areaValue);
+      } catch {
+        if (!cancelled) setLeftTotalAreaHectares(null);
+      } finally {
+        if (!cancelled) setLeftTotalAreaLoading(false);
+      }
+    };
+    fetchTotalArea();
+    return () => {
+      cancelled = true;
+    };
   }, [splitScreenMode, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage]);
 
   // Fetch subdistricts for right side when district is selected (split screen mode)
@@ -2278,72 +2230,30 @@ const App: React.FC = () => {
 
   // Fetch total area for right side (split screen mode)
   useEffect(() => {
-    if (splitScreenMode && rightSelectedDistrict) {
-      const fetchTotalArea = async () => {
-        try {
-          setRightTotalAreaLoading(true);
-          setRightError(null);
-          
-          const response = await fetchGrowthAnalysis1(
-            rightSelectedDistrict,
-            rightSelectedSubdistrict || undefined,
-            rightSelectedVillage || undefined
-          );
-          
-          // Check for area_hectares in various possible locations
-          let areaValue: number | null = null;
-          
-          // Check root level with different possible field names
-          if (response.area_hectares !== undefined && response.area_hectares !== null) {
-            areaValue = response.area_hectares;
-          } else if ((response as any).total_area_hectares !== undefined && (response as any).total_area_hectares !== null) {
-            areaValue = (response as any).total_area_hectares;
-          } else if ((response as any).area !== undefined && (response as any).area !== null) {
-            areaValue = (response as any).area;
-          } else if ((response as any).total_area !== undefined && (response as any).total_area !== null) {
-            areaValue = (response as any).total_area;
-          }
-          // Check in pixel_summary
-          else if (response.pixel_summary && (response.pixel_summary as any).area_hectares !== undefined) {
-            areaValue = (response.pixel_summary as any).area_hectares;
-          }
-          // If not in root, check if it's calculated from plots
-          else if (response.plots && Array.isArray(response.plots) && response.plots.length > 0) {
-            let totalArea = 0;
-            response.plots.forEach((plot: any) => {
-              // Check for area_acres and convert to hectares, or area_hectares directly
-              if (plot.properties?.area_acres) {
-                totalArea += plot.properties.area_acres / 2.47105; // Convert acres to hectares
-              } else if (plot.area_acres) {
-                totalArea += plot.area_acres / 2.47105;
-              } else if (plot.properties?.area_hectares) {
-                totalArea += plot.properties.area_hectares;
-              } else if (plot.area_hectares) {
-                totalArea += plot.area_hectares;
-              }
-            });
-            if (totalArea > 0) {
-              areaValue = totalArea;
-            }
-          }
-          
-          if (areaValue !== null && areaValue !== undefined && !isNaN(areaValue) && areaValue > 0) {
-            setRightTotalAreaHectares(areaValue);
-          } else {
-            setRightTotalAreaHectares(null);
-          }
-        } catch (err) {
-          void err;
-          // Don't set error here as it might interfere with other operations
-          setRightTotalAreaHectares(null);
-        } finally {
-          setRightTotalAreaLoading(false);
-        }
-      };
-      fetchTotalArea();
-    } else {
+    if (!splitScreenMode || !rightSelectedDistrict) {
       setRightTotalAreaHectares(null);
+      return;
     }
+    let cancelled = false;
+    const fetchTotalArea = async () => {
+      try {
+        setRightTotalAreaLoading(true);
+        const areaValue = await fetchLocationTotalAreaHectares(
+          rightSelectedDistrict,
+          rightSelectedSubdistrict || undefined,
+          rightSelectedVillage || undefined
+        );
+        if (!cancelled) setRightTotalAreaHectares(areaValue);
+      } catch {
+        if (!cancelled) setRightTotalAreaHectares(null);
+      } finally {
+        if (!cancelled) setRightTotalAreaLoading(false);
+      }
+    };
+    fetchTotalArea();
+    return () => {
+      cancelled = true;
+    };
   }, [splitScreenMode, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage]);
 
   // Clear selected plot area when geojson plots are cleared or location changes
@@ -2445,22 +2355,32 @@ const App: React.FC = () => {
                 selectedVillage || undefined
               );
             break;
-          case 'forest':
-              // Forest uses different API - fetch separately
-              const forestResponse = await fetchForestCanopy(selectedDistrict);
+          case 'forest': {
+              const forestResponse = await fetchForestCanopy(
+                selectedDistrict,
+                selectedSubdistrict || undefined,
+                selectedVillage || undefined
+              );
               setForestData(forestResponse.age_classes);
-              // Clear plots and tile URLs - forest uses different display method
-              setAllPlots([]);
+              const forestOutline = forestResponse.geometry
+                ? buildForestOutlinePlot(forestResponse.plot_name, forestResponse.geometry)
+                : null;
+              if (forestOutline) {
+                setAllPlots([forestOutline]);
+                applyOutlineBounds(forestOutline, setPlotBounds);
+              } else {
+                setAllPlots([]);
+              }
               setAvailablePlots([]);
               setTotalPlotsCount(0);
               setAllPlotsTileUrls({});
               setForestTileUrl(null);
               setForestAreaHa(null);
               setSelectedForestAgeClass(null);
-              // Skip to end - forest doesn't use standard plot processing
-              response = {} as any; // Placeholder
+              response = {} as any;
               setLoading(false);
               return;
+            }
           default:
             return;
         }
@@ -2721,6 +2641,8 @@ const App: React.FC = () => {
               setGrowthCurrentData(tabData); // keep current snapshot for "Current" tab
               setGrowthStoredSeries(Array.isArray(storedResponse.stored) ? storedResponse.stored : []);
               setGrowthStoredError(null);
+              const growthAreaHa = extractGrowthAreaHectares(response);
+              if (growthAreaHa != null) setTotalAreaHectares(growthAreaHa);
             } else if (activeTab === 'water') {
               const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
               setWaterStoredSeries(wStored);
@@ -2835,6 +2757,144 @@ const App: React.FC = () => {
       setGrowthCurrentData(null);
     }
   }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage]); // Fetch when tab OR location changes
+
+  // Trends page: fetch Growth, Water, Soil, Pest endpoints directly (not only whichever tab was opened on map)
+  useEffect(() => {
+    if (!showAnalysisTrendsPage || !selectedDistrict || splitScreenMode) return;
+
+    let cancelled = false;
+    setAnalysisTrendsLoading(true);
+
+    const district = selectedDistrict;
+    const subdistrict = selectedSubdistrict || undefined;
+    const village = selectedVillage || undefined;
+
+    const loadAllAnalysisTrends = async () => {
+      const fetchOne = async <T,>(label: string, fn: () => Promise<T>): Promise<T | null> => {
+        try {
+          return await fn();
+        } catch (err) {
+          console.warn(`Analysis trends: ${label} failed`, err);
+          return null;
+        }
+      };
+      const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      try {
+        const growthRes = await fetchOne('growth', () =>
+          fetchGrowthAnalysis1(district, subdistrict, village)
+        );
+        if (cancelled) return;
+        await pause(400);
+
+        const waterRes = await fetchOne('water', () =>
+          fetchWaterUptakeAnalysis(district, subdistrict, village)
+        );
+        if (cancelled) return;
+        await pause(400);
+
+        const soilRes = await fetchOne('soil', () =>
+          fetchSoilMoistureAnalysis(district, subdistrict, village)
+        );
+        if (cancelled) return;
+        await pause(400);
+
+        const pestRes = await fetchOne('pest', () =>
+          fetchPestDetectionAnalysis(district, subdistrict, village)
+        );
+        if (cancelled) return;
+
+        if (growthRes) {
+          const growthTab = buildClasswiseTabSnapshot(growthRes);
+          setGrowthCurrentData(growthTab);
+          setGrowthStoredSeries(Array.isArray(growthRes.stored) ? growthRes.stored : []);
+          setGrowthStoredError(null);
+          setAllPlotsAnalysisData((prev) => ({
+            growth: growthTab as any,
+            water: prev?.water ?? null,
+            soil: prev?.soil ?? null,
+            pest: prev?.pest ?? null,
+            waterSource: prev?.waterSource ?? null,
+          }));
+        }
+
+        if (waterRes) {
+          const waterTab = buildClasswiseTabSnapshot(waterRes);
+          setWaterCurrentSnapshot(waterTab);
+          setWaterStoredSeries(Array.isArray(waterRes.stored) ? waterRes.stored : []);
+          setWaterData(waterTab);
+          setAllPlotsAnalysisData((prev) => ({
+            growth: prev?.growth ?? null,
+            water: waterTab as any,
+            soil: prev?.soil ?? null,
+            pest: prev?.pest ?? null,
+            waterSource: prev?.waterSource ?? null,
+          }));
+        }
+
+        if (soilRes) {
+          const soilTab = buildClasswiseTabSnapshot(soilRes);
+          setSoilStoredSeries(Array.isArray(soilRes.stored) ? soilRes.stored : []);
+          setSoilData(soilTab);
+          setAllPlotsAnalysisData((prev) => ({
+            growth: prev?.growth ?? null,
+            water: prev?.water ?? null,
+            soil: soilTab as any,
+            pest: prev?.pest ?? null,
+            waterSource: prev?.waterSource ?? null,
+          }));
+        }
+
+        if (pestRes) {
+          const pestResponse = pestRes as any;
+          if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+            setPestHierarchy({
+              plot: pestResponse.plots?.[0]?.properties?.plot_id ?? '',
+              total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
+              hierarchy: pestResponse.hierarchy,
+            } as PestHierarchyResponse);
+            const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
+            setAllPlotsAnalysisData((prev) => ({
+              growth: prev?.growth ?? null,
+              water: prev?.water ?? null,
+              soil: prev?.soil ?? null,
+              pest: {
+                healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+                chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+                fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+                sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+                wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+                soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+                healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+                chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+                fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+                sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+                wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+                soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                total_area_hectare: pestResponse.total_area_ha ?? 0,
+              },
+              waterSource: prev?.waterSource ?? null,
+            }));
+            setPestStoredSeries(
+              Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : []
+            );
+            const firstCategory = Object.keys(pestResponse.hierarchy)[0];
+            if (firstCategory) {
+              setSelectedPestCategory((prev) => prev ?? firstCategory);
+            }
+          }
+        }
+      } finally {
+        if (!cancelled) setAnalysisTrendsLoading(false);
+      }
+    };
+
+    void loadAllAnalysisTrends();
+    return () => {
+      cancelled = true;
+    };
+  }, [showAnalysisTrendsPage, selectedDistrict, selectedSubdistrict, selectedVillage, splitScreenMode]);
 
   // Handle left district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
@@ -3605,6 +3665,29 @@ const App: React.FC = () => {
                 leftSelectedVillage || undefined
               );
               break;
+            case 'forest': {
+              const forestResponse = await fetchForestCanopy(
+                leftSelectedDistrict,
+                leftSelectedSubdistrict || undefined,
+                leftSelectedVillage || undefined
+              );
+              setForestData(forestResponse.age_classes);
+              const forestOutline = forestResponse.geometry
+                ? buildForestOutlinePlot(forestResponse.plot_name, forestResponse.geometry)
+                : null;
+              if (forestOutline) {
+                setLeftAllPlots([forestOutline]);
+                applyOutlineBounds(forestOutline, setPlotBounds);
+              } else {
+                setLeftAllPlots([]);
+              }
+              setLeftAllPlotsTileUrls({});
+              setForestTileUrl(null);
+              setForestAreaHa(null);
+              setSelectedForestAgeClass(null);
+              setLeftLoading(false);
+              return;
+            }
             default:
               return;
           }
@@ -3815,6 +3898,10 @@ const App: React.FC = () => {
                 pest: prev?.pest || null,
                 waterSource: prev?.waterSource || null,
               }));
+              if (leftActiveTab === 'growth') {
+                const growthAreaHa = extractGrowthAreaHectares(response);
+                if (growthAreaHa != null) setLeftTotalAreaHectares(growthAreaHa);
+              }
             }
           }
         } catch (err) {
@@ -3902,6 +3989,29 @@ const App: React.FC = () => {
                 rightSelectedVillage || undefined
               );
               break;
+            case 'forest': {
+              const forestResponse = await fetchForestCanopy(
+                rightSelectedDistrict,
+                rightSelectedSubdistrict || undefined,
+                rightSelectedVillage || undefined
+              );
+              setForestData(forestResponse.age_classes);
+              const forestOutline = forestResponse.geometry
+                ? buildForestOutlinePlot(forestResponse.plot_name, forestResponse.geometry)
+                : null;
+              if (forestOutline) {
+                setRightAllPlots([forestOutline]);
+                applyOutlineBounds(forestOutline, setPlotBounds);
+              } else {
+                setRightAllPlots([]);
+              }
+              setRightAllPlotsTileUrls({});
+              setForestTileUrl(null);
+              setForestAreaHa(null);
+              setSelectedForestAgeClass(null);
+              setRightLoading(false);
+              return;
+            }
             default:
               return;
           }
@@ -4112,6 +4222,10 @@ const App: React.FC = () => {
                 pest: prev?.pest || null,
                 waterSource: prev?.waterSource || null,
               }));
+              if (rightActiveTab === 'growth') {
+                const growthAreaHa = extractGrowthAreaHectares(response);
+                if (growthAreaHa != null) setRightTotalAreaHectares(growthAreaHa);
+              }
             }
           }
         } catch (err) {
@@ -6343,27 +6457,36 @@ const App: React.FC = () => {
 
           {/* Total Area Card */}
           {getSelectedDistrict('left') && (
-            splitScreenMode || !['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '')
-          ) && (
-            <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
-              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            <div
+              className={
+                isDarkMode
+                  ? 'p-4 bg-gray-700 rounded-lg border border-gray-600'
+                  : 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-4'
+              }
+            >
+              <div
+                className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
+                  isDarkMode ? 'text-gray-400' : 'text-slate-500'
+                }`}
+              >
                 {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
               </div>
               {selectedPlotArea !== null ? (
-                // Show selected plot area (from GeoJSON)
-                <div className="text-xs font-bold text-green-400">
+                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
                   {selectedPlotArea.toFixed(2)} ha
                 </div>
               ) : getTotalAreaLoading('left') ? (
                 <div className="flex items-center justify-center py-4">
-                  <Loader2 className="animate-spin text-green-400" size={20} />
+                  <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
                 </div>
               ) : getTotalAreaHectares('left') !== null && getTotalAreaHectares('left') !== undefined ? (
-                <div className="text-lg font-bold text-green-400">
+                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
                   {getTotalAreaHectares('left')!.toFixed(2)} ha
                 </div>
               ) : (
-                <div className="text-sm text-gray-500">No area data available</div>
+                <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-400'}`}>
+                  No area data available
+                </div>
               )}
             </div>
           )}
@@ -7184,6 +7307,15 @@ const App: React.FC = () => {
                         Select District to load all-date trend graphs. Subdistrict and Village are optional filters.
                       </p>
                     </div>
+                  ) : analysisTrendsLoading ? (
+                    <div className={`w-full max-w-4xl mx-auto rounded-lg p-12 flex flex-col items-center justify-center gap-3 border ${
+                      isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
+                    }`}>
+                      <Loader2 className={`animate-spin ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`} size={36} />
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-slate-600'}>
+                        Loading Growth, Water, Soil, and Pest trend data…
+                      </p>
+                    </div>
                   ) : (
                     (() => {
                       const monthLabel = (ym: string | null) => {
@@ -7256,15 +7388,15 @@ const App: React.FC = () => {
                         { weak: '#bc1e29', stress: '#58cf54', moderate: '#28ae31', healthy: '#00351d' }
                       );
                       const waterTrend = buildClasswiseTrend(
-                        (allPlotsAnalysisData as any)?.water?.classwise ?? (waterData as any)?.classwise,
+                        (allPlotsAnalysisData as any)?.water?.classwise ?? (waterData as any)?.classwise ?? (waterCurrentSnapshot as any)?.classwise,
                         waterStoredSeries,
-                        ['Very low', 'Low', 'Moderate', 'High'],
+                        ['Deficient', 'Less', 'Adequat', 'Excellent', 'Excess', 'Very low', 'Low', 'Moderate', 'High'],
                         {}
                       );
                       const soilTrend = buildClasswiseTrend(
                         (allPlotsAnalysisData as any)?.soil?.classwise ?? (soilData as any)?.classwise,
                         soilStoredSeries,
-                        ['Very dry', 'Dry', 'Moderate', 'Wet'],
+                        ['Very dry', 'Dry', 'Moderate', 'Wet', 'Optimal'],
                         {}
                       );
                       const pestCategoryForGraph =
@@ -7321,11 +7453,20 @@ const App: React.FC = () => {
                         seriesColors: Record<string, string>,
                         emptyText: string,
                         isFullscreen: boolean = false
-                      ) => (
+                      ) => {
+                        const selectedDate = analysisTrendDateFilter[cardKey] ?? null;
+                        const periodLabels = data.map((row) => String(row.label ?? ''));
+                        const chartData =
+                          selectedDate != null
+                            ? data.filter((row) => String(row.label) === selectedDate)
+                            : data;
+                        const chartHeightClass = isFullscreen ? 'h-[62vh]' : 'h-[300px]';
+
+                        return (
                         <div className={`rounded-lg border ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'} p-4 ${isFullscreen ? 'min-h-[82vh]' : 'min-h-[460px]'}`}>
                           <div className="flex items-center justify-between gap-2 mb-2">
                             <div className={`text-[11px] font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
-                              {title} Â· all dates
+                              {title} · {selectedDate ?? 'all dates'}
                             </div>
                             <button
                               type="button"
@@ -7341,7 +7482,8 @@ const App: React.FC = () => {
                             </button>
                           </div>
                           {data.length > 0 && seriesKeys.length > 0 ? (
-                            <div className={isFullscreen ? 'h-[70vh]' : 'h-[380px]'}>
+                            <>
+                            <div className={chartHeightClass}>
                               {(() => {
                                 const selectedSeries = analysisTrendSeriesFilter[cardKey] ?? null;
                                 const visibleSeriesKeys = selectedSeries
@@ -7355,15 +7497,15 @@ const App: React.FC = () => {
                                 };
                                 return (
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={data} barCategoryGap="22%">
+                                <BarChart data={chartData} barCategoryGap="22%">
                                   <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
                                   <XAxis
                                     dataKey="label"
                                     tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }}
                                     interval={0}
-                                    angle={-35}
-                                    textAnchor="end"
-                                    height={64}
+                                    angle={chartData.length > 3 ? -35 : 0}
+                                    textAnchor={chartData.length > 3 ? 'end' : 'middle'}
+                                    height={chartData.length > 3 ? 64 : 36}
                                   />
                                   <YAxis tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
                                   <Tooltip />
@@ -7403,13 +7545,61 @@ const App: React.FC = () => {
                                 );
                               })()}
                             </div>
+                            {periodLabels.length > 0 && (
+                              <div className={`mt-3 pt-2 border-t ${isDarkMode ? 'border-gray-700' : 'border-emerald-100'}`}>
+                                <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  Time series
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 max-h-[88px] overflow-y-auto pr-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setAnalysisTrendDateFilter((prev) => ({ ...prev, [cardKey]: null }))
+                                    }
+                                    className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                                      selectedDate == null
+                                        ? isDarkMode
+                                          ? 'bg-emerald-600 text-white border-emerald-500'
+                                          : 'bg-emerald-600 text-white border-emerald-600'
+                                        : isDarkMode
+                                          ? 'bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600'
+                                          : 'bg-white text-gray-700 border-emerald-200 hover:bg-emerald-50'
+                                    }`}
+                                  >
+                                    All dates
+                                  </button>
+                                  {periodLabels.map((label) => (
+                                    <button
+                                      key={`${cardKey}-date-${label}`}
+                                      type="button"
+                                      onClick={() =>
+                                        setAnalysisTrendDateFilter((prev) => ({ ...prev, [cardKey]: label }))
+                                      }
+                                      className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors whitespace-nowrap ${
+                                        selectedDate === label
+                                          ? isDarkMode
+                                            ? 'bg-emerald-600 text-white border-emerald-500'
+                                            : 'bg-emerald-600 text-white border-emerald-600'
+                                          : isDarkMode
+                                            ? 'bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600'
+                                            : 'bg-white text-gray-700 border-emerald-200 hover:bg-emerald-50'
+                                      }`}
+                                    >
+                                      {label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            </>
                           ) : (
                             <div className={`${isFullscreen ? 'h-[70vh]' : 'h-[380px]'} flex items-center justify-center text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                               {emptyText}
                             </div>
                           )}
                         </div>
-                      );
+                        );
+                      };
                       const trendCards = [
                         {
                           key: 'growth',
@@ -7604,22 +7794,21 @@ const App: React.FC = () => {
           )}
 
           {/* Removed: "slider" button that auto-opened Pest tab */}
-          {/* Water / Forest legend (normal mode only â€” tabs moved to header) */}
-          {!splitScreenMode && !isMapFullscreen && getActiveTab('left') && (getActiveTab('left') === 'waterSource' || getActiveTab('left') === 'forest') && (
+          {/* Water source legend (normal mode only — tabs moved to header) */}
+          {!splitScreenMode && !isMapFullscreen && getActiveTab('left') === 'waterSource' && (
             <div className="absolute top-28 md:top-20 left-1/2 -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 w-auto max-w-[calc(100vw-2rem)]">
-              <LegendCircles
-                type={getActiveTab('left')!}
-                data={currentPixelData}
-                onForestAgeClassClick={(ageClass, tileUrl, areaHa) => {
-                  setSelectedForestAgeClass(ageClass);
-                  setForestTileUrl(tileUrl);
-                  setForestAreaHa(areaHa);
-                  setAllPlotsTileUrls({ 'forest': tileUrl });
-                  setShowTileLayers(true);
-                }}
-              />
+              <LegendCircles type="waterSource" data={currentPixelData} />
             </div>
           )}
+          {/* Forest age-class cards — centered on map */}
+          {!isMapFullscreen && getActiveTab('left') === 'forest' && (
+              <ForestAgeClassMapCards
+                forestData={forestData}
+                selectedAgeClass={selectedForestAgeClass}
+                onSelect={selectForestAgeClass}
+                textColorOnBackground={textColorOnBackground}
+              />
+            )}
           {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
           {splitScreenMode && (
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
@@ -10037,6 +10226,14 @@ const App: React.FC = () => {
                 windDirectPayload={null}
                 showWindFlowLayer={false}
                 predictAreaMapCard={predictAreaMapCard}
+              />
+            )}
+            {splitScreenMode && !isMapFullscreen && getActiveTab('right') === 'forest' && (
+              <ForestAgeClassMapCards
+                forestData={forestData}
+                selectedAgeClass={selectedForestAgeClass}
+                onSelect={selectForestAgeClass}
+                textColorOnBackground={textColorOnBackground}
               />
             )}
             </div>
