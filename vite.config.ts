@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+    const villageDataApi =
+      env.VITE_VILLAGE_DATA_API_URL || 'https://jam-hose-bride-plain.trycloudflare.com';
     return {
       server: {
         port: 3000,
@@ -33,6 +35,12 @@ export default defineConfig(({ mode }) => {
             changeOrigin: true,
             secure: true,
             rewrite: (path) => path.replace(/^\/nominatim/, ''),
+          },
+          '/village-data-api': {
+            target: villageDataApi,
+            changeOrigin: true,
+            secure: true,
+            rewrite: (path) => path.replace(/^\/village-data-api/, ''),
           },
         },
       },

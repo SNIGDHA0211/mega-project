@@ -18,11 +18,17 @@ import {
   parseVillageBoundaryCoordinates,
   villageOutlinePlotId,
   isVillageOutlinePlotId,
+  isFieldPlotId,
   shouldHideFieldIdAreaOnMap,
   type VillageItem,
-  fetchBoundaryGeoJSON, 
+  fetchBoundaryGeoJSON,
+  geometryToBoundaryPlots,
+  parseGeometryToCoordinates, 
   fetchFieldBoundaries,
+  fetchVillageSurveyPlots,
+  type VillagePlotMeta,
   fetchPredictArea,
+  loadPredictCropFieldPlots,
   formatPredictAreaMonthLabel,
   getCurrentPredictAreaMonth,
   type PredictAreaCropData,
@@ -84,6 +90,16 @@ const INDICES_CHART_YEAR_PALETTE = [
   '#06b6d4', '#fb7185', '#84cc16', '#c084fc', '#fde047', '#f472b6',
 ];
 
+/** Keep LST tile when replacing analysis overlays (single GEE layer avoids 429 rate limits). */
+const withLstTilePreserved = (
+  prev: Record<string, string>,
+  next: Record<string, string>
+): Record<string, string> => {
+  const lst = prev['land-surface-temperature'];
+  const base = lst ? { 'land-surface-temperature': lst } : {};
+  return { ...base, ...next };
+};
+
 /** Build Leaflet tile URL map from wateruptakeclasswise classwise[] (each class may have tile_url). */
 function waterClasswiseToTileUrlMap(classwise: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -117,6 +133,7 @@ const CROP_DEFAULT_COLORS: Record<CropSelectionKey, string> = {
   Soyabean: '#16a34a',
   Onion: '#eab308',
   Mango: '#f97316',
+  Banana: '#fbbf24',
 };
 
 const cropResponseKey = (key: CropSelectionKey): string => key.toLowerCase();
@@ -144,38 +161,31 @@ const buildVillageOutlinePlot = (
 
 type BoundaryGeometrySource = { geometry?: unknown };
 
-const parseGeometryToCoordinates = (geometry: unknown): Coordinate[] => {
-  if (!geometry || typeof geometry !== 'object') return [];
-  const geom = geometry as { type?: string; coordinates?: unknown };
-  try {
-    if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-      const coords = geom.coordinates as number[][][] | number[][][][];
-      if (geom.type === 'Polygon') {
-        const outerRing = (coords as number[][][])?.[0] || [];
-        return outerRing
-          .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
-          .map((c) => [c[0], c[1]] as Coordinate);
-      }
-      const firstPolygon = (coords as number[][][][])?.[0] || [];
-      const outerRing = firstPolygon[0] || [];
-      return outerRing
-        .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
-        .map((c) => [c[0], c[1]] as Coordinate);
-    }
-    if (geom.coordinates) {
-      const coords = geom.coordinates as number[][] | number[][][];
-      if (Array.isArray(coords[0]) && Array.isArray((coords[0] as number[][])[0])) {
-        const outerRing = coords[0] as number[][];
-        return outerRing.map((coord) => [coord[0], coord[1]] as Coordinate);
-      }
-      return (coords as number[][])
-        .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
-        .map((coord) => [coord[0], coord[1]] as Coordinate);
-    }
-  } catch {
-    /* ignore parse errors */
-  }
-  return [];
+const applyBoundaryPlots = (
+  plots: MapPlot[],
+  setPlots: (value: MapPlot[]) => void,
+  setBounds: (bounds: L.LatLngBounds) => void
+): boolean => {
+  if (plots.length === 0) return false;
+  setPlots(plots);
+  const bounds = L.latLngBounds([]);
+  plots.forEach((plot) => {
+    plot.boundary.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+  });
+  if (bounds.isValid()) setBounds(bounds);
+  return true;
+};
+
+const applyNominatimBounds = async (
+  label: string,
+  setBounds: (bounds: L.LatLngBounds) => void
+): Promise<boolean> => {
+  const nb = await fetchNominatimBounds(`${label}, India`);
+  if (!nb) return false;
+  const bounds = L.latLngBounds(L.latLng(nb.south, nb.west), L.latLng(nb.north, nb.east));
+  if (!bounds.isValid()) return false;
+  setBounds(bounds);
+  return true;
 };
 
 /** Village → /villages API; else subdistrict/district geometry from loaded lists */
@@ -247,6 +257,25 @@ const parsePredictCropLayer = (
   return { areas, fills, totalHa, color };
 };
 
+type MapPlot = { id: string; area_ha: string; boundary: Coordinate[] };
+
+/** Overlay predict-area field polygons (numeric ids) for crop coloring on village survey maps. */
+const mergePlotsWithPredictCropFields = (
+  basePlots: MapPlot[],
+  predictFields: MapPlot[],
+  showPredictFields: boolean
+): MapPlot[] => {
+  if (!showPredictFields || predictFields.length === 0) return basePlots;
+  const predictIds = new Set(predictFields.map((p) => p.id));
+  const base = basePlots.filter(
+    (p) =>
+      isVillageOutlinePlotId(p.id) ||
+      !isFieldPlotId(p.id) ||
+      !predictIds.has(p.id)
+  );
+  return [...base, ...predictFields];
+};
+
 const buildClasswiseTabSnapshot = (response: GrowthAnalysisWithStoredResponse): Record<string, unknown> => {
   const tabData = { ...(response.pixel_summary || {}) } as Record<string, unknown>;
   const classwise = response.classwise;
@@ -288,6 +317,12 @@ const App: React.FC = () => {
   const [showVillageBoundary, setShowVillageBoundary] = useState(false);
   const [showLeftVillageBoundary, setShowLeftVillageBoundary] = useState(false);
   const [showRightVillageBoundary, setShowRightVillageBoundary] = useState(false);
+  /** When true, village-data API owner names are shown on map plot overlays */
+  const [showVillageOwners, setShowVillageOwners] = useState(false);
+  const [showLeftVillageOwners, setShowLeftVillageOwners] = useState(false);
+  const [showRightVillageOwners, setShowRightVillageOwners] = useState(false);
+  const [villageOwnersLoading, setVillageOwnersLoading] = useState(false);
+  const [villageOwnersError, setVillageOwnersError] = useState<string | null>(null);
   const [selectedPlotId, setSelectedPlotId] = useState<string | null>(null);
   const [availablePlots, setAvailablePlots] = useState<string[]>([]);
   const [totalPlotsCount, setTotalPlotsCount] = useState<number>(0);
@@ -351,12 +386,15 @@ const App: React.FC = () => {
     Soyabean: null,
     Onion: null,
     Mango: null,
+    Banana: null,
   });
   const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
   /** YYYY-MM sent as predict-area `month` (default: current calendar month). */
   const [predictAreaMonthInput, setPredictAreaMonthInput] = useState<string>(getCurrentPredictAreaMonth);
   /** Month confirmed from API `month` or last request (for display). */
   const [predictAreaDataMonth, setPredictAreaDataMonth] = useState<string | null>(null);
+  /** Field polygons from predict-area (numeric field_id) for crop boundary coloring */
+  const [predictCropFieldPlots, setPredictCropFieldPlots] = useState<MapPlot[]>([]);
 
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
@@ -445,6 +483,8 @@ const App: React.FC = () => {
   
   // State for selected plot area (from GeoJSON)
   const [selectedPlotArea, setSelectedPlotArea] = useState<number | null>(null);
+  /** Cadastral plot metadata from village-data API (plotId → owners) */
+  const [villagePlotMetaById, setVillagePlotMetaById] = useState<Record<string, VillagePlotMeta>>({});
 
   // State for pixel summaries (single plot)
   const [growthData, setGrowthData] = useState<any>(null);
@@ -654,11 +694,6 @@ const App: React.FC = () => {
     }
   };
 
-  const toggleActiveTabForSide = (tab: AnalysisType, side: 'left' | 'right' = 'left') => {
-    if (getActiveTab(side) === tab) setActiveTabForSide(null, side);
-    else setActiveTabForSide(tab, side);
-  };
-
   const clearLstTileLayer = () => {
     lstClosedByUserRef.current = true;
     setLstTileUrl(null);
@@ -676,7 +711,55 @@ const App: React.FC = () => {
     }
   };
 
-  // Helper to get location selections based on side
+  /** Drop analysis GEE tiles immediately when switching tabs (keep LST layer if active). */
+  const clearAnalysisLayersForSide = (side: 'left' | 'right', startLoading = true) => {
+    const stripAnalysisTiles = (prev: Record<string, string>) => {
+      const lst = prev['land-surface-temperature'];
+      return lst ? { 'land-surface-temperature': lst } : {};
+    };
+
+    setForestTileUrl(null);
+    setSelectedForestAgeClass(null);
+    setForestAreaHa(null);
+    setPestTileUrl(null);
+    setPestHierarchy(null);
+    setSelectedPestCategory(null);
+    setShowPestChildren(false);
+    setNdwiData(null);
+    setWaterSources([]);
+    setWaterAreaHectares(null);
+
+    if (!splitScreenMode) {
+      setAllPlotsTileUrls(stripAnalysisTiles);
+      if (startLoading) setLoading(true);
+    } else if (side === 'left') {
+      setLeftAllPlotsTileUrls(stripAnalysisTiles);
+      if (startLoading) setLeftLoading(true);
+    } else {
+      setRightAllPlotsTileUrls(stripAnalysisTiles);
+      if (startLoading) setRightLoading(true);
+    }
+  };
+
+  /** Only expose tab-specific overlay tile URL for the active analysis tab. */
+  const getMapOverlayTileUrl = (side: 'left' | 'right') => {
+    const tab = getActiveTab(side);
+    if (tab === 'pest' && pestTileUrl) return pestTileUrl;
+    if (tab === 'forest' && forestTileUrl) return forestTileUrl;
+    if (lstTileUrl) return lstTileUrl;
+    if (cropTileUrl) return cropTileUrl;
+    if (tileUrl) return tileUrl;
+    return null;
+  };
+
+  const toggleActiveTabForSide = (tab: AnalysisType, side: 'left' | 'right' = 'left') => {
+    if (getActiveTab(side) === tab) {
+      setActiveTabForSide(null, side);
+      return;
+    }
+    clearAnalysisLayersForSide(side);
+    setActiveTabForSide(tab, side);
+  };
   const getSelectedDistrict = (side: 'left' | 'right' = 'left') => {
     if (!splitScreenMode) return selectedDistrict;
     return side === 'left' ? leftSelectedDistrict : rightSelectedDistrict;
@@ -1444,15 +1527,64 @@ const App: React.FC = () => {
 
   useEffect(() => {
     setShowVillageBoundary(false);
+    setShowVillageOwners(false);
+    setVillageOwnersError(null);
   }, [selectedVillage]);
 
   useEffect(() => {
     setShowLeftVillageBoundary(false);
+    setShowLeftVillageOwners(false);
+    setVillageOwnersError(null);
   }, [leftSelectedVillage]);
 
   useEffect(() => {
     setShowRightVillageBoundary(false);
+    setShowRightVillageOwners(false);
+    setVillageOwnersError(null);
   }, [rightSelectedVillage]);
+
+  const loadVillageOwnerOverlay = useCallback(
+    async (opts: {
+      district: string;
+      subdistrict: string;
+      village: string;
+      villageList: VillageItem[];
+      setPlots: (plots: MapPlot[]) => void;
+      setBounds: (bounds: L.LatLngBounds) => void;
+      onOwnersShown: () => void;
+    }) => {
+      setVillageOwnersLoading(true);
+      setVillageOwnersError(null);
+      try {
+        const survey = await fetchVillageSurveyPlots(opts.district, opts.subdistrict, opts.village);
+        setVillagePlotMetaById(survey.plotMetaById);
+
+        const villageData = opts.villageList.find((v) => v.village === opts.village);
+        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+        const outlinePlot: MapPlot[] =
+          outlineCoords.length >= 3
+            ? [{ id: villageOutlinePlotId(opts.village), area_ha: '0', boundary: outlineCoords }]
+            : [];
+
+        const combined = [...outlinePlot, ...survey.plots];
+        opts.setPlots(combined);
+        opts.onOwnersShown();
+
+        const bounds = L.latLngBounds([]);
+        combined.forEach((plot) => {
+          (plot.boundary || []).forEach((coord) => bounds.extend([coord[1], coord[0]]));
+        });
+        if (bounds.isValid()) opts.setBounds(bounds);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to load owner data';
+        setVillageOwnersError(msg);
+        setVillagePlotMetaById({});
+      } finally {
+        setVillageOwnersLoading(false);
+      }
+    },
+    []
+  );
 
   // When no village is selected, keep subdistrict boundary on map (non–split-screen)
   useEffect(() => {
@@ -1461,32 +1593,8 @@ const App: React.FC = () => {
     if (!selectedSubdistrict || subdistricts.length === 0) return;
     const subdistrictData = subdistricts.find((s) => s.subdistrict === selectedSubdistrict);
     if (!subdistrictData?.geometry) return;
-    try {
-      let coordinates: Coordinate[] = [];
-      const geom = subdistrictData.geometry;
-      if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-        const coords = geom.coordinates;
-        if (geom.type === 'Polygon') {
-          const outerRing = coords[0] || [];
-          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-        } else {
-          const firstPolygon = coords[0] || [];
-          const outerRing = firstPolygon[0] || [];
-          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-        }
-      } else if (geom.coordinates) {
-        const coords = geom.coordinates;
-        if (Array.isArray(coords[0])?.[0]) {
-          const outerRing = coords[0] || [];
-          coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-        } else {
-          coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-        }
-      }
-      setBoundaryPlot(selectedSubdistrict, coordinates);
-    } catch {
-      /* keep previous map state */
-    }
+    const plots = geometryToBoundaryPlots(selectedSubdistrict, subdistrictData.geometry);
+    applyBoundaryPlots(plots, setAllPlots, setPlotBounds);
   }, [selectedVillage, selectedSubdistrict, splitScreenMode, subdistricts]);
 
   // Handle district selection and display coordinates on map (from list geometry or get-geojson API)
@@ -1503,26 +1611,6 @@ const App: React.FC = () => {
     const districtData = districts.find(d => d.district === selectedDistrict);
     setSelectedDistrictData(districtData || null);
 
-    const setDistrictBoundary = (coordinates: Coordinate[]) => {
-      if (coordinates.length >= 3) {
-        setAllPlots([{ id: selectedDistrict, area_ha: '0', boundary: coordinates }]);
-        const bounds = L.latLngBounds([]);
-        coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-        if (bounds.isValid()) setPlotBounds(bounds);
-      } else {
-        setAllPlots([]);
-        void (async () => {
-          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
-          if (!nb) return;
-          const b = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (b.isValid()) setPlotBounds(b);
-        })();
-      }
-    };
-
     setSelectedPlotId(null);
     setPlotBoundary([]);
     setAreaHa(null);
@@ -1536,69 +1624,18 @@ const App: React.FC = () => {
     setTotalPlotsCount(0);
 
     if (districtData?.geometry) {
-      try {
-        let coordinates: Coordinate[] = [];
-        const geom = districtData.geometry;
-        if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-          const coords = geom.coordinates;
-          if (geom.type === 'Polygon') {
-            const outerRing = coords[0] || [];
-            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-          } else {
-            const firstPolygon = coords[0] || [];
-            const outerRing = firstPolygon[0] || [];
-            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-          }
-        } else if (Array.isArray(geom)) {
-          coordinates = geom.map((coord: number[]) =>
-            Array.isArray(coord) && coord.length >= 2 ? [coord[0], coord[1]] as Coordinate : null
-          ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-        } else if (geom.coordinates) {
-          const coords = geom.coordinates;
-          if (Array.isArray(coords[0])?.[0]) {
-            const outerRing = coords[0] || [];
-            coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-          } else {
-            coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-          }
-        }
-        setDistrictBoundary(coordinates);
-      } catch (err) {
+      const plots = geometryToBoundaryPlots(selectedDistrict, districtData.geometry);
+      if (!applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) {
         setAllPlots([]);
-        void (async () => {
-          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
-          if (!nb) return;
-          const b = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (b.isValid()) setPlotBounds(b);
-        })();
+        void applyNominatimBounds(selectedDistrict, setPlotBounds);
       }
     } else {
-      // Fallback: fetch boundary from get-geojson API when list has no geometry; then Nominatim
       let cancelled = false;
-      fetchBoundaryGeoJSON(selectedDistrict).then(async (coords) => {
+      fetchBoundaryGeoJSON(selectedDistrict).then(async (plots) => {
         if (cancelled) return;
-        if (coords && coords.length >= 3) {
-          setDistrictBoundary(coords);
-          return;
-        }
-        const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
-        if (cancelled || !nb) {
-          setAllPlots([]);
-          return;
-        }
-        const b = L.latLngBounds(
-          L.latLng(nb.south, nb.west),
-          L.latLng(nb.north, nb.east)
-        );
-        if (b.isValid()) {
-          setPlotBounds(b);
-          setAllPlots([]);
-        } else {
-          setAllPlots([]);
-        }
+        if (applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) return;
+        setAllPlots([]);
+        await applyNominatimBounds(selectedDistrict, setPlotBounds);
       });
       return () => { cancelled = true; };
     }
@@ -1606,22 +1643,13 @@ const App: React.FC = () => {
 
   // Helper: set boundary plot and bounds from coordinates
   const setBoundaryPlot = (id: string, coordinates: Coordinate[]) => {
-    if (coordinates.length >= 3) {
-      setAllPlots([{ id, area_ha: '0', boundary: coordinates }]);
-      const bounds = L.latLngBounds([]);
-      coordinates.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-      if (bounds.isValid()) setPlotBounds(bounds);
-    } else {
+    if (!applyBoundaryPlots(
+      geometryToBoundaryPlots(id, { type: 'Polygon', coordinates: [coordinates] }),
+      setAllPlots,
+      setPlotBounds
+    )) {
       setAllPlots([]);
-      void (async () => {
-        const nb = await fetchNominatimBounds(`${id}, India`);
-        if (!nb) return;
-        const b = L.latLngBounds(
-          L.latLng(nb.south, nb.west),
-          L.latLng(nb.north, nb.east)
-        );
-        if (b.isValid()) setPlotBounds(b);
-      })();
+      void applyNominatimBounds(id, setPlotBounds);
     }
   };
 
@@ -1642,109 +1670,32 @@ const App: React.FC = () => {
     if (selectedSubdistrict && subdistricts.length > 0) {
       const subdistrictData = subdistricts.find(s => s.subdistrict === selectedSubdistrict);
       if (subdistrictData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          const geom = subdistrictData.geometry;
-          if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-            const coords = geom.coordinates;
-            if (geom.type === 'Polygon') {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (geom.coordinates) {
-            const coords = geom.coordinates;
-            if (Array.isArray(coords[0])?.[0]) {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
-          setBoundaryPlot(selectedSubdistrict, coordinates);
-        } catch (err) {
+        const plots = geometryToBoundaryPlots(selectedSubdistrict, subdistrictData.geometry);
+        if (!applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) {
           setAllPlots([]);
         }
       } else {
         let cancelled = false;
-        fetchBoundaryGeoJSON(selectedSubdistrict).then(async (coords) => {
+        fetchBoundaryGeoJSON(selectedSubdistrict).then(async (plots) => {
           if (cancelled) return;
-          if (coords && coords.length >= 3) {
-            setBoundaryPlot(selectedSubdistrict, coords);
-            return;
-          }
-          const nb = await fetchNominatimBounds(`${selectedSubdistrict}, ${selectedDistrict}, India`);
-          if (cancelled || !nb) {
-            setAllPlots([]);
-            return;
-          }
-          const b = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (b.isValid()) {
-            setPlotBounds(b);
-            setAllPlots([]);
-          } else {
-            setAllPlots([]);
-          }
+          if (applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) return;
+          setAllPlots([]);
+          await applyNominatimBounds(`${selectedSubdistrict}, ${selectedDistrict}`, setPlotBounds);
         });
         return () => { cancelled = true; };
       }
     } else if (!selectedSubdistrict && selectedDistrict) {
       const districtData = districts.find(d => d.district === selectedDistrict);
       if (districtData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          const geom = districtData.geometry;
-          if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-            const coords = geom.coordinates;
-            if (geom.type === 'Polygon') {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (geom.coordinates) {
-            const coords = geom.coordinates;
-            if (Array.isArray(coords[0])?.[0]) {
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
-          setBoundaryPlot(selectedDistrict, coordinates);
-        } catch (err) {
-        }
+        const plots = geometryToBoundaryPlots(selectedDistrict, districtData.geometry);
+        applyBoundaryPlots(plots, setAllPlots, setPlotBounds);
       } else {
         let cancelled = false;
-        fetchBoundaryGeoJSON(selectedDistrict).then(async (coords) => {
+        fetchBoundaryGeoJSON(selectedDistrict).then(async (plots) => {
           if (cancelled) return;
-          if (coords && coords.length >= 3) {
-            setBoundaryPlot(selectedDistrict, coords);
-            return;
-          }
-          const nb = await fetchNominatimBounds(`${selectedDistrict}, India`);
-          if (cancelled || !nb) {
-            setAllPlots([]);
-            return;
-          }
-          const b = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (b.isValid()) {
-            setPlotBounds(b);
-            setAllPlots([]);
-          } else {
-            setAllPlots([]);
-          }
+          if (applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) return;
+          setAllPlots([]);
+          await applyNominatimBounds(selectedDistrict, setPlotBounds);
         });
         return () => { cancelled = true; };
       }
@@ -1778,14 +1729,20 @@ const App: React.FC = () => {
   useEffect(() => {
     if (splitScreenMode) return;
     if (!selectedVillage || !showVillageBoundary) return;
+    if (showVillageOwners || villageOwnersLoading) return;
     if (!selectedDistrict || !selectedSubdistrict) return;
 
     let cancelled = false;
 
     const loadFieldPlots = async () => {
       try {
-        const fieldPlots = await fetchFieldBoundaries(selectedDistrict, selectedSubdistrict, selectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(
+          selectedDistrict,
+          selectedSubdistrict,
+          selectedVillage
+        );
         if (cancelled) return;
+        if (!showVillageOwners) setVillagePlotMetaById({});
 
         const villageData = villages.find((v) => v.village === selectedVillage);
         const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
@@ -1804,6 +1761,7 @@ const App: React.FC = () => {
         if (bounds.isValid()) setPlotBounds(bounds);
       } catch {
         if (cancelled) return;
+        setVillagePlotMetaById({});
         const villageData = villages.find((v) => v.village === selectedVillage);
         const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
         if (outlineCoords.length >= 3) {
@@ -1816,7 +1774,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary, splitScreenMode]);
+  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary, showVillageOwners, villageOwnersLoading, splitScreenMode]);
 
   // When village + crop + location set, fetch predict-area (checklist controls map display)
   useEffect(() => {
@@ -1829,12 +1787,14 @@ const App: React.FC = () => {
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
       setPredictFieldFillByFieldId({});
+      setPredictCropFieldPlots([]);
       setPredictCropAreas({
         sugarcane: null,
         wheat: null,
         Soyabean: null,
         Onion: null,
         Mango: null,
+        Banana: null,
       });
       setPredictAreaDataMonth(null);
       setPredictCropAreaLoading(false);
@@ -1849,11 +1809,11 @@ const App: React.FC = () => {
         : getCurrentPredictAreaMonth();
 
     fetchPredictArea(district, subdistrict, village, monthParam, {
-      includeBoundaries: false,
-      limit: 20,
+      includeBoundaries: true,
+      limit: 500,
       offset: 0,
     })
-      .then((res) => {
+      .then(async (res) => {
         if (cancelled) return;
 
         const resolvedMonth =
@@ -1869,6 +1829,7 @@ const App: React.FC = () => {
           Soyabean: null,
           Onion: null,
           Mango: null,
+          Banana: null,
         };
 
         CROP_SELECTION_KEYS.forEach((key) => {
@@ -1891,17 +1852,32 @@ const App: React.FC = () => {
 
         setPredictAreaByCrop(next);
         setPredictCropAreas(areas);
+
+        try {
+          const fieldPlots = await loadPredictCropFieldPlots(
+            res,
+            district,
+            subdistrict,
+            village,
+            next
+          );
+          if (!cancelled) setPredictCropFieldPlots(fieldPlots);
+        } catch {
+          if (!cancelled) setPredictCropFieldPlots([]);
+        }
       })
       .catch(() => {
         if (!cancelled) {
           setPredictAreaByCrop({});
           setPredictAreaCropColor(null);
+          setPredictCropFieldPlots([]);
           setPredictCropAreas({
             sugarcane: null,
             wheat: null,
             Soyabean: null,
             Onion: null,
             Mango: null,
+            Banana: null,
           });
           setPredictAreaDataMonth(null);
         }
@@ -1965,10 +1941,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  useEffect(() => {
-    setSelectedCrops(emptyCropSelection());
-  }, [selectedVillage, leftSelectedVillage, rightSelectedVillage]);
-
   const predictAreaMapCard = useMemo(() => {
     if (!hasAnyCropSelected(selectedCrops)) return null;
     const inScope = splitScreenMode
@@ -2011,6 +1983,8 @@ const App: React.FC = () => {
   // Clear analysis data when village changes; when village cleared, show subdistrict boundary
   useEffect(() => {
     setSelectedPlotId(null);
+    setSelectedPlotArea(null);
+    setVillagePlotMetaById({});
     setPlotBoundary([]);
     setAreaHa(null);
     setTileUrl(null);
@@ -2022,6 +1996,7 @@ const App: React.FC = () => {
     setAvailablePlots([]);
     setTotalPlotsCount(0);
     setGeojsonPlots([]);
+    setPredictCropFieldPlots([]);
 
     if (!selectedVillage && selectedSubdistrict) {
       const subdistrictData = subdistricts.find((s) => s.subdistrict === selectedSubdistrict);
@@ -2278,6 +2253,11 @@ const App: React.FC = () => {
         setAvailablePlots([]);
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
+        if (activeTab !== 'forest') {
+          setForestTileUrl(null);
+          setSelectedForestAgeClass(null);
+          setForestAreaHa(null);
+        }
         setWaterAreaHectares(null); // Clear water area when location changes
         if (activeTab && ['growth', 'water', 'soil', 'pest'].includes(activeTab)) {
           setSelectedTimeSeriesYearMonth(null);
@@ -2292,32 +2272,8 @@ const App: React.FC = () => {
           setSelectedPestCategory(null);
           setShowPestChildren(false);
         }
-        if (activeTab !== 'pest') {
-          setPestHierarchy(null);
-          setPestTileUrl(null);
-          setSelectedPestCategory(null);
-          setShowPestChildren(false);
-        }
 
-        // Location outline: /villages API when village selected, else subdistrict/district geometry
-        if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) {
-          locationBoundary = await fetchAnalysisLocationBoundary(
-            selectedDistrict,
-            selectedSubdistrict || '',
-            selectedVillage || '',
-            districts,
-            subdistricts,
-            villages,
-            selectedDistrict,
-            setVillages,
-          );
-          if (locationBoundary) {
-            setAllPlots([locationBoundary]);
-            applyOutlineBounds(locationBoundary, setPlotBounds);
-          }
-        }
-
-         // Fetch data based on active tab
+         // Fetch data based on active tab (API first — cards update as soon as response arrives)
            let response: GrowthAnalysisResponse | NDWIDetectionResponse;
          switch (activeTab) {
           case 'growth':
@@ -2391,11 +2347,139 @@ const App: React.FC = () => {
             return;
           }
 
-          // Debug logging for full API response removed for production
-          
+          const responseAny = response as any;
+
+          // Store card / sidebar data immediately (do not wait for map tiles or boundary)
+          if (activeTab === 'waterSource') {
+            const ndwiResponse = response as NDWIDetectionResponse;
+            const waterSourceData = {
+              ...(response.pixel_summary || {}),
+              ...(ndwiResponse.area_summary || {}),
+            };
+            setAllPlotsAnalysisData((prev) => ({
+              ...prev,
+              waterSource: waterSourceData,
+            }));
+          } else if (activeTab === 'pest') {
+            const pestResponse: any = response;
+            if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+              setPestHierarchy({
+                plot: pestResponse.plots?.[0]?.properties?.plot_id ?? '',
+                total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
+                hierarchy: pestResponse.hierarchy,
+              } as PestHierarchyResponse);
+              const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
+              const pestSummary = {
+                healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+                chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+                fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+                sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+                wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+                soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+                healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+                chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+                fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+                sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+                wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+                soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+                total_area_hectare: pestResponse.total_area_ha ?? 0,
+              };
+              setAllPlotsAnalysisData((prev) => ({ ...prev, pest: pestSummary }));
+              const currentTile = pestResponse.plots?.[0]?.properties?.tile_url ?? null;
+              if (currentTile) {
+                setPestTileUrl(currentTile);
+                setAllPlotsTileUrls((prev) => ({ ...prev, pest: currentTile }));
+              }
+              const stored = Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : [];
+              setPestStoredSeries(stored);
+              setSelectedPestYearMonth(null);
+            } else {
+              const pct = pestResponse.percentage_summary || {};
+              const area = pestResponse.area_summary_hectare || {};
+              setPestHierarchy(null);
+              const pestSummary = {
+                healthy_pixel_percentage: pct.healthy_pct ?? 0,
+                chewing_pixel_percentage: pct.chewing_pct ?? 0,
+                fungi_pixel_percentage: pct.fungi_pct ?? 0,
+                sucking_pixel_percentage: pct.sucking_pct ?? 0,
+                wilt_pixel_percentage: pct.wilt_pct ?? 0,
+                soilborne_pixel_percentage: pct.soilborne_pct ?? 0,
+                healthy_area_hectare: area.healthy_area_ha ?? 0,
+                chewing_area_hectare: area.chewing_area_ha ?? 0,
+                fungi_area_hectare: area.fungi_area_ha ?? 0,
+                sucking_area_hectare: area.sucking_area_ha ?? 0,
+                wilt_area_hectare: area.wilt_area_ha ?? 0,
+                soilborn_area_hectare: area.soilborne_area_ha ?? 0,
+                soilborne_area_hectare: area.soilborne_area_ha ?? 0,
+                total_area_hectare: area.total_area_ha ?? 0,
+              };
+              setAllPlotsAnalysisData((prev) => ({ ...prev, pest: pestSummary }));
+            }
+          } else if (response.pixel_summary || responseAny.classwise) {
+            const classwise = responseAny.classwise;
+            const tabData = (response.pixel_summary || {}) as any;
+            if ((activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil') && classwise && Array.isArray(classwise) && classwise.length > 0) {
+              tabData.classwise = classwise;
+            }
+            setAllPlotsAnalysisData((prev) => ({
+              growth: activeTab === 'growth' ? tabData : (prev?.growth || null),
+              water: activeTab === 'water' ? tabData : (prev?.water || null),
+              soil: activeTab === 'soil' ? tabData : (prev?.soil || null),
+              pest: activeTab === 'pest' ? (response.pixel_summary || {}) : (prev?.pest || null),
+              waterSource: prev?.waterSource || null,
+            }));
+            const storedResponse = response as GrowthAnalysisWithStoredResponse;
+            if (activeTab === 'growth') {
+              setGrowthCurrentData(tabData);
+              setGrowthStoredSeries(Array.isArray(storedResponse.stored) ? storedResponse.stored : []);
+              setGrowthStoredError(null);
+              const growthAreaHa = extractGrowthAreaHectares(response);
+              if (growthAreaHa != null) setTotalAreaHectares(growthAreaHa);
+            } else if (activeTab === 'water') {
+              const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
+              setWaterStoredSeries(wStored);
+              setSelectedWaterYearMonth(null);
+              setWaterCurrentSnapshot({ ...tabData });
+            } else if (activeTab === 'soil') {
+              const sStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
+              setSoilStoredSeries(sStored);
+              setSelectedSoilYearMonth(null);
+            } else if (activeTab === 'pest' && Array.isArray(storedResponse.stored)) {
+              const stored = storedResponse.stored as PestStoredResponse;
+              setPestStoredSeries(stored);
+              setSelectedPestYearMonth(null);
+            }
+          } else {
+            setAllPlotsAnalysisData((prev) => ({
+              growth: activeTab === 'growth' ? null : (prev?.growth || null),
+              water: activeTab === 'water' ? null : (prev?.water || null),
+              soil: activeTab === 'soil' ? null : (prev?.soil || null),
+              pest: activeTab === 'pest' ? null : (prev?.pest || null),
+              waterSource: activeTab === 'waterSource' ? null : (prev?.waterSource || null),
+            }));
+          }
+          setLoading(false);
+
+          // Location outline after API (does not block card data)
+          if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) {
+            locationBoundary = await fetchAnalysisLocationBoundary(
+              selectedDistrict,
+              selectedSubdistrict || '',
+              selectedVillage || '',
+              districts,
+              subdistricts,
+              villages,
+              selectedDistrict,
+              setVillages,
+            );
+            if (locationBoundary) {
+              applyOutlineBounds(locationBoundary, setPlotBounds);
+            }
+          }
+
           // Handle different response formats
           let plotsArray: any[] = [];
-          const responseAny = response as any;
           
           // Format 1: Direct plots array
           if (response.plots && Array.isArray(response.plots)) {
@@ -2429,23 +2513,21 @@ const App: React.FC = () => {
             // Collect tile URLs first (before mapping)
             const tileUrlsMap: Record<string, string> = {};
             
-            // First pass: Collect all tile URLs (even if coordinates are missing)
-            plotsArray.forEach((plot, index) => {
-              // Try multiple ways to get plot_id: plot_id, plot_name, or generate from index
+            // First pass: one composite GEE tile only (multiple layers cause GEE 429 rate limits)
+            for (let index = 0; index < plotsArray.length; index++) {
+              const plot = plotsArray[index];
               const plotId = plot.properties?.plot_id || plot.plot_id || 
                             plot.properties?.plot_name || plot.plot_name || 
                             `plot-${index}`;
               const tileUrl = plot.properties?.tile_url || plot.tile_url;
-              
-              // Store tile_url even if plotId is missing (use index as fallback)
               if (tileUrl) {
-                // Ensure the tile URL is a valid string and properly formatted
                 const cleanTileUrl = String(tileUrl).trim();
                 if (cleanTileUrl && cleanTileUrl.includes('earthengine.googleapis.com')) {
                   tileUrlsMap[plotId] = cleanTileUrl;
+                  break;
                 }
               }
-            });
+            }
             
             // Second pass: Convert plots to map format (only plots with valid coordinates)
             const plotsForMap = plotsArray
@@ -2543,142 +2625,6 @@ const App: React.FC = () => {
             setAllPlotsTileUrls({});
           }
 
-          // Store pixel/area summaries based on active tab
-          // For waterSource, also include area_summary data (water_area_percentage)
-          if (activeTab === 'waterSource') {
-            const ndwiResponse = response as NDWIDetectionResponse;
-            const waterSourceData = {
-              ...(response.pixel_summary || {}),
-              ...(ndwiResponse.area_summary || {}), // Include area_summary (water_area_percentage, water_area_hectare, etc.)
-            };
-            setAllPlotsAnalysisData(prev => ({
-              ...prev,
-              waterSource: waterSourceData,
-            }));
-          } else if (activeTab === 'pest') {
-            const pestResponse: any = response;
-            // New format: hierarchy with tile_url, total_area_ha, percentage, children per category (from POST pest-detectionclasswise current)
-            if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
-              setPestHierarchy({
-                plot: pestResponse.plots?.[0]?.properties?.plot_id ?? '',
-                total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
-                hierarchy: pestResponse.hierarchy,
-              } as PestHierarchyResponse);
-              const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
-              const pestSummary = {
-                healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
-                chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
-                fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
-                sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
-                wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
-                soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
-                healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
-                chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
-                fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
-                sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
-                wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
-                soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
-                soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
-                total_area_hectare: pestResponse.total_area_ha ?? 0,
-              };
-              setAllPlotsAnalysisData(prev => ({
-                ...prev,
-                pest: pestSummary,
-              }));
-              // Current snapshot: set map tile from first feature so "Current" shows the right layer
-              const currentTile = pestResponse.plots?.[0]?.properties?.tile_url ?? null;
-              if (currentTile) {
-                setPestTileUrl(currentTile);
-                setAllPlotsTileUrls(prev => ({ ...prev, pest: currentTile }));
-              }
-              // Time series: use stored year_month from same response (Current + all stored dates on tab)
-              const stored = Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : [];
-              setPestStoredSeries(stored);
-              setSelectedPestYearMonth(null);
-            } else {
-              // Legacy: percentage_summary and area_summary_hectare
-              const pct = pestResponse.percentage_summary || {};
-              const area = pestResponse.area_summary_hectare || {};
-              setPestHierarchy(null);
-              const pestSummary = {
-                healthy_pixel_percentage: pct.healthy_pct ?? 0,
-                chewing_pixel_percentage: pct.chewing_pct ?? 0,
-                fungi_pixel_percentage: pct.fungi_pct ?? 0,
-                sucking_pixel_percentage: pct.sucking_pct ?? 0,
-                wilt_pixel_percentage: pct.wilt_pct ?? 0,
-                soilborne_pixel_percentage: pct.soilborne_pct ?? 0,
-                healthy_area_hectare: area.healthy_area_ha ?? 0,
-                chewing_area_hectare: area.chewing_area_ha ?? 0,
-                fungi_area_hectare: area.fungi_area_ha ?? 0,
-                sucking_area_hectare: area.sucking_area_ha ?? 0,
-                wilt_area_hectare: area.wilt_area_ha ?? 0,
-                soilborn_area_hectare: area.soilborne_area_ha ?? 0,
-                soilborne_area_hectare: area.soilborne_area_ha ?? 0,
-                total_area_hectare: area.total_area_ha ?? 0,
-              };
-              setAllPlotsAnalysisData(prev => ({
-                ...prev,
-                pest: pestSummary,
-              }));
-            }
-          } else if (response.pixel_summary || (response as any).classwise) {
-            const responseAny = response as any;
-            const classwise = responseAny.classwise;
-            const tabData = (response.pixel_summary || {}) as any;
-            if ((activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil') && classwise && Array.isArray(classwise) && classwise.length > 0) {
-              tabData.classwise = classwise;
-            }
-            setAllPlotsAnalysisData(prev => ({
-              growth: activeTab === 'growth' ? tabData : (prev?.growth || null),
-              water: activeTab === 'water' ? tabData : (prev?.water || null),
-              soil: activeTab === 'soil' ? tabData : (prev?.soil || null),
-              pest: activeTab === 'pest' ? (response.pixel_summary || {}) : (prev?.pest || null),
-              waterSource: prev?.waterSource || null,
-            }));
-            // Growth/Water/Soil/Pest: set stored year_month from analyze_* response for time series tab
-            const storedResponse = response as GrowthAnalysisWithStoredResponse;
-            if (activeTab === 'growth') {
-              setGrowthCurrentData(tabData); // keep current snapshot for "Current" tab
-              setGrowthStoredSeries(Array.isArray(storedResponse.stored) ? storedResponse.stored : []);
-              setGrowthStoredError(null);
-              const growthAreaHa = extractGrowthAreaHectares(response);
-              if (growthAreaHa != null) setTotalAreaHectares(growthAreaHa);
-            } else if (activeTab === 'water') {
-              const wStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
-              setWaterStoredSeries(wStored);
-              setSelectedWaterYearMonth(null);
-              setWaterCurrentSnapshot({ ...tabData });
-              const wuTiles = waterClasswiseToTileUrlMap(tabData.classwise);
-              if (Object.keys(wuTiles).length > 0) {
-                setAllPlotsTileUrls((prev) => {
-                  const rest = Object.fromEntries(
-                    Object.entries(prev).filter(
-                      ([key]) => !key.startsWith('wu-') && key !== WATER_UPTAKE_CLASS_TILE_KEY
-                    )
-                  );
-                  return { ...rest, ...wuTiles };
-                });
-                setShowTileLayers(true);
-              }
-            } else if (activeTab === 'soil') {
-              const sStored = Array.isArray(storedResponse.stored) ? storedResponse.stored : [];
-              setSoilStoredSeries(sStored);
-              setSelectedSoilYearMonth(null);
-            } else if (activeTab === 'pest' && Array.isArray(storedResponse.stored)) {
-              const stored = storedResponse.stored as PestStoredResponse;
-              setPestStoredSeries(stored);
-              setSelectedPestYearMonth(null);
-            }
-          } else {
-            setAllPlotsAnalysisData(prev => ({
-              growth: activeTab === 'growth' ? null : (prev?.growth || null),
-              water: activeTab === 'water' ? null : (prev?.water || null),
-              soil: activeTab === 'soil' ? null : (prev?.soil || null),
-              pest: activeTab === 'pest' ? null : (prev?.pest || null),
-              waterSource: activeTab === 'waterSource' ? null : (prev?.waterSource || null),
-            }));
-          }
-          
           // Extract water_area_hectare for waterSource tab
           if (activeTab === 'waterSource') {
             const ndwiResponse = response as NDWIDetectionResponse;
@@ -2905,131 +2851,23 @@ const App: React.FC = () => {
       
       // Extract coordinates from geometry and display on map
       if (districtData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle different geometry formats
-          if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-            // Extract coordinates from GeoJSON Polygon/MultiPolygon
-            const coords = districtData.geometry.coordinates;
-            
-            if (districtData.geometry.type === 'Polygon') {
-              // Polygon: coordinates is an array of rings, first ring is outer boundary
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (districtData.geometry.type === 'MultiPolygon') {
-              // MultiPolygon: coordinates is an array of polygons, take first polygon's outer ring
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (Array.isArray(districtData.geometry)) {
-            // Direct coordinate array
-            coordinates = districtData.geometry.map((coord: number[]) => 
-              Array.isArray(coord) && coord.length >= 2 
-                ? [coord[0], coord[1]] as Coordinate 
-                : null
-            ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-          } else if (districtData.geometry.coordinates) {
-            // Nested coordinates structure
-            const coords = districtData.geometry.coordinates;
-            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-              // Nested array: extract outer ring
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              // Flat array
-              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
-          
-          // Create a plot from district boundary for map display
-          if (coordinates.length >= 3) {
-            const districtPlot = {
-              id: leftSelectedDistrict,
-              area_ha: '0', // Area not provided
-              boundary: coordinates
-            };
-            setLeftAllPlots([districtPlot]);
-            
-            // Calculate bounds for the district
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
-            }
-          } else {
-            void (async () => {
-              const ring = await fetchBoundaryGeoJSON(leftSelectedDistrict);
-              if (cancelled) return;
-              if (ring && ring.length >= 3) {
-                setLeftAllPlots([{ id: leftSelectedDistrict, area_ha: '0', boundary: ring }]);
-                const b = L.latLngBounds([]);
-                ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
-                if (b.isValid()) setPlotBounds(b);
-                return;
-              }
-              const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
-              if (cancelled || !nb) {
-                setLeftAllPlots([]);
-                return;
-              }
-              const nomBounds = L.latLngBounds(
-                L.latLng(nb.south, nb.west),
-                L.latLng(nb.north, nb.east)
-              );
-              if (nomBounds.isValid()) {
-                setPlotBounds(nomBounds);
-                setLeftAllPlots([]);
-              } else {
-                setLeftAllPlots([]);
-              }
-            })();
-          }
-        } catch (err) {
-          setLeftAllPlots([]);
+        const plots = geometryToBoundaryPlots(leftSelectedDistrict, districtData.geometry);
+        if (!applyBoundaryPlots(plots, setLeftAllPlots, setPlotBounds)) {
           void (async () => {
-            const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
-            if (cancelled || !nb) return;
-            const nomB = L.latLngBounds(
-              L.latLng(nb.south, nb.west),
-              L.latLng(nb.north, nb.east)
-            );
-            if (nomB.isValid()) {
-              setPlotBounds(nomB);
-            }
+            const fallbackPlots = await fetchBoundaryGeoJSON(leftSelectedDistrict);
+            if (cancelled) return;
+            if (applyBoundaryPlots(fallbackPlots, setLeftAllPlots, setPlotBounds)) return;
+            setLeftAllPlots([]);
+            await applyNominatimBounds(leftSelectedDistrict, setPlotBounds);
           })();
         }
       } else {
         void (async () => {
-          const ring = await fetchBoundaryGeoJSON(leftSelectedDistrict);
+          const plots = await fetchBoundaryGeoJSON(leftSelectedDistrict);
           if (cancelled) return;
-          if (ring && ring.length >= 3) {
-            setLeftAllPlots([{ id: leftSelectedDistrict, area_ha: '0', boundary: ring }]);
-            const b = L.latLngBounds([]);
-            ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
-            if (b.isValid()) setPlotBounds(b);
-            return;
-          }
-          const nb = await fetchNominatimBounds(`${leftSelectedDistrict}, India`);
-          if (cancelled || !nb) {
-            setLeftAllPlots([]);
-            return;
-          }
-          const nomBoundsR = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (nomBoundsR.isValid()) {
-            setPlotBounds(nomBoundsR);
-            setLeftAllPlots([]);
-          } else {
-            setLeftAllPlots([]);
-          }
+          if (applyBoundaryPlots(plots, setLeftAllPlots, setPlotBounds)) return;
+          setLeftAllPlots([]);
+          await applyNominatimBounds(leftSelectedDistrict, setPlotBounds);
         })();
       }
     } else if (splitScreenMode && (!leftSelectedDistrict || leftSelectedSubdistrict || leftSelectedVillage)) {
@@ -3049,131 +2887,23 @@ const App: React.FC = () => {
       
       // Extract coordinates from geometry and display on map
       if (districtData?.geometry) {
-        try {
-          let coordinates: Coordinate[] = [];
-          
-          // Handle different geometry formats
-          if (districtData.geometry.type === 'Polygon' || districtData.geometry.type === 'MultiPolygon') {
-            // Extract coordinates from GeoJSON Polygon/MultiPolygon
-            const coords = districtData.geometry.coordinates;
-            
-            if (districtData.geometry.type === 'Polygon') {
-              // Polygon: coordinates is an array of rings, first ring is outer boundary
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else if (districtData.geometry.type === 'MultiPolygon') {
-              // MultiPolygon: coordinates is an array of polygons, take first polygon's outer ring
-              const firstPolygon = coords[0] || [];
-              const outerRing = firstPolygon[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          } else if (Array.isArray(districtData.geometry)) {
-            // Direct coordinate array
-            coordinates = districtData.geometry.map((coord: number[]) => 
-              Array.isArray(coord) && coord.length >= 2 
-                ? [coord[0], coord[1]] as Coordinate 
-                : null
-            ).filter((c: Coordinate | null): c is Coordinate => c !== null);
-          } else if (districtData.geometry.coordinates) {
-            // Nested coordinates structure
-            const coords = districtData.geometry.coordinates;
-            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-              // Nested array: extract outer ring
-              const outerRing = coords[0] || [];
-              coordinates = outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            } else {
-              // Flat array
-              coordinates = coords.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-            }
-          }
-          
-          // Create a plot from district boundary for map display
-          if (coordinates.length >= 3) {
-            const districtPlot = {
-              id: rightSelectedDistrict,
-              area_ha: '0', // Area not provided
-              boundary: coordinates
-            };
-            setRightAllPlots([districtPlot]);
-            
-            // Calculate bounds for the district
-            if (coordinates.length > 0) {
-              const bounds = L.latLngBounds([]);
-              coordinates.forEach((coord: Coordinate) => {
-                bounds.extend([coord[1], coord[0]]); // [lat, lng]
-              });
-              if (bounds.isValid()) {
-                setPlotBounds(bounds);
-              }
-            }
-          } else {
-            void (async () => {
-              const ring = await fetchBoundaryGeoJSON(rightSelectedDistrict);
-              if (cancelled) return;
-              if (ring && ring.length >= 3) {
-                setRightAllPlots([{ id: rightSelectedDistrict, area_ha: '0', boundary: ring }]);
-                const b = L.latLngBounds([]);
-                ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
-                if (b.isValid()) setPlotBounds(b);
-                return;
-              }
-              const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
-              if (cancelled || !nb) {
-                setRightAllPlots([]);
-                return;
-              }
-              const nomBoundsR0 = L.latLngBounds(
-                L.latLng(nb.south, nb.west),
-                L.latLng(nb.north, nb.east)
-              );
-              if (nomBoundsR0.isValid()) {
-                setPlotBounds(nomBoundsR0);
-                setRightAllPlots([]);
-              } else {
-                setRightAllPlots([]);
-              }
-            })();
-          }
-        } catch (err) {
-          setRightAllPlots([]);
+        const plots = geometryToBoundaryPlots(rightSelectedDistrict, districtData.geometry);
+        if (!applyBoundaryPlots(plots, setRightAllPlots, setPlotBounds)) {
           void (async () => {
-            const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
-            if (cancelled || !nb) return;
-            const nomB = L.latLngBounds(
-              L.latLng(nb.south, nb.west),
-              L.latLng(nb.north, nb.east)
-            );
-            if (nomB.isValid()) {
-              setPlotBounds(nomB);
-            }
+            const fallbackPlots = await fetchBoundaryGeoJSON(rightSelectedDistrict);
+            if (cancelled) return;
+            if (applyBoundaryPlots(fallbackPlots, setRightAllPlots, setPlotBounds)) return;
+            setRightAllPlots([]);
+            await applyNominatimBounds(rightSelectedDistrict, setPlotBounds);
           })();
         }
       } else {
         void (async () => {
-          const ring = await fetchBoundaryGeoJSON(rightSelectedDistrict);
+          const plots = await fetchBoundaryGeoJSON(rightSelectedDistrict);
           if (cancelled) return;
-          if (ring && ring.length >= 3) {
-            setRightAllPlots([{ id: rightSelectedDistrict, area_ha: '0', boundary: ring }]);
-            const b = L.latLngBounds([]);
-            ring.forEach((c: Coordinate) => b.extend([c[1], c[0]]));
-            if (b.isValid()) setPlotBounds(b);
-            return;
-          }
-          const nb = await fetchNominatimBounds(`${rightSelectedDistrict}, India`);
-          if (cancelled || !nb) {
-            setRightAllPlots([]);
-            return;
-          }
-          const nomBoundsR1 = L.latLngBounds(
-            L.latLng(nb.south, nb.west),
-            L.latLng(nb.north, nb.east)
-          );
-          if (nomBoundsR1.isValid()) {
-            setPlotBounds(nomBoundsR1);
-            setRightAllPlots([]);
-          } else {
-            setRightAllPlots([]);
-          }
+          if (applyBoundaryPlots(plots, setRightAllPlots, setPlotBounds)) return;
+          setRightAllPlots([]);
+          await applyNominatimBounds(rightSelectedDistrict, setPlotBounds);
         })();
       }
     } else if (splitScreenMode && (!rightSelectedDistrict || rightSelectedSubdistrict || rightSelectedVillage)) {
@@ -3309,14 +3039,20 @@ const App: React.FC = () => {
   // Left field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
     if (!splitScreenMode || !leftSelectedVillage || !showLeftVillageBoundary || !leftVillages.length || leftActiveTab) return;
+    if (showLeftVillageOwners || villageOwnersLoading) return;
     if (!leftSelectedDistrict || !leftSelectedSubdistrict) return;
 
     let cancelled = false;
 
     const loadFieldPlots = async () => {
       try {
-        const fieldPlots = await fetchFieldBoundaries(leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(
+          leftSelectedDistrict,
+          leftSelectedSubdistrict,
+          leftSelectedVillage
+        );
         if (cancelled) return;
+        if (!showLeftVillageOwners) setVillagePlotMetaById({});
 
         const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
         const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
@@ -3347,7 +3083,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, leftVillages, leftSelectedDistrict, leftSelectedSubdistrict, leftActiveTab]);
+  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, showLeftVillageOwners, villageOwnersLoading, leftVillages, leftSelectedDistrict, leftSelectedSubdistrict, leftActiveTab]);
 
   useEffect(() => {
     if (splitScreenMode && !leftSelectedVillage && leftSelectedSubdistrict) {
@@ -3516,14 +3252,20 @@ const App: React.FC = () => {
   // Right field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
     if (!splitScreenMode || !rightSelectedVillage || !showRightVillageBoundary || !rightVillages.length || rightActiveTab) return;
+    if (showRightVillageOwners || villageOwnersLoading) return;
     if (!rightSelectedDistrict || !rightSelectedSubdistrict) return;
 
     let cancelled = false;
 
     const loadFieldPlots = async () => {
       try {
-        const fieldPlots = await fetchFieldBoundaries(rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage);
+        const fieldPlots = await fetchFieldBoundaries(
+          rightSelectedDistrict,
+          rightSelectedSubdistrict,
+          rightSelectedVillage
+        );
         if (cancelled) return;
+        if (!showRightVillageOwners) setVillagePlotMetaById({});
 
         const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
         const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
@@ -3554,7 +3296,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, rightVillages, rightSelectedDistrict, rightSelectedSubdistrict, rightActiveTab]);
+  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, showRightVillageOwners, villageOwnersLoading, rightVillages, rightSelectedDistrict, rightSelectedSubdistrict, rightActiveTab]);
 
   useEffect(() => {
     if (splitScreenMode && !rightSelectedVillage && rightSelectedSubdistrict && !rightActiveTab) {
@@ -3607,6 +3349,11 @@ const App: React.FC = () => {
           setLeftError(null);
           // Clear old data when location changes
           setLeftAllPlotsTileUrls({});
+          if (leftActiveTab !== 'forest') {
+            setForestTileUrl(null);
+            setSelectedForestAgeClass(null);
+            setForestAreaHa(null);
+          }
           
           let locationBoundary: OutlinePlot | null = null;
 
@@ -3931,6 +3678,11 @@ const App: React.FC = () => {
           setRightError(null);
           // Clear old data when location changes
           setRightAllPlotsTileUrls({});
+          if (rightActiveTab !== 'forest') {
+            setForestTileUrl(null);
+            setSelectedForestAgeClass(null);
+            setForestAreaHa(null);
+          }
           
           let locationBoundary: OutlinePlot | null = null;
 
@@ -4689,8 +4441,6 @@ const App: React.FC = () => {
       plotsArray = [rd.feature];
     }
 
-    const wuFromStored = waterClasswiseToTileUrlMap(rd.classwise);
-
     const tileUrlsMap: Record<string, string> = {};
     const plotsForMap: { id: string; area_ha: string; boundary: Coordinate[] }[] = [];
 
@@ -4703,11 +4453,16 @@ const App: React.FC = () => {
         `plot-${index}`;
       const tileUrl = plot.properties?.tile_url || plot.tile_url;
 
-      if (tileUrl && typeof tileUrl === 'string' && tileUrl.includes('earthengine.googleapis.com')) {
+      if (
+        Object.keys(tileUrlsMap).length === 0 &&
+        tileUrl &&
+        typeof tileUrl === 'string' &&
+        tileUrl.includes('earthengine.googleapis.com')
+      ) {
         tileUrlsMap[String(plotId)] = tileUrl.trim();
       }
 
-      // Geometry â†’ boundary for map
+      // Geometry → boundary for map
       let coordinates: number[][] = [];
       if (plot.geometry && plot.geometry.coordinates) {
         const geomCoords = plot.geometry.coordinates;
@@ -4743,10 +4498,11 @@ const App: React.FC = () => {
     });
 
     setAllPlotsTileUrls((prev) => {
-      const withoutWu = Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith('wu-')));
-      return { ...withoutWu, ...tileUrlsMap, ...wuFromStored };
+      const lst = prev['land-surface-temperature'];
+      const base = lst ? { 'land-surface-temperature': lst } : {};
+      return { ...base, ...tileUrlsMap };
     });
-    if (Object.keys(tileUrlsMap).length > 0 || Object.keys(wuFromStored).length > 0) {
+    if (Object.keys(tileUrlsMap).length > 0) {
       setShowTileLayers(true);
     }
     if (plotsForMap.length > 0) {
@@ -4756,28 +4512,6 @@ const App: React.FC = () => {
       setTotalPlotsCount(plotIds.length);
     }
   }, [splitScreenMode, selectedWaterYearMonth, waterStoredSeries, activeTab, selectedDistrict]);
-
-  // Water tab: returning to "Current" restores sidebar + class tiles from latest API snapshot
-  useEffect(() => {
-    if (splitScreenMode) return;
-    if (activeTab !== 'water') return;
-    if (selectedWaterYearMonth != null) return;
-    if (!waterCurrentSnapshot || !Array.isArray((waterCurrentSnapshot as any).classwise)) return;
-
-    setAllPlotsAnalysisData((prev) => ({
-      ...prev,
-      water: waterCurrentSnapshot as any,
-    }));
-    const wuTiles = waterClasswiseToTileUrlMap((waterCurrentSnapshot as any).classwise);
-    if (Object.keys(wuTiles).length === 0) return;
-    setAllPlotsTileUrls((prev) => {
-      const rest = Object.fromEntries(
-        Object.entries(prev).filter(([key]) => !key.startsWith('wu-') && key !== WATER_UPTAKE_CLASS_TILE_KEY)
-      );
-      return { ...rest, ...wuTiles };
-    });
-    setShowTileLayers(true);
-  }, [activeTab, selectedWaterYearMonth, waterCurrentSnapshot, splitScreenMode]);
 
   // When a stored pest year_month is selected for left side, update hierarchy, sidebar cards and map tile
   useEffect(() => {
@@ -5035,13 +4769,27 @@ const App: React.FC = () => {
   }, [splitScreenMode, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage]);
 
   // Use all plots from taluka, or selected plot if analysis data is loaded, or GeoJSON plots if loaded
-  const plots = geojsonPlots.length > 0 
-    ? geojsonPlots 
-    : (allPlots.length > 0 ? allPlots : (plotBoundary.length > 0 ? [{
-        id: selectedPlotId || '',
-        area_ha: String(areaHa || 0),
-        boundary: plotBoundary
-      }] : []));
+  const basePlots: MapPlot[] = geojsonPlots.length > 0
+    ? geojsonPlots
+    : allPlots.length > 0
+      ? allPlots
+      : plotBoundary.length > 0
+        ? [{
+            id: selectedPlotId || '',
+            area_ha: String(areaHa || 0),
+            boundary: plotBoundary,
+          }]
+        : [];
+
+  const plots = useMemo(
+    () =>
+      mergePlotsWithPredictCropFields(
+        basePlots,
+        predictCropFieldPlots,
+        hasAnyCropSelected(selectedCrops)
+      ),
+    [basePlots, predictCropFieldPlots, selectedCrops]
+  );
 
   // Helper function to get pixel data for a specific side
   const getCurrentPixelData = (side: 'left' | 'right' = 'left') => {
@@ -5454,13 +5202,41 @@ const App: React.FC = () => {
                   ))}
                 </select>
                 {selectedVillage && (
-                  <button
-                    type="button"
-                    onClick={() => setShowVillageBoundary(true)}
-                    className="mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
-                  >
-                    Display boundary
-                  </button>
+                  <div className="mt-2 space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowVillageBoundary(true)}
+                      className="w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
+                    >
+                      Display boundary
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        villageOwnersLoading ||
+                        !selectedDistrict ||
+                        !selectedSubdistrict
+                      }
+                      onClick={() => {
+                        void loadVillageOwnerOverlay({
+                          district: selectedDistrict,
+                          subdistrict: selectedSubdistrict,
+                          village: selectedVillage,
+                          villageList: villages,
+                          setPlots: setAllPlots,
+                          setBounds: setPlotBounds,
+                          onOwnersShown: () => setShowVillageOwners(true),
+                        });
+                      }}
+                      className="flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white border border-sky-500"
+                    >
+                      {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Owner name
+                    </button>
+                    {villageOwnersError ? (
+                      <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
+                    ) : null}
+                  </div>
                 )}
               </div>
               {/* Frequency dropdown - same row as other filters */}
@@ -6432,23 +6208,73 @@ const App: React.FC = () => {
                 ))}
               </select>
               {getSelectedVillage('left') && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (splitScreenMode) {
-                      if (getSelectedVillage('left')) setShowLeftVillageBoundary(true);
-                    } else {
-                      setShowVillageBoundary(true);
+                <div className="mt-2 space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (splitScreenMode) {
+                        if (getSelectedVillage('left')) setShowLeftVillageBoundary(true);
+                      } else {
+                        setShowVillageBoundary(true);
+                      }
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      isDarkMode
+                        ? 'bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500'
+                    }`}
+                  >
+                    Display boundary
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      villageOwnersLoading ||
+                      !getSelectedDistrict('left') ||
+                      !getSelectedSubdistrict('left')
                     }
-                  }}
-                  className={`mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    isDarkMode
-                      ? 'bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500'
-                  }`}
-                >
-                  Display boundary
-                </button>
+                    onClick={() => {
+                      const district = getSelectedDistrict('left');
+                      const subdistrict = getSelectedSubdistrict('left');
+                      const village = getSelectedVillage('left');
+                      if (!district || !subdistrict || !village) return;
+                      if (splitScreenMode) {
+                        void loadVillageOwnerOverlay({
+                          district,
+                          subdistrict,
+                          village,
+                          villageList: getVillages('left'),
+                          setPlots: setLeftAllPlots,
+                          setBounds: setPlotBounds,
+                          onOwnersShown: () => setShowLeftVillageOwners(true),
+                        });
+                      } else {
+                        void loadVillageOwnerOverlay({
+                          district,
+                          subdistrict,
+                          village,
+                          villageList: villages,
+                          setPlots: setAllPlots,
+                          setBounds: setPlotBounds,
+                          onOwnersShown: () => setShowVillageOwners(true),
+                        });
+                      }
+                    }}
+                    className={`flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
+                      isDarkMode
+                        ? 'bg-sky-700 hover:bg-sky-600 text-white border border-sky-500'
+                        : 'bg-sky-600 hover:bg-sky-500 text-white border border-sky-500'
+                    }`}
+                  >
+                    {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Owner name
+                  </button>
+                  {villageOwnersError ? (
+                    <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                      {villageOwnersError}
+                    </p>
+                  ) : null}
+                </div>
               )}
             </div>
           )}
@@ -6549,26 +6375,17 @@ const App: React.FC = () => {
                         setShowPestChildren(!!children && Object.keys(children).length > 0);
                       }
                     } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                      if (currentTab === 'water') {
-                        // Keep district/plot base tile; add class raster on top (replacing whole map dropped base layer)
-                        if (splitScreenMode) {
-                          setLeftAllPlotsTileUrls((prev) => ({
-                            ...prev,
-                            [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
-                          }));
-                          setLeftShowTileLayers(true);
-                        } else {
-                          setAllPlotsTileUrls((prev) => ({
-                            ...prev,
-                            [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
-                          }));
-                          setShowTileLayers(true);
-                        }
-                      } else if (splitScreenMode) {
-                        setLeftAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
+                      const overlayKey =
+                        currentTab === 'water' ? WATER_UPTAKE_CLASS_TILE_KEY : `${currentTab}Class`;
+                      if (splitScreenMode) {
+                        setLeftAllPlotsTileUrls((prev) =>
+                          withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
+                        );
                         setLeftShowTileLayers(true);
                       } else {
-                        setAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
+                        setAllPlotsTileUrls((prev) =>
+                          withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
+                        );
                         setShowTileLayers(true);
                       }
                     }
@@ -8788,32 +8605,46 @@ const App: React.FC = () => {
               cropColor={predictAreaCropColor}
               fieldAreaByFieldId={predictAreaFieldAreas}
               fieldFillByFieldId={predictFieldFillByFieldId}
-              hideFieldIdAreaCard={shouldHideFieldIdAreaOnMap(
+              hideFieldIdAreaCard={
+                Object.keys(villagePlotMetaById).length > 0
+                  ? false
+                  : shouldHideFieldIdAreaOnMap(
                 splitScreenMode ? leftAllPlots : plots,
                 splitScreenMode ? leftSelectedDistrict : selectedDistrict,
                 splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict,
                 splitScreenMode ? leftSelectedVillage : selectedVillage
               )}
+              villagePlotMetaById={villagePlotMetaById}
+              showOwnerLabels={
+                splitScreenMode ? showLeftVillageOwners : showVillageOwners
+              }
               onSelectPlot={async (id) => {
                 setSelectedPlotId(id);
                 
-                // Find the plot to get coordinates
                 const currentPlots = splitScreenMode ? leftAllPlots : plots;
                 const selectedPlot = currentPlots.find(p => p.id === id);
                 if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
                   return;
                 }
-                
-                // Use area_ha from selected plot when available
-                if (geojsonPlots.length > 0 && selectedPlot.area_ha) {
+
+                const plotMeta = villagePlotMetaById[id];
+                if (plotMeta?.owners?.length) {
+                  const totalHa = plotMeta.owners.reduce(
+                    (sum, o) => sum + (o.totalArea > 0 ? o.totalArea : 0),
+                    0
+                  );
+                  setSelectedPlotArea(totalHa > 0 ? totalHa : null);
+                } else if (geojsonPlots.length > 0 && selectedPlot.area_ha) {
                   const plotArea = parseFloat(selectedPlot.area_ha);
                   if (!isNaN(plotArea) && plotArea > 0) {
                     setSelectedPlotArea(plotArea);
                   } else {
                     setSelectedPlotArea(null);
                   }
+                } else if (selectedPlot.area_ha) {
+                  const plotArea = parseFloat(selectedPlot.area_ha);
+                  setSelectedPlotArea(!isNaN(plotArea) && plotArea > 0 ? plotArea : null);
                 } else {
-                  // Clear plot area if not from GeoJSON
                   setSelectedPlotArea(null);
                 }
                 
@@ -8859,7 +8690,7 @@ const App: React.FC = () => {
               etData={etData}
               weatherData={weatherData}
               etWeatherLoading={etWeatherLoading}
-              tileUrl={pestTileUrl || forestTileUrl || lstTileUrl || cropTileUrl || tileUrl}
+              tileUrl={getMapOverlayTileUrl('left')}
               plotBounds={plotBounds}
               allPlotsTileUrls={splitScreenMode ? leftAllPlotsTileUrls : allPlotsTileUrls}
               showTileLayers={splitScreenMode ? leftShowTileLayers : showTileLayers}
@@ -8878,6 +8709,14 @@ const App: React.FC = () => {
               showWindFlowLayer={showWindFlowLayer}
               predictAreaMapCard={predictAreaMapCard}
             />
+          )}
+          {getLoading('left') && getActiveTab('left') && (
+            <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-black/30 pointer-events-none">
+              <div className="flex flex-col items-center gap-2 rounded-lg bg-black/65 px-5 py-4">
+                <Loader2 className="animate-spin text-white" size={36} />
+                <span className="text-sm text-white font-medium">Loading...</span>
+              </div>
+            </div>
           )}
           </div>
 
@@ -10202,22 +10041,40 @@ const App: React.FC = () => {
                 cropColor={predictAreaCropColor}
                 fieldAreaByFieldId={predictAreaFieldAreas}
                 fieldFillByFieldId={predictFieldFillByFieldId}
-                hideFieldIdAreaCard={shouldHideFieldIdAreaOnMap(
+                hideFieldIdAreaCard={
+                  Object.keys(villagePlotMetaById).length > 0
+                    ? false
+                    : shouldHideFieldIdAreaOnMap(
                   rightAllPlots,
                   rightSelectedDistrict,
                   rightSelectedSubdistrict,
                   rightSelectedVillage
                 )}
+                villagePlotMetaById={villagePlotMetaById}
+                showOwnerLabels={showRightVillageOwners}
                 onSelectPlot={async (id) => {
                   setSelectedPlotId(id);
                   const selectedPlot = rightAllPlots.find(p => p.id === id);
                   if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
                     return;
                   }
+                  const plotMeta = villagePlotMetaById[id];
+                  if (plotMeta?.owners?.length) {
+                    const totalHa = plotMeta.owners.reduce(
+                      (sum, o) => sum + (o.totalArea > 0 ? o.totalArea : 0),
+                      0
+                    );
+                    setSelectedPlotArea(totalHa > 0 ? totalHa : null);
+                  } else if (selectedPlot.area_ha) {
+                    const plotArea = parseFloat(selectedPlot.area_ha);
+                    setSelectedPlotArea(!isNaN(plotArea) && plotArea > 0 ? plotArea : null);
+                  } else {
+                    setSelectedPlotArea(null);
+                  }
                   const bounds = L.latLngBounds(selectedPlot.boundary.map((coord: Coordinate) => [coord[1], coord[0]]));
                   setPlotBounds(bounds);
                 }}
-                tileUrl={tileUrl}
+                tileUrl={getMapOverlayTileUrl('right')}
                 plotBounds={plotBounds}
                 allPlotsTileUrls={rightAllPlotsTileUrls}
                 showTileLayers={rightShowTileLayers}
@@ -10227,6 +10084,14 @@ const App: React.FC = () => {
                 showWindFlowLayer={false}
                 predictAreaMapCard={predictAreaMapCard}
               />
+            )}
+            {rightLoading && getActiveTab('right') && (
+              <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-black/30 pointer-events-none">
+                <div className="flex flex-col items-center gap-2 rounded-lg bg-black/65 px-5 py-4">
+                  <Loader2 className="animate-spin text-white" size={36} />
+                  <span className="text-sm text-white font-medium">Loading...</span>
+                </div>
+              </div>
             )}
             {splitScreenMode && !isMapFullscreen && getActiveTab('right') === 'forest' && (
               <ForestAgeClassMapCards
@@ -10371,13 +10236,45 @@ const App: React.FC = () => {
                     ))}
                   </select>
                   {getSelectedVillage('right') && (
-                    <button
-                      type="button"
-                      onClick={() => setShowRightVillageBoundary(true)}
-                      className="mt-2 w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
-                    >
-                      Display boundary
-                    </button>
+                    <div className="mt-2 space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowRightVillageBoundary(true)}
+                        className="w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
+                      >
+                        Display boundary
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          villageOwnersLoading ||
+                          !getSelectedDistrict('right') ||
+                          !getSelectedSubdistrict('right')
+                        }
+                        onClick={() => {
+                          const district = getSelectedDistrict('right');
+                          const subdistrict = getSelectedSubdistrict('right');
+                          const village = getSelectedVillage('right');
+                          if (!district || !subdistrict || !village) return;
+                          void loadVillageOwnerOverlay({
+                            district,
+                            subdistrict,
+                            village,
+                            villageList: getVillages('right'),
+                            setPlots: setRightAllPlots,
+                            setBounds: setPlotBounds,
+                            onOwnersShown: () => setShowRightVillageOwners(true),
+                          });
+                        }}
+                        className="flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white border border-sky-500"
+                      >
+                        {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                        Owner name
+                      </button>
+                      {villageOwnersError ? (
+                        <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
+                      ) : null}
+                    </div>
                   )}
                 </div>
               )}
@@ -10451,14 +10348,11 @@ const App: React.FC = () => {
                                 setShowPestChildren(!!children && Object.keys(children).length > 0);
                               }
                             } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                              if (currentTab === 'water') {
-                                setRightAllPlotsTileUrls((prev) => ({
-                                  ...prev,
-                                  [WATER_UPTAKE_CLASS_TILE_KEY]: item.tileUrl!,
-                                }));
-                              } else {
-                                setRightAllPlotsTileUrls({ [currentTab!]: item.tileUrl! });
-                              }
+                              const overlayKey =
+                                currentTab === 'water' ? WATER_UPTAKE_CLASS_TILE_KEY : `${currentTab}Class`;
+                              setRightAllPlotsTileUrls((prev) =>
+                                withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
+                              );
                               setRightShowTileLayers(true);
                             }
                           }}

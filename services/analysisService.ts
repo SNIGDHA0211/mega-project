@@ -163,22 +163,7 @@ export const parseVillageBoundaryCoordinates = (village: VillageItem): Coordinat
   }
 
   if (village.geometry) {
-    const g = village.geometry;
-    if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
-      const c = g.coordinates;
-      if (g.type === 'Polygon') {
-        const outerRing = (c && c[0]) || [];
-        return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-      }
-      const firstPolygon = (c && c[0]) || [];
-      const outerRing = firstPolygon[0] || [];
-      return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-    }
-    if (g.coordinates) {
-      const c = g.coordinates;
-      const outerRing = Array.isArray(c[0]) && Array.isArray(c[0][0]) ? c[0] : c;
-      return outerRing.map((coord: number[]) => [coord[0], coord[1]] as Coordinate);
-    }
+    return parseGeometryToCoordinates(village.geometry);
   }
 
   return [];
@@ -224,6 +209,95 @@ export const isVillageOutlinePlotId = (id: string) => id.startsWith(VILLAGE_OUTL
 /** Numeric field id from /field-boundaries (e.g. "159") */
 export const isFieldPlotId = (id: string) => /^\d+$/.test(id);
 
+const ringFromLngLatPairs = (outerRing: unknown): Coordinate[] => {
+  if (!Array.isArray(outerRing)) return [];
+  return outerRing
+    .filter((c): c is [number, number] => Array.isArray(c) && c.length >= 2)
+    .map((c) => [c[0], c[1]] as Coordinate);
+};
+
+/** All outer rings from GeoJSON Polygon / MultiPolygon (fixes districts like Kolhapur with multiple parts). */
+export function parseGeometryToOuterRings(geometry: unknown): Coordinate[][] {
+  if (!geometry || typeof geometry !== 'object') return [];
+  const geom = geometry as { type?: string; coordinates?: unknown };
+  const rings: Coordinate[][] = [];
+
+  try {
+    if (geom.type === 'Polygon') {
+      const ring = ringFromLngLatPairs((geom.coordinates as number[][][])?.[0]);
+      if (ring.length >= 3) rings.push(ring);
+    } else if (geom.type === 'MultiPolygon') {
+      const polys = geom.coordinates as number[][][][];
+      if (Array.isArray(polys)) {
+        polys.forEach((poly) => {
+          const ring = ringFromLngLatPairs(poly?.[0]);
+          if (ring.length >= 3) rings.push(ring);
+        });
+      }
+    } else if (geom.coordinates) {
+      const coords = geom.coordinates;
+      if (Array.isArray(coords)) {
+        if (Array.isArray(coords[0]) && Array.isArray((coords[0] as number[][])[0])) {
+          const first = coords[0] as number[][];
+          if (typeof first[0]?.[0] === 'number') {
+            const ring = ringFromLngLatPairs(first);
+            if (ring.length >= 3) rings.push(ring);
+          } else {
+            (coords as number[][][][]).forEach((poly) => {
+              const ring = ringFromLngLatPairs(poly?.[0]);
+              if (ring.length >= 3) rings.push(ring);
+            });
+          }
+        } else {
+          const ring = ringFromLngLatPairs(coords);
+          if (ring.length >= 3) rings.push(ring);
+        }
+      }
+    }
+  } catch {
+    /* ignore malformed geometry */
+  }
+
+  return rings;
+}
+
+/** Single ring — uses the largest outer ring (main landmass) when geometry is MultiPolygon. */
+export function parseGeometryToCoordinates(geometry: unknown): Coordinate[] {
+  const rings = parseGeometryToOuterRings(geometry);
+  if (rings.length === 0) return [];
+  return rings.reduce((best, ring) => (ring.length > best.length ? ring : best), rings[0]);
+}
+
+/** One map plot per outer ring; multi-part boundaries get ids like `Kolhapur::part-1`. */
+export function geometryToBoundaryPlots(baseId: string, geometry: unknown): FieldBoundaryPlot[] {
+  const rings = parseGeometryToOuterRings(geometry);
+  if (rings.length === 0) return [];
+  if (rings.length === 1) {
+    return [{ id: baseId, area_ha: '0', boundary: rings[0] }];
+  }
+  return rings.map((boundary, index) => ({
+    id: `${baseId}::part-${index}`,
+    area_ha: '0',
+    boundary,
+  }));
+}
+
+export function isAdminBoundaryPlotId(
+  plotId: string,
+  district: string,
+  subdistrict: string,
+  village: string
+): boolean {
+  return (
+    plotId === district ||
+    plotId.startsWith(`${district}::`) ||
+    plotId === subdistrict ||
+    plotId.startsWith(`${subdistrict}::`) ||
+    plotId === village ||
+    isVillageOutlinePlotId(plotId)
+  );
+}
+
 /** Hide Field ID / Area only on pure admin-boundary views (no field polygons). */
 export const shouldHideFieldIdAreaOnMap = (
   plots: Array<{ id: string }>,
@@ -234,13 +308,7 @@ export const shouldHideFieldIdAreaOnMap = (
   if (plots.some((plot) => isFieldPlotId(plot.id))) return false;
   return (
     plots.length >= 1 &&
-    plots.some(
-      (plot) =>
-        plot.id === district ||
-        plot.id === subdistrict ||
-        plot.id === village ||
-        isVillageOutlinePlotId(plot.id)
-    )
+    plots.some((plot) => isAdminBoundaryPlotId(plot.id, district, subdistrict, village))
   );
 };
 export interface FieldBoundariesResponse {
@@ -316,6 +384,118 @@ export const fetchFieldBoundaries = async (
   }
 };
 
+/** Maharashtra state code for village survey API */
+const VILLAGE_DATA_STATE_CODE = '27';
+
+/** Cloudflare tunnel — update VITE_VILLAGE_DATA_API_URL in .env when tunnel URL changes */
+const DEFAULT_VILLAGE_DATA_API = 'https://world-tribunal-ottawa-goal.trycloudflare.com';
+
+const getVillageDataBaseUrl = (): string => {
+  const fromEnv =
+    typeof import.meta !== 'undefined'
+      ? (import.meta.env.VITE_VILLAGE_DATA_API_URL as string | undefined)
+      : undefined;
+  return (fromEnv || DEFAULT_VILLAGE_DATA_API).replace(/\/$/, '');
+};
+
+export interface VillagePlotOwner {
+  surveyNo: string;
+  totalArea: number;
+  potKharaba: number;
+  ownerName: string;
+  khataNo: string;
+}
+
+export interface VillagePlotMeta {
+  plotId: string;
+  plotNo: string;
+  info?: string;
+  owners: VillagePlotOwner[];
+}
+
+/** Parse WKT MULTIPOLYGON outer ring → [lng, lat][] */
+export const parseWktMultipolygonToRing = (wkt: string): Coordinate[] => {
+  if (!wkt || typeof wkt !== 'string') return [];
+  const match = wkt.trim().match(/\(\(\s*([^)]+)\s*\)\)/);
+  if (!match) return [];
+  return match[1]
+    .split(',')
+    .map((pair) => {
+      const parts = pair.trim().split(/\s+/);
+      if (parts.length < 2) return null;
+      const lng = parseFloat(parts[0]);
+      const lat = parseFloat(parts[1]);
+      if (Number.isNaN(lng) || Number.isNaN(lat)) return null;
+      return [lng, lat] as Coordinate;
+    })
+    .filter((c): c is Coordinate => c !== null && c.length === 2);
+};
+
+export type VillageSurveyLoadResult = {
+  plots: FieldBoundaryPlot[];
+  plotMetaById: Record<string, VillagePlotMeta>;
+};
+
+/** Village cadastral plots from survey API (theGeom + owners). */
+export const fetchVillageSurveyPlots = async (
+  district: string,
+  subdistrict: string,
+  village: string,
+  stateCode = VILLAGE_DATA_STATE_CODE
+): Promise<VillageSurveyLoadResult> => {
+  const params = new URLSearchParams({
+    district: district.trim(),
+    taluka: subdistrict.trim(),
+    village: village.trim(),
+    stateCode,
+  });
+  const url = `${getVillageDataBaseUrl()}/api/village-data?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`Village data API Error: ${response.status} ${response.statusText}`);
+  }
+  const raw = await response.json();
+  const payload = raw?.data ?? raw;
+  const apiPlots: unknown[] = payload?.village?.plots ?? [];
+  const plots: FieldBoundaryPlot[] = [];
+  const plotMetaById: Record<string, VillagePlotMeta> = {};
+
+  apiPlots.forEach((item: any, index: number) => {
+    const plotId = String(item?.plotId ?? item?.plotNo ?? `plot-${index}`);
+    const plotNo = String(item?.plotNo ?? plotId);
+    const boundary = parseWktMultipolygonToRing(String(item?.theGeom ?? ''));
+    if (boundary.length < 3) return;
+
+    const owners: VillagePlotOwner[] = Array.isArray(item?.owners)
+      ? item.owners.map((o: any) => ({
+          surveyNo: String(o?.surveyNo ?? ''),
+          totalArea: Number(o?.totalArea ?? 0),
+          potKharaba: Number(o?.potKharaba ?? 0),
+          ownerName: String(o?.ownerName ?? ''),
+          khataNo: String(o?.khataNo ?? ''),
+        }))
+      : [];
+
+    const totalHa = owners.reduce((sum, o) => sum + (o.totalArea > 0 ? o.totalArea : 0), 0);
+    plots.push({
+      id: plotId,
+      area_ha: totalHa > 0 ? String(totalHa) : '0',
+      boundary,
+    });
+    plotMetaById[plotId] = {
+      plotId,
+      plotNo,
+      info: typeof item?.info === 'string' ? item.info : undefined,
+      owners,
+    };
+  });
+
+  return { plots, plotMetaById };
+};
+
 // Predict-area API response (POST): crop predictions per crop type with field_id and field_area_ha
 export interface PredictAreaCropData {
   crop_name: string;
@@ -349,6 +529,76 @@ export function getCurrentPredictAreaMonth(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** Parse predict-area `field_boundaries_geojson` into map-ready field polygons (numeric field_id). */
+export function parsePredictAreaFieldGeoJson(
+  geojson: PredictAreaResponse['field_boundaries_geojson']
+): FieldBoundaryPlot[] {
+  if (!geojson || !Array.isArray(geojson.features)) return [];
+
+  const plots: FieldBoundaryPlot[] = [];
+  geojson.features.forEach((rawFeat: unknown, index: number) => {
+    const feat = rawFeat as {
+      geometry?: { type?: string; coordinates?: unknown };
+      properties?: Record<string, unknown>;
+    };
+    const geom = feat?.geometry;
+    if (!geom?.type || !geom.coordinates) return;
+
+    const props = feat.properties ?? {};
+    const fieldId = props.field_id ?? props.fieldId ?? props.id;
+    if (fieldId == null) return;
+    const id = String(fieldId);
+
+    let outerRing: number[][] = [];
+    if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
+      const ring = (geom.coordinates as number[][][])[0];
+      if (Array.isArray(ring)) outerRing = ring;
+    } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+      const ring = (geom.coordinates as number[][][][])[0]?.[0];
+      if (Array.isArray(ring)) outerRing = ring;
+    }
+    const boundary: Coordinate[] = outerRing
+      .filter((c) => Array.isArray(c) && c.length >= 2)
+      .map((c) => [c[0], c[1]] as Coordinate);
+    if (boundary.length < 3) return;
+
+    const areaRaw = props.area_ha ?? props.field_area_ha ?? props.area;
+    const area_ha =
+      areaRaw != null && !Number.isNaN(Number(areaRaw)) ? String(areaRaw) : '0';
+    plots.push({ id, area_ha, boundary });
+  });
+
+  return plots;
+}
+
+export function collectPredictAreaFieldIds(
+  layers: Partial<Record<string, { areas: Record<string, number> }>>
+): Set<string> {
+  const ids = new Set<string>();
+  Object.values(layers).forEach((layer) => {
+    if (layer) Object.keys(layer.areas).forEach((id) => ids.add(id));
+  });
+  return ids;
+}
+
+/** Field polygons for crop coloring — from geojson or /field-boundaries fallback. */
+export async function loadPredictCropFieldPlots(
+  res: PredictAreaResponse,
+  district: string,
+  subdistrict: string,
+  village: string,
+  layers: Partial<Record<string, { areas: Record<string, number> }>>
+): Promise<FieldBoundaryPlot[]> {
+  const fromGeo = parsePredictAreaFieldGeoJson(res.field_boundaries_geojson);
+  if (fromGeo.length > 0) return fromGeo;
+
+  const fieldIds = collectPredictAreaFieldIds(layers);
+  if (fieldIds.size === 0) return [];
+
+  const all = await fetchFieldBoundaries(district, subdistrict, village);
+  return all.filter((p) => fieldIds.has(p.id));
+}
+
 export function formatPredictAreaMonthLabel(ym: string): string {
   const t = ym.trim();
   if (!/^\d{4}-\d{2}$/.test(t)) return ym;
@@ -377,7 +627,7 @@ export const fetchPredictArea = async (
     subdistrict,
     village,
     include_boundaries: String(options?.includeBoundaries ?? false),
-    limit: String(options?.limit ?? 20),
+    limit: String(options?.limit ?? 500),
     offset: String(options?.offset ?? 0),
   });
   if (month && /^\d{4}-\d{2}$/.test(month.trim())) {
@@ -1389,31 +1639,22 @@ export interface TalukaPlotsResponse {
   };
 }
 
-/** Fetch boundary (district or subdistrict) as single outer ring from get-geojson API. Use when /districts or /subdistricts do not return geometry. */
-export const fetchBoundaryGeoJSON = async (name: string): Promise<Coordinate[] | null> => {
+/** Fetch boundary (district or subdistrict) from get-geojson API. Use when /districts or /subdistricts do not return geometry. */
+export const fetchBoundaryGeoJSON = async (name: string): Promise<FieldBoundaryPlot[]> => {
   try {
     const url = isDevelopment
       ? `/api/get-geojson/${encodeURIComponent(name)}`
       : `${getBaseUrl()}/get-geojson/${encodeURIComponent(name)}`;
     const response = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!response.ok) return null;
+    if (!response.ok) return [];
     const data = await response.json();
     const fc = data.geojson || data;
     if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features) || fc.features.length === 0)
-      return null;
+      return [];
     const feature = fc.features[0];
-    const geom = feature?.geometry;
-    if (!geom || !geom.coordinates) return null;
-    let outerRing: number[][] = [];
-    if (geom.type === 'Polygon' && Array.isArray(geom.coordinates[0])) {
-      outerRing = geom.coordinates[0];
-    } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates[0]?.[0])) {
-      outerRing = geom.coordinates[0][0];
-    }
-    if (outerRing.length < 3) return null;
-    return outerRing.map((c: number[]) => [c[0], c[1]] as Coordinate);
+    return geometryToBoundaryPlots(name, feature?.geometry);
   } catch {
-    return null;
+    return [];
   }
 };
 

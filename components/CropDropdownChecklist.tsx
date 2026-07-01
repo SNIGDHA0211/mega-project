@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 
-export const CROP_SELECTION_KEYS = ['sugarcane', 'wheat', 'Soyabean', 'Onion', 'Mango'] as const;
+export const CROP_SELECTION_KEYS = ['sugarcane', 'wheat', 'Soyabean', 'Onion', 'Mango', 'Banana'] as const;
 export type CropSelectionKey = (typeof CROP_SELECTION_KEYS)[number];
 export type CropSelectionState = Record<CropSelectionKey, boolean>;
 
@@ -15,6 +15,7 @@ export const CROP_SELECTION_OPTIONS: {
   { key: 'Soyabean', label: 'Soyabean', color: '#16a34a' },
   { key: 'Onion', label: 'Onion', color: '#eab308' },
   { key: 'Mango', label: 'Mango', color: '#f97316' },
+  { key: 'Banana', label: 'Banana', color: '#fbbf24' },
 ];
 
 export const emptyCropSelection = (): CropSelectionState => ({
@@ -23,6 +24,7 @@ export const emptyCropSelection = (): CropSelectionState => ({
   Soyabean: false,
   Onion: false,
   Mango: false,
+  Banana: false,
 });
 
 export function hasAnyCropSelected(crops: CropSelectionState): boolean {

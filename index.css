@@ -173,3 +173,19 @@ html, body {
   text-align: center;
   white-space: nowrap;
 }
+
+/* Permanent owner name labels on cadastral plots */
+.leaflet-tooltip.owner-plot-onmap-label {
+  background: rgba(6, 78, 59, 0.92);
+  border: 1px solid rgba(167, 243, 208, 0.65);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+  color: #ecfdf5;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: 120px;
+  padding: 2px 6px;
+  pointer-events: none;
+  text-align: center;
+  white-space: normal;
+}

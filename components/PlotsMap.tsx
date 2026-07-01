@@ -5,6 +5,7 @@ import L from 'leaflet';
 import { isFieldPlotId, type WindDirectResponse } from '../services/analysisService';
 import WindFlowOverlay from './WindFlowOverlay';
 import PredictAreaMapCard from './PredictAreaMapCard';
+import type { CropSelectionKey, CropSelectionState } from './CropDropdownChecklist';
 
 interface WaterSource {
   id: string;
@@ -46,11 +47,18 @@ interface PlotsMapProps {
   predictAreaMapCard?: {
     loading: boolean;
     regionLabel: string;
-    cropAreas: Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', number | null>;
-    cropColors?: Partial<Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', string>>;
-    selectedCrops: Record<'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango', boolean>;
-    onToggleCrop: (crop: 'sugarcane' | 'wheat' | 'Soyabean' | 'Onion' | 'Mango') => void;
+    cropAreas: Record<CropSelectionKey, number | null>;
+    cropColors?: Partial<Record<CropSelectionKey, string>>;
+    selectedCrops: CropSelectionState;
+    onToggleCrop: (crop: CropSelectionKey) => void;
   } | null;
+  /** Cadastral plot metadata (survey no + owners) from village-data API */
+  villagePlotMetaById?: Record<
+    string,
+    { plotNo: string; owners: Array<{ surveyNo: string; ownerName: string; khataNo: string; totalArea: number; potKharaba: number }> }
+  >;
+  /** Show permanent owner name labels on cadastral plots (village-data API) */
+  showOwnerLabels?: boolean;
 }
 
 // Helper component to fit bounds when plots change (only on initial load, not after user interaction)
@@ -190,7 +198,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   hideFieldIdAreaCard = false,
   windDirectPayload = null,
   showWindFlowLayer = false,
-  predictAreaMapCard = null
+  predictAreaMapCard = null,
+  villagePlotMetaById = {},
+  showOwnerLabels = false,
 }) => {
   const hasFieldPolygons = plots.some(
     (p) => p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
@@ -225,13 +235,17 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           {tileUrl && (
             <TileLayer
               url={tileUrl}
-              maxZoom={20}
-              opacity={2}
+              maxZoom={18}
+              maxNativeZoom={15}
+              opacity={0.65}
               zIndex={100}
+              updateWhenZooming={false}
+              updateWhenIdle={true}
+              keepBuffer={2}
               attribution="Google Earth Engine"
             />
           )}
-          {/* All plots tile URLs */}
+          {/* All plots tile URLs — one composite layer at a time to avoid GEE 429 rate limits */}
           {Object.entries(allPlotsTileUrls).map(([plotId, url]) => {
             // Google Earth Engine tile URLs use {z}/{x}/{y} format
             // Leaflet automatically replaces {z}, {x}, {y} with actual tile coordinates
@@ -247,10 +261,14 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               <TileLayer
                 key={isWaterClassOverlay ? `tile-water-class-${url.slice(-40)}` : `tile-${plotId}`}
                 url={url}
-                maxZoom={20}
+                maxZoom={18}
+                maxNativeZoom={15}
                 minZoom={0}
                 opacity={isWaterClassOverlay ? 0.78 : 0.6}
                 zIndex={isWaterClassOverlay ? 2500 : 1000}
+                updateWhenZooming={false}
+                updateWhenIdle={true}
+                keepBuffer={2}
                 attribution="Google Earth Engine"
                 crossOrigin={true}
                 errorTileUrl=""
@@ -280,6 +298,8 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
         const isSelected = selectedPlotId === plot.id;
         const isWaterSource = plot.id.startsWith('water-source-');
         const isFieldPlot = isFieldPlotId(plot.id);
+        const villagePlotMeta = villagePlotMetaById[plot.id];
+        const isVillageSurveyPlot = !!villagePlotMeta;
         const isOutlineBoundary = plot.id.startsWith('outline:');
         // Only color fields that are in identified_field_boundaries (predict-area); others stay default
         const isInIdentifiedBoundaries = plot.id in fieldAreaByFieldId;
@@ -299,9 +319,10 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(fillFromPredict.trim())
             ? fillFromPredict.trim()
             : PREDICT_AREA_FIELD_FILL;
+        const cropStroke = useCropColor ? resolvedFillHex : PREDICT_AREA_FIELD_STROKE;
         // Village / district outline only – not field polygons
         const isBoundaryOnly = isOutlineBoundary;
-        const showFieldMeta = isFieldPlot && !isWaterSource;
+        const showFieldMeta = (isFieldPlot || isVillageSurveyPlot) && !isWaterSource;
 
         return (
           <Polygon
@@ -321,12 +342,12 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     // Crop fields (predict-area): white stroke, solid dark green fill
                     color: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? PREDICT_AREA_FIELD_STROKE : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor ? cropStroke : (isSelected ? '#FFD700' : '#FFFFFF')),
                     fillColor: isWaterSource
                       ? '#3b82f6'
                       : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : '#FFFFFF')),
-                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 1 : 0),
-                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 2 : 1),
+                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.55 : 0),
+                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 3 : 1),
                     opacity: 1,
                   }),
             }}
@@ -334,17 +355,35 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               click: () => onSelectPlot(plot.id),
             }}
           >
-            {/* Hover tooltip: Field ID + area (same format, shown only on hover) */}
+            {/* Hover tooltip: survey + owner name (village-data) or field id + area */}
             {showFieldMeta && (
               <Tooltip
                 direction="top"
                 offset={[0, -8]}
                 opacity={0.92}
-                className="field-plot-onmap-label"
+                className={
+                  showOwnerLabels && isVillageSurveyPlot
+                    ? 'owner-plot-onmap-label'
+                    : 'field-plot-onmap-label'
+                }
               >
-                <span className="font-medium">ID: {plot.id}</span>
-                <br />
-                <span className="text-emerald-600 font-semibold">{displayArea.toFixed(2)} ha</span>
+                {isVillageSurveyPlot ? (
+                  <>
+                    <span className="font-medium">Survey: {villagePlotMeta.plotNo}</span>
+                    {villagePlotMeta.owners[0]?.ownerName ? (
+                      <>
+                        <br />
+                        <span className="font-semibold">{villagePlotMeta.owners[0].ownerName}</span>
+                      </>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium">ID: {plot.id}</span>
+                    <br />
+                    <span className="text-emerald-600 font-semibold">{displayArea.toFixed(2)} ha</span>
+                  </>
+                )}
               </Tooltip>
             )}
             {showFieldMeta && (
@@ -373,6 +412,25 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                         )}
                       </div>
                     )}
+                  </>
+                ) : isVillageSurveyPlot ? (
+                  <>
+                    <span className="block font-bold text-gray-700 uppercase mb-1">
+                      Survey No. {villagePlotMeta.plotNo}
+                    </span>
+                    <div className="mt-2 space-y-2 text-left max-h-40 overflow-y-auto">
+                      {villagePlotMeta.owners.map((owner, oi) => (
+                        <div key={`popup-owner-${oi}`} className="border-b border-gray-200 pb-1 last:border-0">
+                          <div className="font-semibold text-emerald-700">{owner.ownerName || '—'}</div>
+                          <div className="text-xs text-gray-600">
+                            Survey: {owner.surveyNo} · Khata: {owner.khataNo}
+                          </div>
+                          <div className="text-xs text-gray-700">
+                            Area: {owner.totalArea.toFixed(4)} ha
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </>
                 ) : (
                   // Regular Plot Popup (click) – show Field ID and area (from predict-area or plot)
