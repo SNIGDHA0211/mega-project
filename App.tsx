@@ -1809,8 +1809,8 @@ const App: React.FC = () => {
         : getCurrentPredictAreaMonth();
 
     fetchPredictArea(district, subdistrict, village, monthParam, {
-      includeBoundaries: true,
-      limit: 500,
+      includeBoundaries: false,
+      limit: 100,
       offset: 0,
     })
       .then(async (res) => {

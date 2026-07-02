@@ -627,7 +627,7 @@ export const fetchPredictArea = async (
     subdistrict,
     village,
     include_boundaries: String(options?.includeBoundaries ?? false),
-    limit: String(options?.limit ?? 500),
+    limit: String(options?.limit ?? 100),
     offset: String(options?.offset ?? 0),
   });
   if (month && /^\d{4}-\d{2}$/.test(month.trim())) {
