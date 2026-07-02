@@ -388,7 +388,7 @@ export const fetchFieldBoundaries = async (
 const VILLAGE_DATA_STATE_CODE = '27';
 
 /** Cloudflare tunnel — update VITE_VILLAGE_DATA_API_URL in .env when tunnel URL changes */
-const DEFAULT_VILLAGE_DATA_API = 'https://world-tribunal-ottawa-goal.trycloudflare.com';
+const DEFAULT_VILLAGE_DATA_API = 'https://web-production-72a7.up.railway.app';
 
 const getVillageDataBaseUrl = (): string => {
   const fromEnv =

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import PlotsMap from './components/PlotsMap';
 import EarthView from './components/EarthView';
+import VillageMapLayerCheckbox from './components/VillageMapLayerCheckbox';
 import CropDropdownChecklist, {
   CROP_SELECTION_KEYS,
   type CropSelectionKey,
@@ -30,7 +31,6 @@ import {
   fetchPredictArea,
   loadPredictCropFieldPlots,
   formatPredictAreaMonthLabel,
-  getCurrentPredictAreaMonth,
   type PredictAreaCropData,
   fetchGrowthAnalysis1,
   fetchLocationTotalAreaHectares,
@@ -321,6 +321,8 @@ const App: React.FC = () => {
   const [showVillageOwners, setShowVillageOwners] = useState(false);
   const [showLeftVillageOwners, setShowLeftVillageOwners] = useState(false);
   const [showRightVillageOwners, setShowRightVillageOwners] = useState(false);
+  /** When true, predict-area/stored-responses crop layer is fetched and shown on map */
+  const [showCropLayer, setShowCropLayer] = useState(false);
   const [villageOwnersLoading, setVillageOwnersLoading] = useState(false);
   const [villageOwnersError, setVillageOwnersError] = useState<string | null>(null);
   const [selectedPlotId, setSelectedPlotId] = useState<string | null>(null);
@@ -389,8 +391,8 @@ const App: React.FC = () => {
     Banana: null,
   });
   const [predictCropAreaLoading, setPredictCropAreaLoading] = useState<boolean>(false);
-  /** YYYY-MM sent as predict-area `month` (default: current calendar month). */
-  const [predictAreaMonthInput, setPredictAreaMonthInput] = useState<string>(getCurrentPredictAreaMonth);
+  /** YYYY-MM for predict-area — empty until user picks a month in the UI */
+  const [predictAreaMonthInput, setPredictAreaMonthInput] = useState('');
   /** Month confirmed from API `month` or last request (for display). */
   const [predictAreaDataMonth, setPredictAreaDataMonth] = useState<string | null>(null);
   /** Field polygons from predict-area (numeric field_id) for crop boundary coloring */
@@ -1529,18 +1531,23 @@ const App: React.FC = () => {
     setShowVillageBoundary(false);
     setShowVillageOwners(false);
     setVillageOwnersError(null);
+    setPredictAreaMonthInput('');
+    setPredictAreaDataMonth(null);
+    setShowCropLayer(false);
   }, [selectedVillage]);
 
   useEffect(() => {
     setShowLeftVillageBoundary(false);
     setShowLeftVillageOwners(false);
     setVillageOwnersError(null);
+    setShowCropLayer(false);
   }, [leftSelectedVillage]);
 
   useEffect(() => {
     setShowRightVillageBoundary(false);
     setShowRightVillageOwners(false);
     setVillageOwnersError(null);
+    setShowCropLayer(false);
   }, [rightSelectedVillage]);
 
   const loadVillageOwnerOverlay = useCallback(
@@ -1583,7 +1590,7 @@ const App: React.FC = () => {
         setVillageOwnersLoading(false);
       }
     },
-    []
+    [],
   );
 
   // When no village is selected, keep subdistrict boundary on map (non–split-screen)
@@ -1705,7 +1712,7 @@ const App: React.FC = () => {
   // Village outline from /villages API when village is selected (before field plots)
   useEffect(() => {
     if (splitScreenMode) return;
-    if (!selectedVillage || showVillageBoundary) return;
+    if (!selectedVillage || showVillageBoundary || showVillageOwners) return;
     if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) return;
 
     const villageData = villages.find((v) => v.village === selectedVillage);
@@ -1723,7 +1730,7 @@ const App: React.FC = () => {
     } else {
       setAllPlots([]);
     }
-  }, [selectedVillage, villages, showVillageBoundary, splitScreenMode, activeTab]);
+  }, [selectedVillage, villages, showVillageBoundary, showVillageOwners, splitScreenMode, activeTab]);
 
   // Field plot boundaries from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
@@ -1782,7 +1789,27 @@ const App: React.FC = () => {
     const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
     const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
 
-    if (!hasAnyCropSelected(selectedCrops) || !district || !subdistrict || !village) {
+    if (!showCropLayer || !hasAnyCropSelected(selectedCrops) || !district || !subdistrict || !village) {
+      setPredictAreaByCrop({});
+      setPredictAreaCropColor(null);
+      setPredictAreaFieldAreas({});
+      setPredictFieldFillByFieldId({});
+      setPredictCropFieldPlots([]);
+      setPredictCropAreas({
+        sugarcane: null,
+        wheat: null,
+        Soyabean: null,
+        Onion: null,
+        Mango: null,
+        Banana: null,
+      });
+      setPredictAreaDataMonth(null);
+      setPredictCropAreaLoading(false);
+      return;
+    }
+
+    const monthParam = predictAreaMonthInput.trim();
+    if (!/^\d{4}-\d{2}$/.test(monthParam)) {
       setPredictAreaByCrop({});
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
@@ -1803,10 +1830,6 @@ const App: React.FC = () => {
 
     let cancelled = false;
     setPredictCropAreaLoading(true);
-    const monthParam =
-      predictAreaMonthInput && /^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())
-        ? predictAreaMonthInput.trim()
-        : getCurrentPredictAreaMonth();
 
     fetchPredictArea(district, subdistrict, village, monthParam, {
       includeBoundaries: false,
@@ -1890,6 +1913,7 @@ const App: React.FC = () => {
       cancelled = true;
     };
   }, [
+    showCropLayer,
     selectedCrops,
     predictAreaMonthInput,
     splitScreenMode,
@@ -1901,8 +1925,15 @@ const App: React.FC = () => {
     leftSelectedVillage,
   ]);
 
-  // Apply checked crops to map field colors
+  // Apply checked crops to map field colors (only when crop layer is enabled)
   useEffect(() => {
+    if (!showCropLayer) {
+      setPredictAreaFieldAreas({});
+      setPredictFieldFillByFieldId({});
+      setPredictAreaCropColor(null);
+      return;
+    }
+
     const areas: Record<string, number> = {};
     const fills: Record<string, string> = {};
 
@@ -1916,7 +1947,7 @@ const App: React.FC = () => {
     setPredictAreaFieldAreas(areas);
     setPredictFieldFillByFieldId(fills);
     setPredictAreaCropColor(null);
-  }, [selectedCrops, predictAreaByCrop]);
+  }, [selectedCrops, predictAreaByCrop, showCropLayer]);
 
   const selectForestAgeClass = useCallback((ageClass: string, tileUrl: string, areaHa: number) => {
     setSelectedForestAgeClass(ageClass);
@@ -1942,7 +1973,9 @@ const App: React.FC = () => {
   }, []);
 
   const predictAreaMapCard = useMemo(() => {
+    if (!showCropLayer) return null;
     if (!hasAnyCropSelected(selectedCrops)) return null;
+    if (!/^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())) return null;
     const inScope = splitScreenMode
       ? !!(leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
       : !!(selectedDistrict && selectedSubdistrict && selectedVillage);
@@ -1963,6 +1996,8 @@ const App: React.FC = () => {
     };
   }, [
     selectedCrops,
+    showCropLayer,
+    predictAreaMonthInput,
     splitScreenMode,
     leftSelectedDistrict,
     leftSelectedSubdistrict,
@@ -3017,7 +3052,7 @@ const App: React.FC = () => {
 
   // Left village outline from /villages API when village is selected
   useEffect(() => {
-    if (!splitScreenMode || !leftSelectedVillage || showLeftVillageBoundary || !leftVillages.length || leftActiveTab) return;
+    if (!splitScreenMode || !leftSelectedVillage || showLeftVillageBoundary || showLeftVillageOwners || !leftVillages.length || leftActiveTab) return;
 
     const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
     if (!villageData) {
@@ -3034,7 +3069,7 @@ const App: React.FC = () => {
     } else {
       setLeftAllPlots([]);
     }
-  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, leftVillages, leftActiveTab]);
+  }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, showLeftVillageOwners, leftVillages, leftActiveTab]);
 
   // Left field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
@@ -3230,7 +3265,7 @@ const App: React.FC = () => {
 
   // Right village outline from /villages API when village is selected
   useEffect(() => {
-    if (!splitScreenMode || !rightSelectedVillage || showRightVillageBoundary || !rightVillages.length || rightActiveTab) return;
+    if (!splitScreenMode || !rightSelectedVillage || showRightVillageBoundary || showRightVillageOwners || !rightVillages.length || rightActiveTab) return;
 
     const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
     if (!villageData) {
@@ -3247,7 +3282,7 @@ const App: React.FC = () => {
     } else {
       setRightAllPlots([]);
     }
-  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, rightVillages, rightActiveTab]);
+  }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, showRightVillageOwners, rightVillages, rightActiveTab]);
 
   // Right field plots from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
@@ -4786,9 +4821,9 @@ const App: React.FC = () => {
       mergePlotsWithPredictCropFields(
         basePlots,
         predictCropFieldPlots,
-        hasAnyCropSelected(selectedCrops)
+        showCropLayer && hasAnyCropSelected(selectedCrops)
       ),
-    [basePlots, predictCropFieldPlots, selectedCrops]
+    [basePlots, predictCropFieldPlots, selectedCrops, showCropLayer]
   );
 
   // Helper function to get pixel data for a specific side
@@ -5203,21 +5238,24 @@ const App: React.FC = () => {
                 </select>
                 {selectedVillage && (
                   <div className="mt-2 space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowVillageBoundary(true)}
-                      className="w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
-                    >
-                      Display boundary
-                    </button>
-                    <button
-                      type="button"
-                      disabled={
-                        villageOwnersLoading ||
-                        !selectedDistrict ||
-                        !selectedSubdistrict
-                      }
-                      onClick={() => {
+                    <VillageMapLayerCheckbox
+                      label="Display boundary"
+                      checked={showVillageBoundary}
+                      onChange={setShowVillageBoundary}
+                      tone="emerald"
+                    />
+                    <VillageMapLayerCheckbox
+                      label="Owner name"
+                      checked={showVillageOwners}
+                      loading={villageOwnersLoading}
+                      disabled={!selectedDistrict || !selectedSubdistrict}
+                      onChange={(checked) => {
+                        if (!checked) {
+                          setShowVillageOwners(false);
+                          setVillagePlotMetaById({});
+                          setVillageOwnersError(null);
+                          return;
+                        }
                         void loadVillageOwnerOverlay({
                           district: selectedDistrict,
                           subdistrict: selectedSubdistrict,
@@ -5228,14 +5266,18 @@ const App: React.FC = () => {
                           onOwnersShown: () => setShowVillageOwners(true),
                         });
                       }}
-                      className="flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white border border-sky-500"
-                    >
-                      {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Owner name
-                    </button>
+                      tone="sky"
+                    />
                     {villageOwnersError ? (
                       <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
                     ) : null}
+                    <VillageMapLayerCheckbox
+                      label="Crop layer"
+                      checked={showCropLayer}
+                      onChange={setShowCropLayer}
+                      tone="violet"
+                      loading={predictCropAreaLoading}
+                    />
                   </div>
                 )}
               </div>
@@ -6094,8 +6136,8 @@ const App: React.FC = () => {
                   }`}
                 />
                 <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
-                  Defaults to the current month. Sent as{' '}
-                  <code className="text-[10px]">month=YYYY-MM</code> on predict-area/stored-responses.
+                  Select a month to load predict-area data (
+                  <code className="text-[10px]">month=YYYY-MM</code>).
                   {predictAreaDataMonth && (
                     <>
                       {' '}
@@ -6209,34 +6251,38 @@ const App: React.FC = () => {
               </select>
               {getSelectedVillage('left') && (
                 <div className="mt-2 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => {
+                  <VillageMapLayerCheckbox
+                    label="Display boundary"
+                    checked={splitScreenMode ? showLeftVillageBoundary : showVillageBoundary}
+                    onChange={(checked) => {
                       if (splitScreenMode) {
-                        if (getSelectedVillage('left')) setShowLeftVillageBoundary(true);
+                        setShowLeftVillageBoundary(checked);
                       } else {
-                        setShowVillageBoundary(true);
+                        setShowVillageBoundary(checked);
                       }
                     }}
-                    className={`w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      isDarkMode
-                        ? 'bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500'
-                        : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500'
-                    }`}
-                  >
-                    Display boundary
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      villageOwnersLoading ||
-                      !getSelectedDistrict('left') ||
-                      !getSelectedSubdistrict('left')
-                    }
-                    onClick={() => {
+                    tone="emerald"
+                    isDarkMode={isDarkMode}
+                  />
+                  <VillageMapLayerCheckbox
+                    label="Owner name"
+                    checked={splitScreenMode ? showLeftVillageOwners : showVillageOwners}
+                    loading={villageOwnersLoading}
+                    disabled={!getSelectedDistrict('left') || !getSelectedSubdistrict('left')}
+                    onChange={(checked) => {
                       const district = getSelectedDistrict('left');
                       const subdistrict = getSelectedSubdistrict('left');
                       const village = getSelectedVillage('left');
+                      if (!checked) {
+                        if (splitScreenMode) {
+                          setShowLeftVillageOwners(false);
+                        } else {
+                          setShowVillageOwners(false);
+                        }
+                        setVillagePlotMetaById({});
+                        setVillageOwnersError(null);
+                        return;
+                      }
                       if (!district || !subdistrict || !village) return;
                       if (splitScreenMode) {
                         void loadVillageOwnerOverlay({
@@ -6260,20 +6306,22 @@ const App: React.FC = () => {
                         });
                       }
                     }}
-                    className={`flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
-                      isDarkMode
-                        ? 'bg-sky-700 hover:bg-sky-600 text-white border border-sky-500'
-                        : 'bg-sky-600 hover:bg-sky-500 text-white border border-sky-500'
-                    }`}
-                  >
-                    {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Owner name
-                  </button>
+                    tone="sky"
+                    isDarkMode={isDarkMode}
+                  />
                   {villageOwnersError ? (
                     <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
                       {villageOwnersError}
                     </p>
                   ) : null}
+                  <VillageMapLayerCheckbox
+                    label="Crop layer"
+                    checked={showCropLayer}
+                    onChange={setShowCropLayer}
+                    tone="violet"
+                    loading={predictCropAreaLoading}
+                    isDarkMode={isDarkMode}
+                  />
                 </div>
               )}
             </div>
@@ -10152,7 +10200,7 @@ const App: React.FC = () => {
                       className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
                     />
                     <p className="text-[11px] text-gray-500 leading-snug">
-                      Defaults to current month. API: <code className="text-[10px]">month=YYYY-MM</code>.
+                      Select a month to load predict-area. API: <code className="text-[10px]">month=YYYY-MM</code>.
                       {predictAreaDataMonth && (
                         <>
                           {' '}
@@ -10237,24 +10285,27 @@ const App: React.FC = () => {
                   </select>
                   {getSelectedVillage('right') && (
                     <div className="mt-2 space-y-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowRightVillageBoundary(true)}
-                        className="w-full px-3 py-2 rounded-lg text-sm font-medium bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
-                      >
-                        Display boundary
-                      </button>
-                      <button
-                        type="button"
-                        disabled={
-                          villageOwnersLoading ||
-                          !getSelectedDistrict('right') ||
-                          !getSelectedSubdistrict('right')
-                        }
-                        onClick={() => {
+                      <VillageMapLayerCheckbox
+                        label="Display boundary"
+                        checked={showRightVillageBoundary}
+                        onChange={setShowRightVillageBoundary}
+                        tone="emerald"
+                      />
+                      <VillageMapLayerCheckbox
+                        label="Owner name"
+                        checked={showRightVillageOwners}
+                        loading={villageOwnersLoading}
+                        disabled={!getSelectedDistrict('right') || !getSelectedSubdistrict('right')}
+                        onChange={(checked) => {
                           const district = getSelectedDistrict('right');
                           const subdistrict = getSelectedSubdistrict('right');
                           const village = getSelectedVillage('right');
+                          if (!checked) {
+                            setShowRightVillageOwners(false);
+                            setVillagePlotMetaById({});
+                            setVillageOwnersError(null);
+                            return;
+                          }
                           if (!district || !subdistrict || !village) return;
                           void loadVillageOwnerOverlay({
                             district,
@@ -10266,14 +10317,18 @@ const App: React.FC = () => {
                             onOwnersShown: () => setShowRightVillageOwners(true),
                           });
                         }}
-                        className="flex w-full items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white border border-sky-500"
-                      >
-                        {villageOwnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                        Owner name
-                      </button>
+                        tone="sky"
+                      />
                       {villageOwnersError ? (
                         <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
                       ) : null}
+                      <VillageMapLayerCheckbox
+                        label="Crop layer"
+                        checked={showCropLayer}
+                        onChange={setShowCropLayer}
+                        tone="violet"
+                        loading={predictCropAreaLoading}
+                      />
                     </div>
                   )}
                 </div>
