@@ -1,5 +1,6 @@
 // Service for fetching analysis data (Growth, Water Uptake, Soil Moisture)
 import { Coordinate } from '../types';
+import { createApiCache } from '../utils/apiCache';
 
 const isDevelopment = typeof window !== 'undefined' && 
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -13,6 +14,20 @@ const getBaseUrl = (): string => {
     return `${window.location.origin}/railway`;
   }
   return RAILWAY_HOST;
+};
+
+/** GET with one retry on gateway/server errors (common when backend is busy). */
+const getJsonWithRetry = async (
+  url: string,
+  headers: Record<string, string> = { accept: 'application/json' }
+): Promise<Response> => {
+  const doFetch = () => fetch(url, { method: 'GET', headers });
+  let response = await doFetch();
+  if ([500, 502, 503, 504].includes(response.status)) {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    response = await doFetch();
+  }
+  return response;
 };
 
 /** POST with one retry on gateway/server errors (common when backend is busy). */
@@ -2146,12 +2161,7 @@ export interface ETResponse {
 export const fetchET = async (lat: number, lon: number): Promise<ETResponse> => {
   try {
     const url = `${getBaseUrl()}/compute-et?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'accept': 'application/json'
-      }
-    });
+    const response = await getJsonWithRetry(url);
     
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
@@ -2185,12 +2195,7 @@ export interface WeatherResponse {
 export const fetchWeather = async (lat: number, lon: number): Promise<WeatherResponse> => {
   try {
     const url = `${getBaseUrl()}/current-weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'accept': 'application/json'
-      }
-    });
+    const response = await getJsonWithRetry(url);
     
     if (!response.ok) {
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
@@ -2204,6 +2209,38 @@ export const fetchWeather = async (lat: number, lon: number): Promise<WeatherRes
     }
     throw error;
   }
+};
+
+export interface PlotEtWeatherBundle {
+  et: ETResponse;
+  weather: WeatherResponse;
+}
+
+const plotEtWeatherCache = createApiCache<PlotEtWeatherBundle>();
+
+/** 20 min — ET/weather changes slowly; avoids repeat slow API calls per plot. */
+const PLOT_ET_WEATHER_TTL_MS = 20 * 60 * 1000;
+
+export const peekPlotEtWeather = (plotId: string): PlotEtWeatherBundle | null =>
+  plotEtWeatherCache.peek(`plot-et-weather:v2:${plotId}`);
+
+export const isPlotEtWeatherFresh = (plotId: string): boolean =>
+  plotEtWeatherCache.isFresh(`plot-et-weather:v2:${plotId}`);
+
+/** Cached ET + current weather for a plot (dedupes concurrent requests). */
+export const fetchPlotEtWeather = async (
+  plotId: string,
+  latitude: number,
+  longitude: number
+): Promise<PlotEtWeatherBundle> => {
+  const key = `plot-et-weather:v2:${plotId}`;
+  return plotEtWeatherCache.getOrFetch(key, PLOT_ET_WEATHER_TTL_MS, async () => {
+    const [et, weather] = await Promise.all([
+      fetchET(latitude, longitude),
+      fetchWeather(latitude, longitude),
+    ]);
+    return { et, weather };
+  });
 };
 
 // Weather (daily) response: district/subdistrict/village
@@ -2225,7 +2262,12 @@ export interface WeatherDailyResponse {
 
 // Fetch Daily Weather (district/subdistrict/village)
 // In development we use Vite proxy (/railway -> Railway backend) to avoid CORS. In production we call BASE_URL directly.
-export const fetchWeatherDaily = async (
+const weatherDailyCache = createApiCache<WeatherDailyResponse>();
+
+/** 1 h — daily weather series for dashboard charts. */
+const WEATHER_DAILY_TTL_MS = 60 * 60 * 1000;
+
+const fetchWeatherDailyFromNetwork = async (
   district: string,
   subdistrict?: string,
   village?: string
@@ -2272,6 +2314,18 @@ export const fetchWeatherDaily = async (
   }
 
   throw lastError ?? new Error(`Weather daily API returned 404 for all paths. Backend must expose GET /weather/daily?district=... (or /api/weather/daily). Tried: ${urlsToTry.join(' ; ')}`);
+};
+
+// Fetch Daily Weather (district/subdistrict/village) — cached 1 h
+export const fetchWeatherDaily = async (
+  district: string,
+  subdistrict?: string,
+  village?: string
+): Promise<WeatherDailyResponse> => {
+  const cacheKey = `weather-daily:${district}:${subdistrict ?? ''}:${village ?? ''}`;
+  return weatherDailyCache.getOrFetch(cacheKey, WEATHER_DAILY_TTL_MS, () =>
+    fetchWeatherDailyFromNetwork(district, subdistrict, village)
+  );
 };
 
 /** Open-Meteo wind AOI payload: polygon ring + sampled grid points with current wind/temp (GET /weather/wind-direct). */

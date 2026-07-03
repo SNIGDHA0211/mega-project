@@ -41,8 +41,9 @@ import {
   fetchNDWIDetection,
   fetchLandSurfaceTemperature,
   fetchForestCanopy,
-  fetchET,
-  fetchWeather,
+  fetchPlotEtWeather,
+  peekPlotEtWeather,
+  isPlotEtWeatherFresh,
   fetchPestStoredSeries,
   fetchDashboardIndicesStore,
   fetchNominatimBounds,
@@ -131,7 +132,6 @@ const CROP_DEFAULT_COLORS: Record<CropSelectionKey, string> = {
   sugarcane: '#2563eb',
   wheat: '#dc2626',
   Soyabean: '#16a34a',
-  Onion: '#eab308',
   Mango: '#f97316',
   Banana: '#fbbf24',
 };
@@ -386,7 +386,6 @@ const App: React.FC = () => {
     sugarcane: null,
     wheat: null,
     Soyabean: null,
-    Onion: null,
     Mango: null,
     Banana: null,
   });
@@ -1799,7 +1798,6 @@ const App: React.FC = () => {
         sugarcane: null,
         wheat: null,
         Soyabean: null,
-        Onion: null,
         Mango: null,
         Banana: null,
       });
@@ -1819,7 +1817,6 @@ const App: React.FC = () => {
         sugarcane: null,
         wheat: null,
         Soyabean: null,
-        Onion: null,
         Mango: null,
         Banana: null,
       });
@@ -1850,7 +1847,6 @@ const App: React.FC = () => {
           sugarcane: null,
           wheat: null,
           Soyabean: null,
-          Onion: null,
           Mango: null,
           Banana: null,
         };
@@ -1898,7 +1894,6 @@ const App: React.FC = () => {
             sugarcane: null,
             wheat: null,
             Soyabean: null,
-            Onion: null,
             Mango: null,
             Banana: null,
           });
@@ -8708,29 +8703,29 @@ const App: React.FC = () => {
                 const centerLat = sumLat / selectedPlot.boundary.length;
                 
                 
-                // Fetch ET and Weather data
-                // Note: ET API uses lat=longitude, lon=latitude (reversed)
-                // Weather API uses lat=latitude, lon=longitude (correct)
+                // Fetch ET and Weather data (cached — instant on repeat plot click)
                 try {
-                  setEtWeatherLoading(true);
-                  setError(null);
-                  
-                  // Fetch both ET and Weather in parallel
-                  // ET API expects: lat=longitude, lon=latitude (backwards)
-                  // Weather API expects: lat=latitude, lon=longitude (correct)
-                  const [etResponse, weatherResponse] = await Promise.all([
-                    fetchET(centerLng, centerLat), // ET: lat=longitude, lon=latitude
-                    fetchWeather(centerLat, centerLng) // Weather: lat=latitude, lon=longitude
-                  ]);
-                  
-                  setEtData(etResponse);
-                  setWeatherData(weatherResponse);
-                  
+                  const cachedEtWeather = peekPlotEtWeather(id);
+                  if (cachedEtWeather) {
+                    setEtData(cachedEtWeather.et);
+                    setWeatherData(cachedEtWeather.weather);
+                    setEtWeatherLoading(!isPlotEtWeatherFresh(id));
+                    setError(null);
+                  } else {
+                    setEtWeatherLoading(true);
+                    setError(null);
+                  }
+
+                  const bundle = await fetchPlotEtWeather(id, centerLat, centerLng);
+                  setEtData(bundle.et);
+                  setWeatherData(bundle.weather);
                 } catch (err) {
                   const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                  setError(`Failed to load ET/Weather: ${errorMessage}`);
-                  setEtData(null);
-                  setWeatherData(null);
+                  if (!peekPlotEtWeather(id)) {
+                    setError(`Failed to load ET/Weather: ${errorMessage}`);
+                    setEtData(null);
+                    setWeatherData(null);
+                  }
                 } finally {
                   setEtWeatherLoading(false);
                 }
