@@ -6101,52 +6101,6 @@ const App: React.FC = () => {
                 <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
                   CONFIGURATION
                 </div>
-          {/* Crops checklist dropdown */}
-          {!showGraphPage && !showAnalysisTrendsPage && (
-            <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-              Crops
-            </label>
-            <CropDropdownChecklist
-              selectedCrops={selectedCrops}
-              onToggleCrop={toggleSelectedCrop}
-              onToggleAll={toggleAllCrops}
-              isDarkMode={isDarkMode}
-            />
-            {hasAnyCropSelected(selectedCrops) && (
-              <div className="mt-3 space-y-1">
-                <label
-                  className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
-                >
-                  Prediction month
-                </label>
-                <input
-                  type="month"
-                  value={predictAreaMonthInput}
-                  onChange={(e) => setPredictAreaMonthInput(e.target.value)}
-                  className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                    isDarkMode
-                      ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
-                      : 'bg-white border border-emerald-100 text-slate-800'
-                  }`}
-                />
-                <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
-                  Select a month to load predict-area data (
-                  <code className="text-[10px]">month=YYYY-MM</code>).
-                  {predictAreaDataMonth && (
-                    <>
-                      {' '}
-                      Showing:{' '}
-                      <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
-                        {formatPredictAreaMonthLabel(predictAreaDataMonth)}
-                      </span>
-                    </>
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
-          )}
 
           {/* District Dropdown */}
           <div>
@@ -6320,6 +6274,53 @@ const App: React.FC = () => {
                 </div>
               )}
             </div>
+          )}
+
+          {/* Crops + date panel — after village dropdown */}
+          {!showGraphPage && !showAnalysisTrendsPage && getSelectedVillage('left') && (
+            <div>
+            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+              Crops
+            </label>
+            <CropDropdownChecklist
+              selectedCrops={selectedCrops}
+              onToggleCrop={toggleSelectedCrop}
+              onToggleAll={toggleAllCrops}
+              isDarkMode={isDarkMode}
+            />
+            {hasAnyCropSelected(selectedCrops) && (
+              <div className="mt-3 space-y-1">
+                <label
+                  className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
+                >
+                  Prediction month
+                </label>
+                <input
+                  type="month"
+                  value={predictAreaMonthInput}
+                  onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                    isDarkMode
+                      ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
+                      : 'bg-white border border-emerald-100 text-slate-800'
+                  }`}
+                />
+                <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
+                  Select a month to load predict-area data (
+                  <code className="text-[10px]">month=YYYY-MM</code>).
+                  {predictAreaDataMonth && (
+                    <>
+                      {' '}
+                      Showing:{' '}
+                      <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                        {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                      </span>
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+          </div>
           )}
 
               </div>
@@ -8785,12 +8786,57 @@ const App: React.FC = () => {
                 </div>
                 <div className="grid grid-cols-2 gap-1">
                   {calculateAreaCards('left').map((item, idx) => {
+                    const currentTab = getActiveTab('left');
                     const cardBg = item.color || '#f97316';
                     const cardFg = textColorOnBackground(cardBg);
+                    const isClickable =
+                      (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
+                      (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null);
+                    const overlayKey =
+                      currentTab === 'water'
+                        ? WATER_UPTAKE_CLASS_TILE_KEY
+                        : currentTab === 'pest'
+                          ? 'pest'
+                          : `${currentTab}Class`;
+                    const isSelected =
+                      item.tileUrl != null &&
+                      (allPlotsTileUrls[overlayKey] === item.tileUrl ||
+                        (currentTab === 'pest' && pestTileUrl === item.tileUrl));
                     return (
                       <div
                         key={`pct-area-${item.label}-${idx}`}
-                        className="rounded-md px-2 py-2.5 flex flex-col items-center justify-center text-center min-h-[80px]"
+                        role={isClickable ? 'button' : undefined}
+                        tabIndex={isClickable ? 0 : undefined}
+                        onClick={() => {
+                          if (currentTab === 'pest') {
+                            if (item.tileUrl != null) {
+                              setPestTileUrl(item.tileUrl!);
+                              setAllPlotsTileUrls((prev) =>
+                                withLstTilePreserved(prev, { pest: item.tileUrl! })
+                              );
+                              setShowTileLayers(true);
+                            }
+                            if (item.pestKey != null) {
+                              setSelectedPestCategory(item.pestKey);
+                              const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+                              setShowPestChildren(!!children && Object.keys(children).length > 0);
+                            }
+                          } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
+                            setAllPlotsTileUrls((prev) =>
+                              withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
+                            );
+                            setShowTileLayers(true);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if ((e.key === 'Enter' || e.key === ' ') && isClickable) {
+                            e.preventDefault();
+                            e.currentTarget.click();
+                          }
+                        }}
+                        className={`rounded-md px-2 py-2.5 flex flex-col items-center justify-center text-center min-h-[80px] ${
+                          isClickable ? 'cursor-pointer hover:brightness-110 transition-all' : ''
+                        } ${isSelected ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900' : ''}`}
                         style={{ backgroundColor: cardBg, color: cardFg }}
                       >
                         <span className="text-[12px] font-semibold leading-tight">{item.label}</span>
@@ -10171,46 +10217,6 @@ const App: React.FC = () => {
             {/* Header section removed - no title or logout icon for right sidebar */}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* Crops checklist dropdown */}
-              {!showGraphPage && !showAnalysisTrendsPage && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Crops
-                </label>
-                <CropDropdownChecklist
-                  selectedCrops={selectedCrops}
-                  onToggleCrop={toggleSelectedCrop}
-                  onToggleAll={toggleAllCrops}
-                  isDarkMode
-                />
-                {hasAnyCropSelected(selectedCrops) && (
-                  <div className="mt-3 space-y-1">
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                      Prediction month
-                    </label>
-                    <input
-                      type="month"
-                      value={predictAreaMonthInput}
-                      onChange={(e) => setPredictAreaMonthInput(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
-                    />
-                    <p className="text-[11px] text-gray-500 leading-snug">
-                      Select a month to load predict-area. API: <code className="text-[10px]">month=YYYY-MM</code>.
-                      {predictAreaDataMonth && (
-                        <>
-                          {' '}
-                          Showing:{' '}
-                          <span className="font-medium text-emerald-300">
-                            {formatPredictAreaMonthLabel(predictAreaDataMonth)}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                )}
-              </div>
-              )}
-
               {/* District Dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -10327,6 +10333,46 @@ const App: React.FC = () => {
                     </div>
                   )}
                 </div>
+              )}
+
+              {/* Crops + date panel — after village dropdown */}
+              {!showGraphPage && !showAnalysisTrendsPage && getSelectedVillage('right') && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Crops
+                </label>
+                <CropDropdownChecklist
+                  selectedCrops={selectedCrops}
+                  onToggleCrop={toggleSelectedCrop}
+                  onToggleAll={toggleAllCrops}
+                  isDarkMode
+                />
+                {hasAnyCropSelected(selectedCrops) && (
+                  <div className="mt-3 space-y-1">
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      Prediction month
+                    </label>
+                    <input
+                      type="month"
+                      value={predictAreaMonthInput}
+                      onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
+                    />
+                    <p className="text-[11px] text-gray-500 leading-snug">
+                      Select a month to load predict-area. API: <code className="text-[10px]">month=YYYY-MM</code>.
+                      {predictAreaDataMonth && (
+                        <>
+                          {' '}
+                          Showing:{' '}
+                          <span className="font-medium text-emerald-300">
+                            {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </div>
               )}
 
               {/* Total Area Card */}
