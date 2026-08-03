@@ -346,7 +346,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     fillColor: isWaterSource
                       ? '#3b82f6'
                       : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : '#FFFFFF')),
-                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.55 : 0),
+                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.88 : 0),
                     weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 3 : 1),
                     opacity: 1,
                   }),
