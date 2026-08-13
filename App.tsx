@@ -25,6 +25,7 @@ import {
   villageOutlinePlotId,
   isVillageOutlinePlotId,
   isFieldPlotId,
+  parseFieldPlotId,
   shouldHideFieldIdAreaOnMap,
   type VillageItem,
   fetchBoundaryGeoJSON,
@@ -2600,9 +2601,8 @@ const App: React.FC = () => {
     const selectedFieldId =
       fieldLevelTabs.includes(activeTab as (typeof fieldLevelTabs)[number]) &&
       !!selectedVillage &&
-      !!selectedPlotId &&
-      isFieldPlotId(selectedPlotId)
-        ? Number(selectedPlotId)
+      !!selectedPlotId
+        ? parseFieldPlotId(selectedPlotId)
         : null;
     const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
 
@@ -2642,7 +2642,69 @@ const App: React.FC = () => {
 
          // Fetch data based on active tab (API first — cards update as soon as response arrives)
            let response: GrowthAnalysisResponse | NDWIDetectionResponse;
-         switch (activeTab) {
+         if (
+           isFieldLevelAnalysis &&
+           (activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil' || activeTab === 'pest')
+         ) {
+           const [growthRes, waterRes, soilRes, pestRes] = await Promise.all([
+             fetchGrowthAnalysis1(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchWaterUptakeAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchSoilMoistureAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchPestDetectionAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, undefined, selectedFieldId),
+           ]);
+           const growthTab = buildClasswiseTabSnapshot(growthRes);
+           const waterTab = buildClasswiseTabSnapshot(waterRes);
+           const soilTab = buildClasswiseTabSnapshot(soilRes);
+           setGrowthCurrentData(growthTab);
+           setGrowthStoredSeries(Array.isArray(growthRes.stored) ? growthRes.stored : []);
+           setGrowthStoredError(null);
+           setWaterCurrentSnapshot(waterTab);
+           setWaterData(waterTab as any);
+           setWaterStoredSeries(Array.isArray(waterRes.stored) ? waterRes.stored : []);
+           setSoilData(soilTab as any);
+           setSoilStoredSeries(Array.isArray(soilRes.stored) ? soilRes.stored : []);
+           const pestResponse: any = pestRes;
+           let pestSummary: any = null;
+           if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+             setPestHierarchy({
+               plot: pestResponse.plots?.[0]?.properties?.plot_id ?? String(selectedFieldId),
+               total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
+               hierarchy: pestResponse.hierarchy,
+             } as PestHierarchyResponse);
+             const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
+             pestSummary = {
+               healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+               chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+               fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+               sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+               wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+               soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+               healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+               chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+               fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+               sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+               wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+               soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+               soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+               total_area_hectare: pestResponse.total_area_ha ?? 0,
+             };
+             if (Array.isArray(pestResponse.stored)) {
+               setPestStoredSeries(pestResponse.stored as PestStoredResponse);
+             }
+           }
+           setAllPlotsAnalysisData((prev) => ({
+             growth: growthTab as any,
+             water: waterTab as any,
+             soil: soilTab as any,
+             pest: pestSummary ?? prev?.pest ?? null,
+             waterSource: prev?.waterSource ?? null,
+           }));
+           response =
+             activeTab === 'water' ? waterRes
+             : activeTab === 'soil' ? soilRes
+             : activeTab === 'pest' ? pestRes
+             : growthRes;
+         } else switch (activeTab) {
           case 'growth':
               response = await fetchGrowthAnalysis1(
                 selectedDistrict, 
@@ -9342,9 +9404,21 @@ const App: React.FC = () => {
                 splitScreenMode ? showLeftVillageOwners : showVillageOwners
               }
               onSelectPlot={async (id) => {
-                setSelectedPlotId(id);
+                const clickedFieldId = parseFieldPlotId(id);
+                if (clickedFieldId != null) {
+                  setVillageCropPopup(null);
+                  setSelectedPlotId(String(clickedFieldId));
+                  const fieldTabs: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
+                  if (!activeTab || !fieldTabs.includes(activeTab)) {
+                    setActiveTab('growth');
+                  }
+                } else {
+                  setSelectedPlotId(id);
+                }
 
                 if (
+                  clickedFieldId == null &&
+                  !selectedVillage &&
                   !splitScreenMode &&
                   isVillageOutlinePlotId(id) &&
                   subdistrictCropAreas?.village_wise

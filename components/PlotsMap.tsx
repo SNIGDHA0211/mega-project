@@ -193,6 +193,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   const hasFieldPolygons = plots.some(
     (p) => p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
   );
+  const hasNumericFieldPlots = plots.some(
+    (p) => isFieldPlotId(p.id) && p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
+  );
   
   return (
     <div
@@ -325,6 +328,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     fillOpacity: 0.08,
                     weight: 3,
                     opacity: 1,
+                    interactive: !hasNumericFieldPlots,
                   }
                 : {
                     // Crop fields (predict-area): white stroke, solid dark green fill

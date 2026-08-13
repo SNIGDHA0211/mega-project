@@ -247,8 +247,15 @@ const VILLAGE_OUTLINE_ID_PREFIX = 'outline:';
 export const villageOutlinePlotId = (village: string) => `${VILLAGE_OUTLINE_ID_PREFIX}${village}`;
 export const isVillageOutlinePlotId = (id: string) => id.startsWith(VILLAGE_OUTLINE_ID_PREFIX);
 
-/** Numeric field id from /field-boundaries (e.g. "159") */
-export const isFieldPlotId = (id: string) => /^\d+$/.test(id);
+/** Numeric field id from /field-boundaries (e.g. "159" or "159::0" for multi-ring). */
+export const parseFieldPlotId = (id: string): number | null => {
+  const base = String(id || '').split('::')[0];
+  if (!/^\d+$/.test(base)) return null;
+  const n = Number(base);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+export const isFieldPlotId = (id: string) => parseFieldPlotId(id) != null;
 
 const ringFromLngLatPairs = (outerRing: unknown): Coordinate[] => {
   if (!Array.isArray(outerRing)) return [];
