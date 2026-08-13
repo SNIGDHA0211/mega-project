@@ -8,8 +8,15 @@ const isDevelopment = typeof window !== 'undefined' &&
 /** Production Railway host (shown in error messages). */
 const RAILWAY_HOST = 'https://web-production-72a7.up.railway.app';
 
-/** In local dev, route via Vite `/railway` proxy to avoid CORS. */
+/** In local dev, route via Vite `/railway` proxy to avoid CORS. Override with VITE_API_BASE_URL. */
 const getBaseUrl = (): string => {
+  const fromEnv =
+    typeof import.meta !== 'undefined'
+      ? (import.meta.env.VITE_API_BASE_URL as string | undefined)
+      : undefined;
+  if (fromEnv?.trim()) {
+    return fromEnv.trim().replace(/\/$/, '');
+  }
   if (isDevelopment && typeof window !== 'undefined') {
     return `${window.location.origin}/railway`;
   }
@@ -44,6 +51,25 @@ const postJsonWithRetry = async (
   }
   return response;
 };
+
+/** Backend /api-stored/* returns { stored: [...], count: N }. Accept legacy array shapes too. */
+export function unwrapStoredApiResponse<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.stored)) return o.stored as T[];
+    if (Array.isArray(o.data)) return o.data as T[];
+    if (Array.isArray(o.results)) return o.results as T[];
+  }
+  return [];
+};
+
+/** True when backend stripped polygon coords (slim stored / live classwise responses). */
+export function isStrippedGeometry(geometry: unknown): boolean {
+  if (!geometry || typeof geometry !== 'object') return false;
+  const g = geometry as Record<string, unknown>;
+  return Boolean(g.coordinates_stripped || g.coordinates_omitted) && !g.coordinates;
+}
 
 // Fetch list of talukas and their plots
 export interface TalukaListResponse {
@@ -234,7 +260,13 @@ const ringFromLngLatPairs = (outerRing: unknown): Coordinate[] => {
 /** All outer rings from GeoJSON Polygon / MultiPolygon (fixes districts like Kolhapur with multiple parts). */
 export function parseGeometryToOuterRings(geometry: unknown): Coordinate[][] {
   if (!geometry || typeof geometry !== 'object') return [];
-  const geom = geometry as { type?: string; coordinates?: unknown };
+  const geom = geometry as {
+    type?: string;
+    coordinates?: unknown;
+    coordinates_stripped?: boolean;
+    coordinates_omitted?: boolean;
+  };
+  if (isStrippedGeometry(geom)) return [];
   const rings: Coordinate[][] = [];
 
   try {
@@ -362,12 +394,14 @@ export const fetchFieldBoundaries = async (
       village
     });
     const url = `${getBaseUrl()}/field-boundaries?${params.toString()}`;
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { 'accept': 'application/json' }
-    });
+    const response = await getJsonWithRetry(url);
 
     if (!response.ok) {
+      // Backend may 404 (no plots) or 500 (timeout) — don't break the map UI.
+      if (response.status === 404 || response.status >= 500) {
+        console.warn(`field-boundaries ${response.status} for ${district}/${subdistrict}/${village}`);
+        return [];
+      }
       throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
@@ -377,18 +411,27 @@ export const fetchFieldBoundaries = async (
       return [];
     }
 
-    const plots: FieldBoundaryPlot[] = fields.map((field, index) => {
+    const plots: FieldBoundaryPlot[] = [];
+    fields.forEach((field, index) => {
       const geom = field.geometry;
-      if (!geom || !geom.coordinates || geom.type !== 'Polygon') {
-        return null;
+      if (!geom || isStrippedGeometry(geom)) {
+        return;
       }
-      const coords = geom.coordinates;
-      const outerRing = Array.isArray(coords[0]) ? (coords[0] as number[][]) : [];
-      const boundary: Coordinate[] = outerRing.map((c) => [c[0], c[1]] as Coordinate);
+      const rings = parseGeometryToOuterRings(geom);
+      if (rings.length === 0) {
+        return;
+      }
       const id = String(field.field_id ?? field.id ?? `field-${index}`);
       const areaHa = field.area_ha != null ? String(field.area_ha) : '0';
-      return { id, area_ha: areaHa, boundary };
-    }).filter((p): p is FieldBoundaryPlot => p !== null && p.boundary.length >= 3);
+      rings.forEach((boundary, ringIndex) => {
+        if (boundary.length < 3) return;
+        plots.push({
+          id: rings.length > 1 ? `${id}::${ringIndex}` : id,
+          area_ha: areaHa,
+          boundary,
+        });
+      });
+    });
 
     return plots;
   } catch (error) {
@@ -465,11 +508,13 @@ export const fetchVillageSurveyPlots = async (
     stateCode,
   });
   const url = `${getVillageDataBaseUrl()}/api/village-data?${params.toString()}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { accept: 'application/json' },
-  });
+  const response = await getJsonWithRetry(url);
   if (!response.ok) {
+    // Cadastral MySQL may be unavailable on Railway — optional overlay only.
+    if (response.status === 404 || response.status === 503 || response.status >= 500) {
+      console.warn(`village-data ${response.status} for ${district}/${subdistrict}/${village}`);
+      return { plots: [], plotMetaById: {} };
+    }
     throw new Error(`Village data API Error: ${response.status} ${response.statusText}`);
   }
   const raw = await response.json();
@@ -1112,27 +1157,76 @@ export interface PestStoredItem {
 
 export type PestStoredResponse = PestStoredItem[];
 
+/** Build query string for /api-stored/* endpoints (district required; subdistrict/village optional). */
+function storedSeriesQuery(
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+): string {
+  const params = new URLSearchParams({ district, limit: String(limit) });
+  if (subdistrict?.trim()) params.set('subdistrict', subdistrict.trim());
+  if (village?.trim()) params.set('village', village.trim());
+  return params.toString();
+}
+
+/** Try village → subdistrict → district until stored rows are found. */
+export async function fetchStoredSeriesWithFallback<T>(
+  fetcher: (
+    district: string,
+    subdistrict?: string,
+    village?: string,
+    limit?: number
+  ) => Promise<T[]>,
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+): Promise<T[]> {
+  const attempts: Array<{ sub?: string; vil?: string }> = [];
+  if (village?.trim() && subdistrict?.trim()) {
+    attempts.push({ sub: subdistrict.trim(), vil: village.trim() });
+  }
+  if (subdistrict?.trim()) {
+    attempts.push({ sub: subdistrict.trim(), vil: undefined });
+  }
+  attempts.push({ sub: undefined, vil: undefined });
+
+  for (const { sub, vil } of attempts) {
+    try {
+      const rows = await fetcher(district, sub, vil, limit);
+      if (rows.length > 0) return rows;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('404')) continue;
+      throw err;
+    }
+  }
+  return [];
+}
+
+async function fetchStoredJson<T>(
+  url: string,
+  label: string
+): Promise<T[]> {
+  const response = await getJsonWithRetry(url);
+  if (response.status === 404) return [];
+  if (!response.ok) {
+    throw new Error(`API Error: ${response.status} ${response.statusText}`);
+  }
+  const raw = await response.json();
+  return unwrapStoredApiResponse<T>(raw);
+}
+
 export const fetchPestStoredSeries = async (
   district: string,
-  subdistrict: string,
-  limit: number = 50
+  subdistrict?: string,
+  village?: string,
+  limit: number = 500
 ): Promise<PestStoredResponse> => {
   try {
-    const url = `${getBaseUrl()}/api-stored/pest-detection?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    }
-
-    const data: PestStoredResponse = await response.json();
-    return Array.isArray(data) ? data : [];
+    const url = `${getBaseUrl()}/api-stored/pest-detection?${storedSeriesQuery(district, subdistrict, village, limit)}`;
+    return fetchStoredJson<PestStoredItem>(url, 'pest-detection');
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/api-stored/pest-detection`);
@@ -1140,6 +1234,13 @@ export const fetchPestStoredSeries = async (
     throw error;
   }
 };
+
+export const fetchPestStoredSeriesWithFallback = (
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+) => fetchStoredSeriesWithFallback(fetchPestStoredSeries, district, subdistrict, village, limit);
 
 // Stored Growth (time series by year_month) - /api-stored/growth
 export interface GrowthStoredItem {
@@ -1158,33 +1259,13 @@ export type GrowthStoredResponse = GrowthStoredItem[];
 
 export const fetchGrowthStoredSeries = async (
   district: string,
-  subdistrict: string,
-  limit: number = 50
+  subdistrict?: string,
+  village?: string,
+  limit: number = 500
 ): Promise<GrowthStoredResponse> => {
   try {
-    const url = `${getBaseUrl()}/api-stored/growth?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    }
-
-    const raw = await response.json();
-    // API may return array directly or wrapped as { data }, { results }, etc.
-    const data: GrowthStoredResponse = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.data)
-        ? (raw as any).data
-        : Array.isArray((raw as any)?.results)
-          ? (raw as any).results
-          : [];
-    return data;
+    const url = `${getBaseUrl()}/api-stored/growth?${storedSeriesQuery(district, subdistrict, village, limit)}`;
+    return fetchStoredJson<GrowthStoredItem>(url, 'growth');
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/api-stored/growth`);
@@ -1192,6 +1273,13 @@ export const fetchGrowthStoredSeries = async (
     throw error;
   }
 };
+
+export const fetchGrowthStoredSeriesWithFallback = (
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+) => fetchStoredSeriesWithFallback(fetchGrowthStoredSeries, district, subdistrict, village, limit);
 
 // Stored Water Uptake (time series by year_month) - /api-stored/water-uptake
 export interface WaterUptakeStoredItem {
@@ -1208,20 +1296,13 @@ export type WaterUptakeStoredResponse = WaterUptakeStoredItem[];
 
 export const fetchWaterUptakeStoredSeries = async (
   district: string,
-  subdistrict: string,
-  limit: number = 50
+  subdistrict?: string,
+  village?: string,
+  limit: number = 500
 ): Promise<WaterUptakeStoredResponse> => {
   try {
-    const url = `${getBaseUrl()}/api-stored/water-uptake?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
-    const response = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
-    if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    const raw = await response.json();
-    const data: WaterUptakeStoredResponse = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.data) ? (raw as any).data
-      : Array.isArray((raw as any)?.results) ? (raw as any).results
-      : [];
-    return data;
+    const url = `${getBaseUrl()}/api-stored/water-uptake?${storedSeriesQuery(district, subdistrict, village, limit)}`;
+    return fetchStoredJson<WaterUptakeStoredItem>(url, 'water-uptake');
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/api-stored/water-uptake`);
@@ -1229,6 +1310,13 @@ export const fetchWaterUptakeStoredSeries = async (
     throw error;
   }
 };
+
+export const fetchWaterUptakeStoredSeriesWithFallback = (
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+) => fetchStoredSeriesWithFallback(fetchWaterUptakeStoredSeries, district, subdistrict, village, limit);
 
 // Stored Soil Moisture (time series by year_month) - /api-stored/soil-moisture
 export interface SoilMoistureStoredItem {
@@ -1245,20 +1333,13 @@ export type SoilMoistureStoredResponse = SoilMoistureStoredItem[];
 
 export const fetchSoilMoistureStoredSeries = async (
   district: string,
-  subdistrict: string,
-  limit: number = 50
+  subdistrict?: string,
+  village?: string,
+  limit: number = 500
 ): Promise<SoilMoistureStoredResponse> => {
   try {
-    const url = `${getBaseUrl()}/api-stored/soil-moisture?district=${encodeURIComponent(district)}&subdistrict=${encodeURIComponent(subdistrict)}&limit=${limit}`;
-    const response = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
-    if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    const raw = await response.json();
-    const data: SoilMoistureStoredResponse = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.data) ? (raw as any).data
-      : Array.isArray((raw as any)?.results) ? (raw as any).results
-      : [];
-    return data;
+    const url = `${getBaseUrl()}/api-stored/soil-moisture?${storedSeriesQuery(district, subdistrict, village, limit)}`;
+    return fetchStoredJson<SoilMoistureStoredItem>(url, 'soil-moisture');
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/api-stored/soil-moisture`);
@@ -1266,6 +1347,13 @@ export const fetchSoilMoistureStoredSeries = async (
     throw error;
   }
 };
+
+export const fetchSoilMoistureStoredSeriesWithFallback = (
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  limit = 500
+) => fetchStoredSeriesWithFallback(fetchSoilMoistureStoredSeries, district, subdistrict, village, limit);
 
 // Dashboard indices store - POST returns stored indices for the given district, subdistrict, frequency
 export type DashboardIndicesFrequency = 'weekly' | 'monthly' | 'yearly';
@@ -1731,27 +1819,32 @@ export interface TalukaPlotsResponse {
   };
 }
 
-/** Fetch boundary (district or subdistrict) from get-geojson API. Use when /districts or /subdistricts do not return geometry. */
-export const fetchBoundaryGeoJSON = async (name: string): Promise<FieldBoundaryPlot[]> => {
+/** Fetch admin boundary from /fetch-boundaries (replaces removed /get-geojson). */
+export const fetchBoundaryGeoJSON = async (
+  district: string,
+  subdistrict?: string,
+  village?: string
+): Promise<FieldBoundaryPlot[]> => {
   try {
-    const url = isDevelopment
-      ? `/api/get-geojson/${encodeURIComponent(name)}`
-      : `${getBaseUrl()}/get-geojson/${encodeURIComponent(name)}`;
-    const response = await fetch(url, { headers: { accept: 'application/json' } });
+    const params = new URLSearchParams({ district });
+    if (subdistrict) params.set('subdistrict', subdistrict);
+    if (village) params.set('village', village);
+    const url = `${getBaseUrl()}/fetch-boundaries?${params.toString()}`;
+    const response = await getJsonWithRetry(url);
     if (!response.ok) return [];
     const data = await response.json();
-    const fc = data.geojson || data;
-    if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features) || fc.features.length === 0)
-      return [];
-    const feature = fc.features[0];
-    return geometryToBoundaryPlots(name, feature?.geometry);
+    const label = village || subdistrict || district;
+    if (data?.geometry) {
+      return geometryToBoundaryPlots(label, data.geometry);
+    }
+    return [];
   } catch {
     return [];
   }
 };
 
 /**
- * Free-text geocoding (Nominatim) for map bounds when get-geojson has no boundary.
+ * Free-text geocoding (Nominatim) for map bounds when fetch-boundaries has no geometry.
  * Follow https://operations.osmfoundation.org/policies/nominatim/ — one request per user action is OK.
  * Returns south/north/west/east in WGS84 (degrees).
  */
