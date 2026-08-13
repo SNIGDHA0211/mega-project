@@ -817,7 +817,9 @@ export const fetchLocationTotalAreaHectares = async (
 export const fetchGrowthAnalysis1 = async (
   district: string,
   subdistrict?: string,
-  village?: string
+  village?: string,
+  /** Optional field_boundaries.field_id — analyzes a single plot only */
+  fieldId?: number | null
 ): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
     let url = `${getBaseUrl()}/analyze_Growthclasswise?district=${encodeURIComponent(district)}`;
@@ -826,6 +828,9 @@ export const fetchGrowthAnalysis1 = async (
     }
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
+    }
+    if (fieldId != null && Number.isFinite(fieldId) && fieldId > 0) {
+      url += `&field_id=${encodeURIComponent(String(Math.trunc(fieldId)))}`;
     }
 
     const response = await postJsonWithRetry(url);
@@ -882,7 +887,9 @@ export const fetchGrowthAnalysis1 = async (
 export const fetchWaterUptakeAnalysis = async (
   district: string,
   subdistrict?: string,
-  village?: string
+  village?: string,
+  /** Optional field_boundaries.field_id — analyzes a single plot only */
+  fieldId?: number | null
 ): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
     let url = `${getBaseUrl()}/wateruptakeclasswise?district=${encodeURIComponent(district)}`;
@@ -891,6 +898,9 @@ export const fetchWaterUptakeAnalysis = async (
     }
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
+    }
+    if (fieldId != null && Number.isFinite(fieldId) && fieldId > 0) {
+      url += `&field_id=${encodeURIComponent(String(Math.trunc(fieldId)))}`;
     }
 
     const response = await postJsonWithRetry(url);
@@ -945,7 +955,9 @@ export const fetchWaterUptakeAnalysis = async (
 export const fetchSoilMoistureAnalysis = async (
   district: string,
   subdistrict?: string,
-  village?: string
+  village?: string,
+  /** Optional field_boundaries.field_id — analyzes a single plot only */
+  fieldId?: number | null
 ): Promise<GrowthAnalysisWithStoredResponse> => {
   try {
     let url = `${getBaseUrl()}/SoilMoistureclasswise?district=${encodeURIComponent(district)}`;
@@ -954,6 +966,9 @@ export const fetchSoilMoistureAnalysis = async (
     }
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
+    }
+    if (fieldId != null && Number.isFinite(fieldId) && fieldId > 0) {
+      url += `&field_id=${encodeURIComponent(String(Math.trunc(fieldId)))}`;
     }
 
     const response = await postJsonWithRetry(url);
@@ -1009,7 +1024,9 @@ export const fetchPestDetectionAnalysis = async (
   district: string,
   subdistrict?: string,
   village?: string,
-  coordinates?: number[][]
+  coordinates?: number[][],
+  /** Optional field_boundaries.field_id — analyzes a single plot only */
+  fieldId?: number | null
 ): Promise<GrowthAnalysisWithStoredResponse & { hierarchy?: Record<string, { total_area_ha?: number; percentage?: number; children?: Record<string, unknown>; tile_url?: string }>; total_area_ha?: number }> => {
   try {
     let url = `${getBaseUrl()}/pest-detectionclasswise?district=${encodeURIComponent(district)}`;
@@ -1018,6 +1035,9 @@ export const fetchPestDetectionAnalysis = async (
     }
     if (village) {
       url += `&village=${encodeURIComponent(village)}`;
+    }
+    if (fieldId != null && Number.isFinite(fieldId) && fieldId > 0) {
+      url += `&field_id=${encodeURIComponent(String(Math.trunc(fieldId)))}`;
     }
     // Request all stored results for time series (backend may support limit; default might return only a few)
     url += '&limit=100';
@@ -1043,10 +1063,16 @@ export const fetchPestDetectionAnalysis = async (
 
     if (raw.current != null) {
       const current = raw.current;
-      const firstFeature = current.features?.[0];
+      const plots =
+        Array.isArray(current.features) && current.features.length > 0
+          ? current.features
+          : ((current as any).feature && (current as any).feature.type === 'Feature'
+              ? [(current as any).feature]
+              : []);
+      const firstFeature = plots[0];
       const totalAreaHa = (firstFeature as any)?.properties?.total_area_ha ?? (current as any).total_area_ha;
       const result: GrowthAnalysisWithStoredResponse & { hierarchy?: Record<string, { total_area_ha?: number; percentage?: number; children?: Record<string, unknown>; tile_url?: string }>; total_area_ha?: number } = {
-        plots: current.features && current.features.length > 0 ? current.features : [],
+        plots,
         pixel_summary: current.pixel_summary,
         classwise: current.classwise,
         villages: current.villages,
@@ -2468,4 +2494,67 @@ export const fetchWindDirect = async (
   }
 
   throw lastError ?? new Error(`weather/wind-direct returned 404 for all paths. Tried: ${urlsToTry.join(' ; ')}`);
+};
+
+/** Key used in map tile URL maps for building built-up overlay */
+export const BUILDING_BUILTUP_TILE_KEY = 'building-builtup';
+
+export interface BuildingClasswiseItem {
+  class_id: number;
+  class_name: string;
+  color: string;
+  count: number;
+  percentage: number;
+  tile_url: string;
+}
+
+export interface BuildingSummary {
+  total_buildings: number;
+  confidence_0_65_0_70: number;
+  confidence_0_70_0_75: number;
+  confidence_gte_0_75: number;
+  builtup_area_hectares: number;
+  aoi_area_hectares: number;
+  builtup_percentage: number;
+}
+
+export interface BuildingBuiltupResponse {
+  type: string;
+  features: Array<{
+    type: string;
+    geometry: unknown;
+    properties: {
+      plot_id: string;
+      area_acres?: number;
+      tile_url: string;
+      data_source?: string;
+      min_confidence?: number;
+      last_updated?: string;
+    };
+  }>;
+  building_summary?: BuildingSummary;
+  classwise?: BuildingClasswiseItem[];
+}
+
+/** POST /buildingbuiltup — Google Open Buildings built-up layer (district / subdistrict / village). */
+export const fetchBuildingBuiltup = async (
+  district: string,
+  subdistrict?: string,
+  village?: string,
+  minConfidence = 0.65
+): Promise<BuildingBuiltupResponse> => {
+  let url = `${getBaseUrl()}/buildingbuiltup?district=${encodeURIComponent(district.trim())}`;
+  if (subdistrict?.trim()) {
+    url += `&subdistrict=${encodeURIComponent(subdistrict.trim())}`;
+  }
+  if (village?.trim()) {
+    url += `&village=${encodeURIComponent(village.trim())}`;
+  }
+  url += `&min_confidence=${encodeURIComponent(String(minConfidence))}`;
+
+  const response = await postJsonWithRetry(url);
+  if (!response.ok) {
+    throw new Error(`Building built-up API Error: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
 };

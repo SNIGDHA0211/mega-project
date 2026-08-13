@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import PlotsMap from './components/PlotsMap';
 import EarthView from './components/EarthView';
-import VillageMapLayerCheckbox from './components/VillageMapLayerCheckbox';
-import {
+import CropDropdownChecklist, {
   CROP_SELECTION_KEYS,
   type CropSelectionKey,
   type CropSelectionState,
   emptyCropSelection,
   hasAnyCropSelected,
 } from './components/CropDropdownChecklist';
-import CropChecklist from './components/CropChecklist';
+import LayersDropdown from './components/LayersDropdown';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
 import ForestAgeClassMapCards from './components/ForestAgeClassMapCards';
+import BuildingLayerCard from './components/BuildingLayerCard';
+import PercentageAreaPieChart from './components/PercentageAreaPieChart';
 import VillageCropAreaPopup from './components/VillageCropAreaPopup';
 import PredictAreaMapCard from './components/PredictAreaMapCard';
 import SubdistrictVillageWiseCard from './components/SubdistrictVillageWiseCard';
@@ -55,6 +56,9 @@ import {
   fetchNominatimBounds,
   fetchWeatherDaily,
   fetchWindDirect,
+  fetchBuildingBuiltup,
+  BUILDING_BUILTUP_TILE_KEY,
+  type BuildingBuiltupResponse,
   GrowthAnalysisResponse,
   type DashboardIndicesStoreResponse,
   type DashboardIndicesFrequency,
@@ -329,6 +333,12 @@ const App: React.FC = () => {
   const [showRightVillageOwners, setShowRightVillageOwners] = useState(false);
   /** When true, predict-area/stored-responses crop layer is fetched and shown on map */
   const [showCropLayer, setShowCropLayer] = useState(false);
+  /** When true, building built-up layer is fetched and shown on map */
+  const [showBuildingLayer, setShowBuildingLayer] = useState(false);
+  const [buildingData, setBuildingData] = useState<BuildingBuiltupResponse | null>(null);
+  const [buildingLoading, setBuildingLoading] = useState(false);
+  const [buildingError, setBuildingError] = useState<string | null>(null);
+  const [selectedBuildingClassId, setSelectedBuildingClassId] = useState<number | 'all' | null>(null);
   const [villageOwnersLoading, setVillageOwnersLoading] = useState(false);
   const [villageOwnersError, setVillageOwnersError] = useState<string | null>(null);
   const [selectedPlotId, setSelectedPlotId] = useState<string | null>(null);
@@ -745,7 +755,11 @@ const App: React.FC = () => {
   const clearAnalysisLayersForSide = (side: 'left' | 'right', startLoading = true) => {
     const stripAnalysisTiles = (prev: Record<string, string>) => {
       const lst = prev['land-surface-temperature'];
-      return lst ? { 'land-surface-temperature': lst } : {};
+      const building = prev[BUILDING_BUILTUP_TILE_KEY];
+      const out: Record<string, string> = {};
+      if (lst) out['land-surface-temperature'] = lst;
+      if (building) out[BUILDING_BUILTUP_TILE_KEY] = building;
+      return out;
     };
 
     setForestTileUrl(null);
@@ -2084,6 +2098,106 @@ const App: React.FC = () => {
     setPredictAreaCropColor(null);
   }, [selectedCrops, predictAreaByCrop, showCropLayer]);
 
+  // Building built-up layer — district / subdistrict / village scope from current selection
+  useEffect(() => {
+    const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
+    const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
+    const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
+
+    const applyBuildingTile = (url: string | null) => {
+      const mergeTile = (prev: Record<string, string>) => {
+        const next = { ...prev };
+        if (url) next[BUILDING_BUILTUP_TILE_KEY] = url;
+        else delete next[BUILDING_BUILTUP_TILE_KEY];
+        return next;
+      };
+      if (splitScreenMode) setLeftAllPlotsTileUrls(mergeTile);
+      else setAllPlotsTileUrls(mergeTile);
+      if (url) setShowTileLayers(true);
+    };
+
+    if (!showBuildingLayer || !district) {
+      setBuildingData(null);
+      setBuildingError(null);
+      setBuildingLoading(false);
+      setSelectedBuildingClassId(null);
+      applyBuildingTile(null);
+      return;
+    }
+
+    let cancelled = false;
+    setBuildingLoading(true);
+    setBuildingError(null);
+
+    void fetchBuildingBuiltup(district, subdistrict || undefined, village || undefined)
+      .then((data) => {
+        if (cancelled) return;
+        setBuildingData(data);
+        const mainTile = data.features?.[0]?.properties?.tile_url;
+        if (mainTile) {
+          setSelectedBuildingClassId('all');
+          applyBuildingTile(mainTile);
+        } else {
+          setSelectedBuildingClassId(null);
+          applyBuildingTile(null);
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBuildingData(null);
+        setSelectedBuildingClassId(null);
+        applyBuildingTile(null);
+        setBuildingError(err instanceof Error ? err.message : 'Failed to load build layers');
+      })
+      .finally(() => {
+        if (!cancelled) setBuildingLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showBuildingLayer,
+    selectedDistrict,
+    selectedSubdistrict,
+    selectedVillage,
+    splitScreenMode,
+    leftSelectedDistrict,
+    leftSelectedSubdistrict,
+    leftSelectedVillage,
+  ]);
+
+  const selectBuildingClass = useCallback(
+    (classId: number | 'all', tileUrl: string) => {
+      setSelectedBuildingClassId(classId);
+      const mergeTile = (prev: Record<string, string>) => ({
+        ...prev,
+        [BUILDING_BUILTUP_TILE_KEY]: tileUrl,
+      });
+      if (splitScreenMode) setLeftAllPlotsTileUrls(mergeTile);
+      else setAllPlotsTileUrls(mergeTile);
+      setShowTileLayers(true);
+    },
+    [splitScreenMode]
+  );
+
+  const buildingScopeLabel = useMemo(() => {
+    const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
+    const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
+    const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
+    if (village && subdistrict) return `${village}, ${subdistrict}`;
+    if (subdistrict) return subdistrict;
+    return district || '';
+  }, [
+    splitScreenMode,
+    selectedDistrict,
+    selectedSubdistrict,
+    selectedVillage,
+    leftSelectedDistrict,
+    leftSelectedSubdistrict,
+    leftSelectedVillage,
+  ]);
+
   const selectForestAgeClass = useCallback((ageClass: string, tileUrl: string, areaHa: number) => {
     setSelectedForestAgeClass(ageClass);
     setForestTileUrl(tileUrl);
@@ -2460,16 +2574,30 @@ const App: React.FC = () => {
 
   // Fetch analysis data when tab is clicked OR when location (district/subdistrict/village) changes
   // Fetches data for the active tab (Growth, Water Uptake, Soil Moisture, or Pest)
+  // When a numeric field plot is selected (crop layer and/or display boundary), analysis uses field_id for that plot only.
   useEffect(() => {
     if (selectedDistrict && activeTab) {
+    const fieldLevelTabs = ['growth', 'water', 'soil', 'pest'] as const;
+    const selectedFieldId =
+      fieldLevelTabs.includes(activeTab as (typeof fieldLevelTabs)[number]) &&
+      !!selectedVillage &&
+      !!selectedPlotId &&
+      isFieldPlotId(selectedPlotId)
+        ? Number(selectedPlotId)
+        : null;
+    const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
+
     const loadAnalysisData = async () => {
       let locationBoundary: OutlinePlot | null = null;
 
       try {
         setLoading(true);
         setError(null);
-        // Clear old data when location changes to prevent showing stale data
-        setAllPlots([]);
+        // Clear old analysis tiles when location/tab changes.
+        // Field-level analysis keeps crop-layer / boundary polygons on the map.
+        if (!isFieldLevelAnalysis) {
+          setAllPlots([]);
+        }
         setAvailablePlots([]);
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
@@ -2500,28 +2628,33 @@ const App: React.FC = () => {
               response = await fetchGrowthAnalysis1(
                 selectedDistrict, 
                 selectedSubdistrict || undefined, 
-                selectedVillage || undefined
+                selectedVillage || undefined,
+                selectedFieldId
               );
             break;
           case 'water':
               response = await fetchWaterUptakeAnalysis(
                 selectedDistrict, 
                 selectedSubdistrict || undefined, 
-                selectedVillage || undefined
+                selectedVillage || undefined,
+                selectedFieldId
               );
             break;
           case 'soil':
               response = await fetchSoilMoistureAnalysis(
                 selectedDistrict, 
                 selectedSubdistrict || undefined, 
-                selectedVillage || undefined
+                selectedVillage || undefined,
+                selectedFieldId
               );
             break;
           case 'pest':
               response = await fetchPestDetectionAnalysis(
                 selectedDistrict, 
                 selectedSubdistrict || undefined, 
-                selectedVillage || undefined
+                selectedVillage || undefined,
+                undefined,
+                selectedFieldId
               );
             break;
           case 'waterSource':
@@ -2682,7 +2815,12 @@ const App: React.FC = () => {
           setLoading(false);
 
           // Location outline after API (does not block card data)
-          if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) {
+          // Skip for field-level growth so Display-boundary field polygons stay on the map.
+          if (
+            !isFieldLevelAnalysis &&
+            activeTab &&
+            ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)
+          ) {
             locationBoundary = await fetchAnalysisLocationBoundary(
               selectedDistrict,
               selectedSubdistrict || '',
@@ -2818,6 +2956,13 @@ const App: React.FC = () => {
             
             // Set all tile URLs at once (after collecting them all)
             if (Object.keys(tileUrlsMap).length > 0) {
+              // For field-level growth, also key tile by numeric field_id so map overlay is stable
+              if (isFieldLevelAnalysis && selectedFieldId != null) {
+                const firstUrl = Object.values(tileUrlsMap)[0];
+                if (firstUrl) {
+                  tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                }
+              }
               setAllPlotsTileUrls(tileUrlsMap);
               // Ensure showTileLayers is true when we have tile URLs
               setShowTileLayers(true);
@@ -2826,22 +2971,35 @@ const App: React.FC = () => {
             }
             
             if (plotsForMap.length > 0) {
-              // One boundary only: use village/subdistrict outline; skip duplicate AOI polygon from analysis API
-              const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
-              setAllPlots(finalPlots);
-              const plotIds = plotsForMap.map(p => p.id);
-              setAvailablePlots(plotIds);
-              setTotalPlotsCount(plotIds.length);
+              // Field-level growth: keep Display-boundary field plots; only update tiles + cards
+              if (isFieldLevelAnalysis) {
+                const plotIds = plotsForMap.map(p => p.id);
+                setAvailablePlots(plotIds);
+                setTotalPlotsCount(plotIds.length);
+              } else {
+                // One boundary only: use village/subdistrict outline; skip duplicate AOI polygon from analysis API
+                const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
+                setAllPlots(finalPlots);
+                const plotIds = plotsForMap.map(p => p.id);
+                setAvailablePlots(plotIds);
+                setTotalPlotsCount(plotIds.length);
+              }
             } else {
               // Keep village boundary visible when we have tile URLs but no field boundaries from API
-              if (Object.keys(tileUrlsMap).length === 0) {
-                setAllPlots(locationBoundary ? [locationBoundary] : []);
-              } else if (locationBoundary) {
-                setAllPlots([locationBoundary]);
+              if (!isFieldLevelAnalysis) {
+                if (Object.keys(tileUrlsMap).length === 0) {
+                  setAllPlots(locationBoundary ? [locationBoundary] : []);
+                } else if (locationBoundary) {
+                  setAllPlots([locationBoundary]);
+                }
               }
+              setAvailablePlots([]);
+              setTotalPlotsCount(0);
             }
-          } else {
+          } else if (!isFieldLevelAnalysis) {
             setAllPlots(locationBoundary ? [locationBoundary] : []);
+            setAllPlotsTileUrls({});
+          } else {
             setAllPlotsTileUrls({});
           }
 
@@ -2895,7 +3053,9 @@ const App: React.FC = () => {
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
           setError(`Failed to load plots: ${errorMessage}`);
-          setAllPlots(locationBoundary ? [locationBoundary] : []);
+          if (!isFieldLevelAnalysis) {
+            setAllPlots(locationBoundary ? [locationBoundary] : []);
+          }
           setAvailablePlots([]);
           setTotalPlotsCount(0);
           setAllPlotsTileUrls({});
@@ -2922,7 +3082,7 @@ const App: React.FC = () => {
       setSoilStoredSeries(null);
       setGrowthCurrentData(null);
     }
-  }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage]); // Fetch when tab OR location changes
+  }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage, selectedPlotId]); // Fetch when tab, location, or selected field plot changes
 
   // Trends page: fetch Growth, Water, Soil, Pest endpoints directly (not only whichever tab was opened on map)
   useEffect(() => {
@@ -3563,6 +3723,16 @@ const App: React.FC = () => {
   // Fetch analysis data for left side (split screen mode)
   useEffect(() => {
     if (splitScreenMode && leftSelectedDistrict && leftActiveTab) {
+      const fieldLevelTabs = ['growth', 'water', 'soil', 'pest'] as const;
+      const selectedFieldId =
+        fieldLevelTabs.includes(leftActiveTab as (typeof fieldLevelTabs)[number]) &&
+        !!leftSelectedVillage &&
+        !!selectedPlotId &&
+        isFieldPlotId(selectedPlotId)
+          ? Number(selectedPlotId)
+          : null;
+      const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
+
       const loadAnalysisData = async () => {
         try {
           setLeftLoading(true);
@@ -3577,7 +3747,11 @@ const App: React.FC = () => {
           
           let locationBoundary: OutlinePlot | null = null;
 
-          if (leftActiveTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(leftActiveTab)) {
+          if (
+            !isFieldLevelAnalysis &&
+            leftActiveTab &&
+            ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(leftActiveTab)
+          ) {
             locationBoundary = await fetchAnalysisLocationBoundary(
               leftSelectedDistrict,
               leftSelectedSubdistrict || '',
@@ -3593,7 +3767,9 @@ const App: React.FC = () => {
             }
           }
           
-          setLeftAllPlots([]);
+          if (!isFieldLevelAnalysis) {
+            setLeftAllPlots([]);
+          }
           
           let response: GrowthAnalysisResponse | NDWIDetectionResponse;
           switch (leftActiveTab) {
@@ -3601,28 +3777,33 @@ const App: React.FC = () => {
               response = await fetchGrowthAnalysis1(
                 leftSelectedDistrict, 
                 leftSelectedSubdistrict || undefined, 
-                leftSelectedVillage || undefined
+                leftSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'water':
               response = await fetchWaterUptakeAnalysis(
                 leftSelectedDistrict, 
                 leftSelectedSubdistrict || undefined, 
-                leftSelectedVillage || undefined
+                leftSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'soil':
               response = await fetchSoilMoistureAnalysis(
                 leftSelectedDistrict, 
                 leftSelectedSubdistrict || undefined, 
-                leftSelectedVillage || undefined
+                leftSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'pest':
               response = await fetchPestDetectionAnalysis(
                 leftSelectedDistrict, 
                 leftSelectedSubdistrict || undefined, 
-                leftSelectedVillage || undefined
+                leftSelectedVillage || undefined,
+                undefined,
+                selectedFieldId
               );
               break;
             case 'waterSource':
@@ -3699,6 +3880,10 @@ const App: React.FC = () => {
             });
             
             if (Object.keys(tileUrlsMap).length > 0) {
+              if (isFieldLevelAnalysis && selectedFieldId != null) {
+                const firstUrl = Object.values(tileUrlsMap)[0];
+                if (firstUrl) tileUrlsMap[String(selectedFieldId)] = firstUrl;
+              }
               setLeftAllPlotsTileUrls(tileUrlsMap);
               setLeftShowTileLayers(true);
             } else {
@@ -3768,19 +3953,19 @@ const App: React.FC = () => {
               .filter((plot): plot is { id: string; area_ha: string; boundary: Coordinate[] } => plot !== null);
             
             // Single boundary only — skip duplicate AOI polygon from analysis API when outline exists
-            const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
-            
-            if (finalPlots.length > 0) {
-              setLeftAllPlots(finalPlots);
-            } else {
-              // If no plots and no location boundary, still try to show location boundary if available
-              if (locationBoundary) {
+            // Field-level growth keeps Display-boundary field polygons on the map.
+            if (!isFieldLevelAnalysis) {
+              const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
+              
+              if (finalPlots.length > 0) {
+                setLeftAllPlots(finalPlots);
+              } else if (locationBoundary) {
                 setLeftAllPlots([locationBoundary]);
               } else {
                 setLeftAllPlots([]);
               }
             }
-          } else {
+          } else if (!isFieldLevelAnalysis) {
             setLeftAllPlotsTileUrls({});
             // If no analysis data, still show location boundary if available
             if (locationBoundary) {
@@ -3788,6 +3973,8 @@ const App: React.FC = () => {
             } else {
               setLeftAllPlots([]);
             }
+          } else {
+            setLeftAllPlotsTileUrls({});
           }
 
           // Process response similar to main analysis data
@@ -3876,7 +4063,9 @@ const App: React.FC = () => {
           setLeftError(`Failed to load ${leftActiveTab} analysis: ${errorMessage}`);
           setLeftAllPlotsAnalysisData(null);
           setLeftAllPlotsTileUrls({});
-          setLeftAllPlots([]);
+          if (!isFieldLevelAnalysis) {
+            setLeftAllPlots([]);
+          }
         } finally {
           setLeftLoading(false);
         }
@@ -3887,11 +4076,21 @@ const App: React.FC = () => {
       setLeftAllPlotsTileUrls({});
       setLeftAllPlots([]);
     }
-  }, [splitScreenMode, leftActiveTab, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage]);
+  }, [splitScreenMode, leftActiveTab, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage, selectedPlotId]);
 
   // Fetch analysis data for right side (split screen mode)
   useEffect(() => {
     if (splitScreenMode && rightSelectedDistrict && rightActiveTab) {
+      const fieldLevelTabs = ['growth', 'water', 'soil', 'pest'] as const;
+      const selectedFieldId =
+        fieldLevelTabs.includes(rightActiveTab as (typeof fieldLevelTabs)[number]) &&
+        !!rightSelectedVillage &&
+        !!selectedPlotId &&
+        isFieldPlotId(selectedPlotId)
+          ? Number(selectedPlotId)
+          : null;
+      const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
+
       const loadAnalysisData = async () => {
         try {
           setRightLoading(true);
@@ -3906,7 +4105,11 @@ const App: React.FC = () => {
           
           let locationBoundary: OutlinePlot | null = null;
 
-          if (rightActiveTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(rightActiveTab)) {
+          if (
+            !isFieldLevelAnalysis &&
+            rightActiveTab &&
+            ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(rightActiveTab)
+          ) {
             locationBoundary = await fetchAnalysisLocationBoundary(
               rightSelectedDistrict,
               rightSelectedSubdistrict || '',
@@ -3922,7 +4125,9 @@ const App: React.FC = () => {
             }
           }
           
-          setRightAllPlots([]);
+          if (!isFieldLevelAnalysis) {
+            setRightAllPlots([]);
+          }
           
           let response: GrowthAnalysisResponse | NDWIDetectionResponse;
           switch (rightActiveTab) {
@@ -3930,28 +4135,33 @@ const App: React.FC = () => {
               response = await fetchGrowthAnalysis1(
                 rightSelectedDistrict, 
                 rightSelectedSubdistrict || undefined, 
-                rightSelectedVillage || undefined
+                rightSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'water':
               response = await fetchWaterUptakeAnalysis(
                 rightSelectedDistrict, 
                 rightSelectedSubdistrict || undefined, 
-                rightSelectedVillage || undefined
+                rightSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'soil':
               response = await fetchSoilMoistureAnalysis(
                 rightSelectedDistrict, 
                 rightSelectedSubdistrict || undefined, 
-                rightSelectedVillage || undefined
+                rightSelectedVillage || undefined,
+                selectedFieldId
               );
               break;
             case 'pest':
               response = await fetchPestDetectionAnalysis(
                 rightSelectedDistrict, 
                 rightSelectedSubdistrict || undefined, 
-                rightSelectedVillage || undefined
+                rightSelectedVillage || undefined,
+                undefined,
+                selectedFieldId
               );
               break;
             case 'waterSource':
@@ -4028,6 +4238,10 @@ const App: React.FC = () => {
             });
             
             if (Object.keys(tileUrlsMap).length > 0) {
+              if (isFieldLevelAnalysis && selectedFieldId != null) {
+                const firstUrl = Object.values(tileUrlsMap)[0];
+                if (firstUrl) tileUrlsMap[String(selectedFieldId)] = firstUrl;
+              }
               setRightAllPlotsTileUrls(tileUrlsMap);
               setRightShowTileLayers(true);
             } else {
@@ -4097,19 +4311,19 @@ const App: React.FC = () => {
               .filter((plot): plot is { id: string; area_ha: string; boundary: Coordinate[] } => plot !== null);
             
             // Single boundary only — skip duplicate AOI polygon from analysis API when outline exists
-            const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
-            
-            if (finalPlots.length > 0) {
-              setRightAllPlots(finalPlots);
-            } else {
-              // If no plots and no location boundary, still try to show location boundary if available
-              if (locationBoundary) {
+            // Field-level analysis keeps Display-boundary / crop-layer polygons on the map.
+            if (!isFieldLevelAnalysis) {
+              const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
+              
+              if (finalPlots.length > 0) {
+                setRightAllPlots(finalPlots);
+              } else if (locationBoundary) {
                 setRightAllPlots([locationBoundary]);
               } else {
                 setRightAllPlots([]);
               }
             }
-          } else {
+          } else if (!isFieldLevelAnalysis) {
             setRightAllPlotsTileUrls({});
             // If no analysis data, still show location boundary if available
             if (locationBoundary) {
@@ -4117,6 +4331,8 @@ const App: React.FC = () => {
             } else {
               setRightAllPlots([]);
             }
+          } else {
+            setRightAllPlotsTileUrls({});
           }
 
           // Process response similar to main analysis data
@@ -4205,7 +4421,9 @@ const App: React.FC = () => {
           setRightError(`Failed to load ${rightActiveTab} analysis: ${errorMessage}`);
           setRightAllPlotsAnalysisData(null);
           setRightAllPlotsTileUrls({});
-          setRightAllPlots([]);
+          if (!isFieldLevelAnalysis) {
+            setRightAllPlots([]);
+          }
         } finally {
           setRightLoading(false);
         }
@@ -4216,7 +4434,7 @@ const App: React.FC = () => {
       setRightAllPlotsTileUrls({});
       setRightAllPlots([]);
     }
-  }, [splitScreenMode, rightActiveTab, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage]);
+  }, [splitScreenMode, rightActiveTab, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, selectedPlotId]);
 
   // Initialize left side data when split screen mode is activated
   useEffect(() => {
@@ -5011,6 +5229,34 @@ const App: React.FC = () => {
     [basePlots, predictCropFieldPlots, selectedCrops, showCropLayer]
   );
 
+  /** Field-level analysis: keep crop layer on other fields; selected field shows analysis tile instead. */
+  const fieldLevelAnalysisPlotId =
+    (activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil' || activeTab === 'pest') &&
+    selectedPlotId &&
+    isFieldPlotId(selectedPlotId) &&
+    (
+      (activeTab === 'growth' && allPlotsAnalysisData?.growth) ||
+      (activeTab === 'water' && allPlotsAnalysisData?.water) ||
+      (activeTab === 'soil' && allPlotsAnalysisData?.soil) ||
+      (activeTab === 'pest' && allPlotsAnalysisData?.pest)
+    )
+      ? selectedPlotId
+      : null;
+
+  const mapFieldAreaByFieldId = useMemo(() => {
+    if (!fieldLevelAnalysisPlotId) return predictAreaFieldAreas;
+    const next = { ...predictAreaFieldAreas };
+    delete next[fieldLevelAnalysisPlotId];
+    return next;
+  }, [predictAreaFieldAreas, fieldLevelAnalysisPlotId]);
+
+  const mapFieldFillByFieldId = useMemo(() => {
+    if (!fieldLevelAnalysisPlotId) return predictFieldFillByFieldId;
+    const next = { ...predictFieldFillByFieldId };
+    delete next[fieldLevelAnalysisPlotId];
+    return next;
+  }, [predictFieldFillByFieldId, fieldLevelAnalysisPlotId]);
+
   // Helper function to get pixel data for a specific side
   const getCurrentPixelData = (side: 'left' | 'right' = 'left') => {
     const sideActiveTab = getActiveTab(side);
@@ -5218,6 +5464,108 @@ const App: React.FC = () => {
     return areaCards;
   };
 
+  type AreaCardRow = ReturnType<typeof calculateAreaCards>[number];
+
+  const isAreaCardClickable = (side: 'left' | 'right', item: AreaCardRow) => {
+    const currentTab = getActiveTab(side);
+    return (
+      (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
+      (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null)
+    );
+  };
+
+  const getAreaCardSelectedLabel = (side: 'left' | 'right'): string | null => {
+    const currentTab = getActiveTab(side);
+    if (!currentTab || !['growth', 'water', 'soil', 'pest'].includes(currentTab)) return null;
+    const overlayKey =
+      currentTab === 'water'
+        ? WATER_UPTAKE_CLASS_TILE_KEY
+        : currentTab === 'pest'
+          ? 'pest'
+          : `${currentTab}Class`;
+    const tileUrls = splitScreenMode
+      ? side === 'left'
+        ? leftAllPlotsTileUrls
+        : rightAllPlotsTileUrls
+      : allPlotsTileUrls;
+    const activeUrl = currentTab === 'pest' ? pestTileUrl : tileUrls[overlayKey];
+    if (!activeUrl) return null;
+    return calculateAreaCards(side).find((c) => c.tileUrl === activeUrl)?.label ?? null;
+  };
+
+  const handleAreaCardClick = (side: 'left' | 'right', item: AreaCardRow) => {
+    const currentTab = getActiveTab(side);
+    if (currentTab === 'pest') {
+      if (item.tileUrl != null) {
+        setPestTileUrl(item.tileUrl);
+        if (splitScreenMode) {
+          if (side === 'left') {
+            setLeftAllPlotsTileUrls({ pest: item.tileUrl });
+            setLeftShowTileLayers(true);
+          } else {
+            setRightAllPlotsTileUrls({ pest: item.tileUrl });
+            setRightShowTileLayers(true);
+          }
+        } else {
+          setAllPlotsTileUrls((prev) => withLstTilePreserved(prev, { pest: item.tileUrl! }));
+          setShowTileLayers(true);
+        }
+      }
+      if (item.pestKey != null) {
+        if (splitScreenMode) {
+          if (side === 'left') setLeftSelectedPestCategory(item.pestKey);
+          else setRightSelectedPestCategory(item.pestKey);
+        } else {
+          setSelectedPestCategory(item.pestKey);
+        }
+        const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
+        setShowPestChildren(!!children && Object.keys(children).length > 0);
+      }
+      return;
+    }
+    if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
+      const overlayKey = currentTab === 'water' ? WATER_UPTAKE_CLASS_TILE_KEY : `${currentTab}Class`;
+      const apply = (prev: Record<string, string>) =>
+        withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! });
+      if (splitScreenMode) {
+        if (side === 'left') {
+          setLeftAllPlotsTileUrls(apply);
+          setLeftShowTileLayers(true);
+        } else {
+          setRightAllPlotsTileUrls(apply);
+          setRightShowTileLayers(true);
+        }
+      } else {
+        setAllPlotsTileUrls(apply);
+        setShowTileLayers(true);
+      }
+    }
+  };
+
+  const renderPercentageAreaSection = (side: 'left' | 'right', compact = false) => {
+    const cards = calculateAreaCards(side);
+    if (!cards.length) return null;
+    return (
+      <div className={compact ? 'p-1.5 bg-gray-800/80 rounded-lg border border-gray-700 flex-shrink-0' : 'mt-2'}>
+        <div
+          className={`font-semibold text-gray-400 uppercase tracking-wider ${
+            compact ? 'text-[9px] mb-1' : 'text-[10px] mb-1.5'
+          }`}
+        >
+          Percentage / Area (ha)
+        </div>
+        <PercentageAreaPieChart
+          items={cards}
+          selectedLabel={getAreaCardSelectedLabel(side)}
+          onItemClick={(item) => handleAreaCardClick(side, item)}
+          isItemClickable={(item) => isAreaCardClickable(side, item)}
+          formatPct={formatPct}
+          compact={compact}
+        />
+      </div>
+    );
+  };
+
   /** Compact area (ha) bar chart docked to map bottom â€” split screen only, one instance per pane. */
   const renderSplitScreenMapBottomGraph = (side: 'left' | 'right'): React.ReactNode => {
     if (!splitScreenMode) return null;
@@ -5421,47 +5769,82 @@ const App: React.FC = () => {
                     <option key={v.village} value={v.village}>{v.village}</option>
                   ))}
                 </select>
-                {selectedVillage && (
-                  <div className="mt-2 space-y-2">
-                    <VillageMapLayerCheckbox
-                      label="Display boundary"
-                      checked={showVillageBoundary}
-                      onChange={setShowVillageBoundary}
-                      tone="emerald"
-                    />
-                    <VillageMapLayerCheckbox
-                      label="Owner name"
-                      checked={showVillageOwners}
-                      loading={villageOwnersLoading}
-                      disabled={!selectedDistrict || !selectedSubdistrict}
-                      onChange={(checked) => {
-                        if (!checked) {
-                          setShowVillageOwners(false);
-                          setVillagePlotMetaById({});
-                          setVillageOwnersError(null);
-                          return;
-                        }
-                        void loadVillageOwnerOverlay({
-                          district: selectedDistrict,
-                          subdistrict: selectedSubdistrict,
-                          village: selectedVillage,
-                          villageList: villages,
-                          setPlots: setAllPlots,
-                          setBounds: setPlotBounds,
-                          onOwnersShown: () => setShowVillageOwners(true),
-                        });
-                      }}
-                      tone="sky"
-                    />
-                    {villageOwnersError ? (
-                      <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
-                    ) : null}
-                    <VillageMapLayerCheckbox
-                      label="Crop layer"
-                      checked={showCropLayer}
-                      onChange={setShowCropLayer}
-                      tone="violet"
-                      loading={predictCropAreaLoading}
+                {selectedDistrict && (
+                  <div className="mt-2 min-w-[180px]">
+                    <LayersDropdown
+                      isDarkMode
+                      options={[
+                        {
+                          id: 'crop-layer-dash',
+                          label: 'Crop layer',
+                          checked: showCropLayer,
+                          onChange: setShowCropLayer,
+                          tone: 'violet',
+                          loading: predictCropAreaLoading,
+                          disabled: !selectedVillage,
+                        },
+                        {
+                          id: 'owner-name-dash',
+                          label: 'Owner name',
+                          checked: showVillageOwners,
+                          loading: villageOwnersLoading,
+                          disabled: !selectedDistrict || !selectedSubdistrict || !selectedVillage,
+                          onChange: (checked) => {
+                            if (!checked) {
+                              setShowVillageOwners(false);
+                              setVillagePlotMetaById({});
+                              setVillageOwnersError(null);
+                              return;
+                            }
+                            if (!selectedVillage) return;
+                            void loadVillageOwnerOverlay({
+                              district: selectedDistrict,
+                              subdistrict: selectedSubdistrict,
+                              village: selectedVillage,
+                              villageList: villages,
+                              setPlots: setAllPlots,
+                              setBounds: setPlotBounds,
+                              onOwnersShown: () => setShowVillageOwners(true),
+                            });
+                          },
+                          tone: 'sky',
+                        },
+                        {
+                          id: 'display-boundary-dash',
+                          label: 'Display boundary',
+                          checked: showVillageBoundary,
+                          onChange: setShowVillageBoundary,
+                          tone: 'emerald',
+                          disabled: !selectedVillage,
+                        },
+                        {
+                          id: 'build-layers-dash',
+                          label: 'Build layers',
+                          checked: showBuildingLayer,
+                          onChange: (checked) => {
+                            setShowBuildingLayer(checked);
+                            if (!checked) {
+                              setBuildingData(null);
+                              setBuildingError(null);
+                              setSelectedBuildingClassId(null);
+                            }
+                          },
+                          tone: 'amber',
+                          loading: buildingLoading,
+                        },
+                      ]}
+                      footer={
+                        villageOwnersError || buildingError ? (
+                          <div className="space-y-1">
+                            {villageOwnersError ? (
+                              <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
+                            ) : null}
+                            {buildingError ? (
+                              <p className="text-[10px] leading-snug text-red-400">{buildingError}</p>
+                            ) : null}
+                          </div>
+                        ) : null
+                      }
                     />
                   </div>
                 )}
@@ -6349,93 +6732,131 @@ const App: React.FC = () => {
               </div>
           )}
 
-          {/* Crops checklist — before village dropdown */}
+          {/* Crops dropdown — before village dropdown */}
           {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('left') && (
             <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-              Crops
-            </label>
-            <CropChecklist
-              checkedCrops={selectedCrops}
-              onToggleCrop={toggleSelectedCrop}
-              isDarkMode={isDarkMode}
-            />
-          </div>
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                Crops
+              </label>
+              <CropDropdownChecklist
+                selectedCrops={selectedCrops}
+                onToggleCrop={toggleSelectedCrop}
+                onToggleAll={toggleAllCrops}
+                isDarkMode={isDarkMode}
+              />
+            </div>
           )}
 
-          {/* Map layer checkboxes — before village dropdown */}
-          {getSelectedSubdistrict('left') && (
-            <div className="space-y-2">
-              <VillageMapLayerCheckbox
-                label="Display boundary"
-                checked={splitScreenMode ? showLeftVillageBoundary : showVillageBoundary}
-                onChange={(checked) => {
-                  if (splitScreenMode) {
-                    setShowLeftVillageBoundary(checked);
-                  } else {
-                    setShowVillageBoundary(checked);
-                  }
-                }}
-                tone="emerald"
+          {/* Layers dropdown — Crop layer, Owner name, Display boundary, Build layers */}
+          {getSelectedDistrict('left') && (
+            <div>
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                Layers
+              </label>
+              <LayersDropdown
                 isDarkMode={isDarkMode}
-              />
-              <VillageMapLayerCheckbox
-                label="Owner name"
-                checked={splitScreenMode ? showLeftVillageOwners : showVillageOwners}
-                loading={villageOwnersLoading}
-                disabled={!getSelectedDistrict('left') || !getSelectedSubdistrict('left') || !getSelectedVillage('left')}
-                onChange={(checked) => {
-                  const district = getSelectedDistrict('left');
-                  const subdistrict = getSelectedSubdistrict('left');
-                  const village = getSelectedVillage('left');
-                  if (!checked) {
-                    if (splitScreenMode) {
-                      setShowLeftVillageOwners(false);
-                    } else {
-                      setShowVillageOwners(false);
-                    }
-                    setVillagePlotMetaById({});
-                    setVillageOwnersError(null);
-                    return;
-                  }
-                  if (!district || !subdistrict || !village) return;
-                  if (splitScreenMode) {
-                    void loadVillageOwnerOverlay({
-                      district,
-                      subdistrict,
-                      village,
-                      villageList: getVillages('left'),
-                      setPlots: setLeftAllPlots,
-                      setBounds: setPlotBounds,
-                      onOwnersShown: () => setShowLeftVillageOwners(true),
-                    });
-                  } else {
-                    void loadVillageOwnerOverlay({
-                      district,
-                      subdistrict,
-                      village,
-                      villageList: villages,
-                      setPlots: setAllPlots,
-                      setBounds: setPlotBounds,
-                      onOwnersShown: () => setShowVillageOwners(true),
-                    });
-                  }
-                }}
-                tone="sky"
-                isDarkMode={isDarkMode}
-              />
-              {villageOwnersError ? (
-                <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
-                  {villageOwnersError}
-                </p>
-              ) : null}
-              <VillageMapLayerCheckbox
-                label="Crop layer"
-                checked={showCropLayer}
-                onChange={setShowCropLayer}
-                tone="violet"
-                loading={predictCropAreaLoading}
-                isDarkMode={isDarkMode}
+                options={[
+                  {
+                    id: 'crop-layer',
+                    label: 'Crop layer',
+                    checked: showCropLayer,
+                    onChange: setShowCropLayer,
+                    tone: 'violet',
+                    loading: predictCropAreaLoading,
+                  },
+                  {
+                    id: 'owner-name',
+                    label: 'Owner name',
+                    checked: splitScreenMode ? showLeftVillageOwners : showVillageOwners,
+                    loading: villageOwnersLoading,
+                    disabled:
+                      !getSelectedDistrict('left') ||
+                      !getSelectedSubdistrict('left') ||
+                      !getSelectedVillage('left'),
+                    onChange: (checked) => {
+                      const district = getSelectedDistrict('left');
+                      const subdistrict = getSelectedSubdistrict('left');
+                      const village = getSelectedVillage('left');
+                      if (!checked) {
+                        if (splitScreenMode) {
+                          setShowLeftVillageOwners(false);
+                        } else {
+                          setShowVillageOwners(false);
+                        }
+                        setVillagePlotMetaById({});
+                        setVillageOwnersError(null);
+                        return;
+                      }
+                      if (!district || !subdistrict || !village) return;
+                      if (splitScreenMode) {
+                        void loadVillageOwnerOverlay({
+                          district,
+                          subdistrict,
+                          village,
+                          villageList: getVillages('left'),
+                          setPlots: setLeftAllPlots,
+                          setBounds: setPlotBounds,
+                          onOwnersShown: () => setShowLeftVillageOwners(true),
+                        });
+                      } else {
+                        void loadVillageOwnerOverlay({
+                          district,
+                          subdistrict,
+                          village,
+                          villageList: villages,
+                          setPlots: setAllPlots,
+                          setBounds: setPlotBounds,
+                          onOwnersShown: () => setShowVillageOwners(true),
+                        });
+                      }
+                    },
+                    tone: 'sky',
+                  },
+                  {
+                    id: 'display-boundary',
+                    label: 'Display boundary',
+                    checked: splitScreenMode ? showLeftVillageBoundary : showVillageBoundary,
+                    onChange: (checked) => {
+                      if (splitScreenMode) {
+                        setShowLeftVillageBoundary(checked);
+                      } else {
+                        setShowVillageBoundary(checked);
+                      }
+                    },
+                    tone: 'emerald',
+                  },
+                  {
+                    id: 'build-layers',
+                    label: 'Build layers',
+                    checked: showBuildingLayer,
+                    onChange: (checked) => {
+                      setShowBuildingLayer(checked);
+                      if (!checked) {
+                        setBuildingData(null);
+                        setBuildingError(null);
+                        setSelectedBuildingClassId(null);
+                      }
+                    },
+                    tone: 'amber',
+                    loading: buildingLoading,
+                  },
+                ]}
+                footer={
+                  villageOwnersError || buildingError ? (
+                    <div className="space-y-1">
+                      {villageOwnersError ? (
+                        <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                          {villageOwnersError}
+                        </p>
+                      ) : null}
+                      {buildingError ? (
+                        <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                          {buildingError}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null
+                }
               />
             </div>
           )}
@@ -6530,91 +6951,10 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
-          {splitScreenMode && ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') && calculateAreaCards('left').length > 0 && (
-            <div className="mt-2">
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
-                Percentage / Area (ha)
-              </div>
-              <div className="grid grid-cols-2 gap-1.5">
-              {calculateAreaCards('left').map((item, idx) => {
-                const currentTab = getActiveTab('left');
-                const cardBg = item.color || '#f97316';
-                const cardFg = textColorOnBackground(cardBg);
-                return (
-                <div
-                  key={`pct-${item.label}-${idx}`}
-                  role={(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 'button' : undefined}
-                  tabIndex={(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 0 : undefined}
-                  onClick={() => {
-                    if (currentTab === 'pest') {
-                      if (item.tileUrl != null) {
-                        setPestTileUrl(item.tileUrl!);
-                        if (splitScreenMode) {
-                          setLeftAllPlotsTileUrls({ pest: item.tileUrl! });
-                          setLeftShowTileLayers(true);
-                        } else {
-                          setAllPlotsTileUrls({ pest: item.tileUrl! });
-                          setShowTileLayers(true);
-                        }
-                      }
-                      if (item.pestKey != null) {
-                        if (splitScreenMode) {
-                          setLeftSelectedPestCategory(item.pestKey);
-                        } else {
-                          setSelectedPestCategory(item.pestKey);
-                        }
-                        const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                        setShowPestChildren(!!children && Object.keys(children).length > 0);
-                      }
-                    } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                      const overlayKey =
-                        currentTab === 'water' ? WATER_UPTAKE_CLASS_TILE_KEY : `${currentTab}Class`;
-                      if (splitScreenMode) {
-                        setLeftAllPlotsTileUrls((prev) =>
-                          withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
-                        );
-                        setLeftShowTileLayers(true);
-                      } else {
-                        setAllPlotsTileUrls((prev) =>
-                          withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
-                        );
-                        setShowTileLayers(true);
-                      }
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      if ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
-                        e.currentTarget.click();
-                    }
-                  }}
-                  style={{ backgroundColor: cardBg, color: cardFg }}
-                  className={`px-2 py-1.5 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[56px] ${
-                    ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
-                      ? 'cursor-pointer hover:brightness-95 transition-all'
-                      : ''
-                  }`}
-                >
-                  <div className="flex items-center justify-center w-full min-w-0">
-                    <span className="text-[12px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
-                      {item.label}
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-0 w-full">
-                    <span className="font-bold text-[14px] leading-tight" style={{ color: cardFg }}>
-                      {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
-                    </span>
-                    <span className="font-medium text-[12px] leading-tight" style={{ color: cardFg }}>
-                      {item.value.toFixed(2)} ha
-                    </span>
-                  </div>
-                </div>
-                );
-              })}
-              </div>
-            </div>
-          )}
+          {/* Percentage / Area (ha) — clickable pie chart; slice click loads tile on map */}
+          {splitScreenMode &&
+            ['growth', 'water', 'soil', 'pest'].includes(getActiveTab('left') || '') &&
+            renderPercentageAreaSection('left')}
 
           {/* Area Display */}
           {areaHa !== null && areaHa !== undefined && typeof areaHa === 'number' && (
@@ -7995,6 +8335,15 @@ const App: React.FC = () => {
                 textColorOnBackground={textColorOnBackground}
               />
             )}
+          {!isMapFullscreen && showBuildingLayer && buildingData && (
+            <BuildingLayerCard
+              data={buildingData}
+              scopeLabel={buildingScopeLabel}
+              selectedClassId={selectedBuildingClassId}
+              onSelectClass={selectBuildingClass}
+              textColorOnBackground={textColorOnBackground}
+            />
+          )}
           {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
           {splitScreenMode && (
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
@@ -8972,8 +9321,8 @@ const App: React.FC = () => {
               plots={splitScreenMode ? leftAllPlots : plots}
               selectedPlotId={selectedPlotId}
               cropColor={predictAreaCropColor}
-              fieldAreaByFieldId={predictAreaFieldAreas}
-              fieldFillByFieldId={predictFieldFillByFieldId}
+              fieldAreaByFieldId={mapFieldAreaByFieldId}
+              fieldFillByFieldId={mapFieldFillByFieldId}
               hideFieldIdAreaCard={
                 Object.keys(villagePlotMetaById).length > 0
                   ? false
@@ -9182,75 +9531,7 @@ const App: React.FC = () => {
             className="flex w-full flex-col gap-2 bg-gray-950 border-t border-gray-800 md:border-t-0 md:border-l md:border-gray-800 md:w-[340px] md:min-w-[320px] md:max-w-[380px] md:flex-shrink-0 p-2.5 min-h-0 md:h-full md:min-h-[calc(100vh-140px)] md:self-stretch md:overflow-y-auto"
             style={{ scrollMarginTop: 96 }}
           >
-            {calculateAreaCards('left').length > 0 && (
-              <div className="p-1.5 bg-gray-800/80 rounded-lg border border-gray-700 flex-shrink-0">
-                <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                  Percentage / Area (ha)
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  {calculateAreaCards('left').map((item, idx) => {
-                    const currentTab = getActiveTab('left');
-                    const cardBg = item.color || '#f97316';
-                    const cardFg = textColorOnBackground(cardBg);
-                    const isClickable =
-                      (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
-                      (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null);
-                    const overlayKey =
-                      currentTab === 'water'
-                        ? WATER_UPTAKE_CLASS_TILE_KEY
-                        : currentTab === 'pest'
-                          ? 'pest'
-                          : `${currentTab}Class`;
-                    const isSelected =
-                      item.tileUrl != null &&
-                      (allPlotsTileUrls[overlayKey] === item.tileUrl ||
-                        (currentTab === 'pest' && pestTileUrl === item.tileUrl));
-                    return (
-                      <div
-                        key={`pct-area-${item.label}-${idx}`}
-                        role={isClickable ? 'button' : undefined}
-                        tabIndex={isClickable ? 0 : undefined}
-                        onClick={() => {
-                          if (currentTab === 'pest') {
-                            if (item.tileUrl != null) {
-                              setPestTileUrl(item.tileUrl!);
-                              setAllPlotsTileUrls((prev) =>
-                                withLstTilePreserved(prev, { pest: item.tileUrl! })
-                              );
-                              setShowTileLayers(true);
-                            }
-                            if (item.pestKey != null) {
-                              setSelectedPestCategory(item.pestKey);
-                              const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                              setShowPestChildren(!!children && Object.keys(children).length > 0);
-                            }
-                          } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                            setAllPlotsTileUrls((prev) =>
-                              withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
-                            );
-                            setShowTileLayers(true);
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if ((e.key === 'Enter' || e.key === ' ') && isClickable) {
-                            e.preventDefault();
-                            e.currentTarget.click();
-                          }
-                        }}
-                        className={`rounded-md px-2 py-2.5 flex flex-col items-center justify-center text-center min-h-[80px] ${
-                          isClickable ? 'cursor-pointer hover:brightness-110 transition-all' : ''
-                        } ${isSelected ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900' : ''}`}
-                        style={{ backgroundColor: cardBg, color: cardFg }}
-                      >
-                        <span className="text-[12px] font-semibold leading-tight">{item.label}</span>
-                        <span className="font-bold text-[14px] leading-tight mt-1">{item.percentage?.toFixed(2) ?? '0.00'}%</span>
-                        <span className="font-medium text-[12px] leading-tight mt-0.5">{item.value.toFixed(2)} ha</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {renderPercentageAreaSection('left', true)}
 
             {/* Health Trends card – header shows selected tab name (e.g. Growth, Water, Pest) */}
             <div className="bg-gray-800/80 rounded-lg border border-gray-700 overflow-hidden flex flex-col flex-1 min-h-[280px]">
@@ -10531,8 +10812,8 @@ const App: React.FC = () => {
                 plots={rightAllPlots}
                 selectedPlotId={selectedPlotId}
                 cropColor={predictAreaCropColor}
-                fieldAreaByFieldId={predictAreaFieldAreas}
-                fieldFillByFieldId={predictFieldFillByFieldId}
+                fieldAreaByFieldId={mapFieldAreaByFieldId}
+                fieldFillByFieldId={mapFieldFillByFieldId}
                 hideFieldIdAreaCard={
                   Object.keys(villagePlotMetaById).length > 0
                     ? false
@@ -10694,66 +10975,105 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Crops checklist — before village dropdown */}
+              {/* Crops dropdown — before village dropdown */}
               {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('right') && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Crops
-                </label>
-                <CropChecklist
-                  checkedCrops={selectedCrops}
-                  onToggleCrop={toggleSelectedCrop}
-                  isDarkMode
-                />
-              </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Crops
+                  </label>
+                  <CropDropdownChecklist
+                    selectedCrops={selectedCrops}
+                    onToggleCrop={toggleSelectedCrop}
+                    onToggleAll={toggleAllCrops}
+                    isDarkMode
+                  />
+                </div>
               )}
 
-              {/* Map layer checkboxes — before village dropdown */}
-              {getSelectedSubdistrict('right') && (
-                <div className="space-y-2">
-                  <VillageMapLayerCheckbox
-                    label="Display boundary"
-                    checked={showRightVillageBoundary}
-                    onChange={setShowRightVillageBoundary}
-                    tone="emerald"
-                  />
-                  <VillageMapLayerCheckbox
-                    label="Owner name"
-                    checked={showRightVillageOwners}
-                    loading={villageOwnersLoading}
-                    disabled={!getSelectedDistrict('right') || !getSelectedSubdistrict('right') || !getSelectedVillage('right')}
-                    onChange={(checked) => {
-                      const district = getSelectedDistrict('right');
-                      const subdistrict = getSelectedSubdistrict('right');
-                      const village = getSelectedVillage('right');
-                      if (!checked) {
-                        setShowRightVillageOwners(false);
-                        setVillagePlotMetaById({});
-                        setVillageOwnersError(null);
-                        return;
-                      }
-                      if (!district || !subdistrict || !village) return;
-                      void loadVillageOwnerOverlay({
-                        district,
-                        subdistrict,
-                        village,
-                        villageList: getVillages('right'),
-                        setPlots: setRightAllPlots,
-                        setBounds: setPlotBounds,
-                        onOwnersShown: () => setShowRightVillageOwners(true),
-                      });
-                    }}
-                    tone="sky"
-                  />
-                  {villageOwnersError ? (
-                    <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
-                  ) : null}
-                  <VillageMapLayerCheckbox
-                    label="Crop layer"
-                    checked={showCropLayer}
-                    onChange={setShowCropLayer}
-                    tone="violet"
-                    loading={predictCropAreaLoading}
+              {/* Layers dropdown — Crop layer, Owner name, Display boundary, Build layers */}
+              {getSelectedDistrict('right') && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Layers
+                  </label>
+                  <LayersDropdown
+                    isDarkMode
+                    options={[
+                      {
+                        id: 'crop-layer-right',
+                        label: 'Crop layer',
+                        checked: showCropLayer,
+                        onChange: setShowCropLayer,
+                        tone: 'violet',
+                        loading: predictCropAreaLoading,
+                      },
+                      {
+                        id: 'owner-name-right',
+                        label: 'Owner name',
+                        checked: showRightVillageOwners,
+                        loading: villageOwnersLoading,
+                        disabled:
+                          !getSelectedDistrict('right') ||
+                          !getSelectedSubdistrict('right') ||
+                          !getSelectedVillage('right'),
+                        onChange: (checked) => {
+                          const district = getSelectedDistrict('right');
+                          const subdistrict = getSelectedSubdistrict('right');
+                          const village = getSelectedVillage('right');
+                          if (!checked) {
+                            setShowRightVillageOwners(false);
+                            setVillagePlotMetaById({});
+                            setVillageOwnersError(null);
+                            return;
+                          }
+                          if (!district || !subdistrict || !village) return;
+                          void loadVillageOwnerOverlay({
+                            district,
+                            subdistrict,
+                            village,
+                            villageList: getVillages('right'),
+                            setPlots: setRightAllPlots,
+                            setBounds: setPlotBounds,
+                            onOwnersShown: () => setShowRightVillageOwners(true),
+                          });
+                        },
+                        tone: 'sky',
+                      },
+                      {
+                        id: 'display-boundary-right',
+                        label: 'Display boundary',
+                        checked: showRightVillageBoundary,
+                        onChange: setShowRightVillageBoundary,
+                        tone: 'emerald',
+                      },
+                      {
+                        id: 'build-layers-right',
+                        label: 'Build layers',
+                        checked: showBuildingLayer,
+                        onChange: (checked) => {
+                          setShowBuildingLayer(checked);
+                          if (!checked) {
+                            setBuildingData(null);
+                            setBuildingError(null);
+                            setSelectedBuildingClassId(null);
+                          }
+                        },
+                        tone: 'amber',
+                        loading: buildingLoading,
+                      },
+                    ]}
+                    footer={
+                      villageOwnersError || buildingError ? (
+                        <div className="space-y-1">
+                          {villageOwnersError ? (
+                            <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
+                          ) : null}
+                          {buildingError ? (
+                            <p className="text-[10px] leading-snug text-red-400">{buildingError}</p>
+                          ) : null}
+                        </div>
+                      ) : null
+                    }
                   />
                 </div>
               )}
@@ -10820,76 +11140,9 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Percentage / Area (ha) â€” grid 2 per row; click loads tile on map */}
-              {['growth', 'water', 'soil', 'pest'].includes(getActiveTab('right') || '') && calculateAreaCards('right').length > 0 && (
-                <div className="mt-2">
-                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
-                    Percentage / Area (ha)
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {calculateAreaCards('right').map((item, idx) => {
-                      const currentTab = getActiveTab('right');
-                      const cardBg = item.color || '#f97316';
-                      const cardFg = textColorOnBackground(cardBg);
-                      return (
-                        <div
-                          key={`right-pct-${item.label}-${idx}`}
-                          role={(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 'button' : undefined}
-                          tabIndex={(currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) ? 0 : undefined}
-                          onClick={() => {
-                            if (currentTab === 'pest') {
-                              if (item.tileUrl != null) {
-                                setPestTileUrl(item.tileUrl!);
-                                setRightAllPlotsTileUrls({ pest: item.tileUrl! });
-                                setRightShowTileLayers(true);
-                              }
-                              if (item.pestKey != null) {
-                                setRightSelectedPestCategory(item.pestKey);
-                                const children = pestHierarchy?.hierarchy[item.pestKey]?.children;
-                                setShowPestChildren(!!children && Object.keys(children).length > 0);
-                              }
-                            } else if (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null) {
-                              const overlayKey =
-                                currentTab === 'water' ? WATER_UPTAKE_CLASS_TILE_KEY : `${currentTab}Class`;
-                              setRightAllPlotsTileUrls((prev) =>
-                                withLstTilePreserved(prev, { [overlayKey]: item.tileUrl! })
-                              );
-                              setRightShowTileLayers(true);
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              if ((currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) || (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null))
-                                e.currentTarget.click();
-                            }
-                          }}
-                          style={{ backgroundColor: cardBg, color: cardFg }}
-                          className={`px-2 py-1.5 rounded-md border border-black/15 flex flex-col items-center text-center gap-0.5 min-w-0 min-h-[56px] ${
-                            (currentTab === 'pest' && (item.tileUrl != null || item.pestKey != null)) ||
-                            (['growth', 'water', 'soil'].includes(currentTab || '') && item.tileUrl != null)
-                              ? 'cursor-pointer hover:brightness-95 transition-all'
-                              : ''
-                          }`}
-                        >
-                          <div className="flex items-center justify-center w-full min-w-0">
-                            <span className="text-[12px] font-semibold truncate w-full leading-tight" style={{ color: cardFg }}>
-                              {item.label}
-                            </span>
-                          </div>
-                          <div className="flex flex-col gap-0 w-full">
-                            <span className="font-bold text-[14px] leading-tight" style={{ color: cardFg }}>
-                              {item.percentage != null ? `${formatPct(item.percentage)}%` : '0%'}
-                            </span>
-                            <span className="font-medium text-[12px] leading-tight" style={{ color: cardFg }}>
-                              {item.value.toFixed(2)} ha
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+              {/* Percentage / Area (ha) — clickable pie chart */}
+              {['growth', 'water', 'soil', 'pest'].includes(getActiveTab('right') || '') &&
+                renderPercentageAreaSection('right')}
 
               {/* Area Display */}
               {areaHa !== null && areaHa !== undefined && typeof areaHa === 'number' && (
