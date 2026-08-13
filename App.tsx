@@ -2612,11 +2612,8 @@ const App: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
-        // Clear old analysis tiles when location/tab changes.
-        // Field-level analysis keeps crop-layer / boundary polygons on the map.
-        if (!isFieldLevelAnalysis) {
-          setAllPlots([]);
-        }
+        // Keep current polygons on the map while analysis loads.
+        // Unmounting PlotsMap (empty plots + loader) causes full-UI black flashes on hosted.
         setAvailablePlots([]);
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
@@ -9371,19 +9368,19 @@ const App: React.FC = () => {
           )}
 
           <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
-          {(splitScreenMode ? leftLoading : loading) &&
-          (splitScreenMode ? leftAllPlots : plots).length === 0 &&
-          !(useEarthViewMap && !splitScreenMode) ? (
-            <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
-              <Loader2 className="animate-spin" size={48} />
-            </div>
-          ) : !splitScreenMode && useEarthViewMap ? (
+          {!splitScreenMode && useEarthViewMap ? (
             <EarthView
               predictCard={null}
               className="h-full w-full min-h-[50vh] flex-1"
               height="100%"
             />
           ) : (
+            <>
+            {(splitScreenMode ? leftLoading : loading) && (splitScreenMode ? leftAllPlots : plots).length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[20] flex items-center justify-center bg-black/20">
+                <Loader2 className="animate-spin text-green-500" size={48} />
+              </div>
+            )}
             <PlotsMap
               plots={splitScreenMode ? leftAllPlots : plots}
               selectedPlotId={selectedPlotId}
@@ -9523,6 +9520,7 @@ const App: React.FC = () => {
               windDirectPayload={windDirectData}
               showWindFlowLayer={showWindFlowLayer}
             />
+            </>
           )}
           {!splitScreenMode && (predictAreaMapCard || villageWiseMapCard) ? (
             <div
@@ -10882,12 +10880,12 @@ const App: React.FC = () => {
 
             {/* Map - Right Side */}
             <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
-            {rightLoading && rightAllPlots.length === 0 ? (
-              <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
-                <Loader2 className="animate-spin" size={48} />
+            {rightLoading && rightAllPlots.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[20] flex items-center justify-center bg-black/20">
+                <Loader2 className="animate-spin text-green-500" size={48} />
               </div>
-            ) : (
-              <PlotsMap
+            )}
+            <PlotsMap
                 plots={rightAllPlots}
                 selectedPlotId={selectedPlotId}
                 cropColor={predictAreaCropColor}
@@ -10935,7 +10933,6 @@ const App: React.FC = () => {
                 windDirectPayload={null}
                 showWindFlowLayer={false}
               />
-            )}
             {rightLoading && getActiveTab('right') && (
               <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-black/30 pointer-events-none">
                 <div className="flex flex-col items-center gap-2 rounded-lg bg-black/65 px-5 py-4">
