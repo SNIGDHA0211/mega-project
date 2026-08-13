@@ -4,8 +4,6 @@ import { Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
 import { isFieldPlotId, type WindDirectResponse } from '../services/analysisService';
 import WindFlowOverlay from './WindFlowOverlay';
-import PredictAreaMapCard from './PredictAreaMapCard';
-import type { CropSelectionKey, CropSelectionState } from './CropDropdownChecklist';
 
 interface WaterSource {
   id: string;
@@ -43,15 +41,6 @@ interface PlotsMapProps {
   /** Open-Meteo wind AOI payload; when set with showWindFlowLayer, draws particles + markers on the map */
   windDirectPayload?: WindDirectResponse | null;
   showWindFlowLayer?: boolean;
-  /** Right-side overlay: sugarcane & wheat predicted areas (predict-area) */
-  predictAreaMapCard?: {
-    loading: boolean;
-    regionLabel: string;
-    cropAreas: Record<CropSelectionKey, number | null>;
-    cropColors?: Partial<Record<CropSelectionKey, string>>;
-    selectedCrops: CropSelectionState;
-    onToggleCrop: (crop: CropSelectionKey) => void;
-  } | null;
   /** Cadastral plot metadata (survey no + owners) from village-data API */
   villagePlotMetaById?: Record<
     string,
@@ -198,7 +187,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   hideFieldIdAreaCard = false,
   windDirectPayload = null,
   showWindFlowLayer = false,
-  predictAreaMapCard = null,
   villagePlotMetaById = {},
   showOwnerLabels = false,
 }) => {
@@ -514,20 +502,6 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           <WindFlowOverlay payload={windDirectPayload} particleCount={480} showMarkers />
         )}
     </MapContainer>
-    {predictAreaMapCard && (
-      <div className="pointer-events-none absolute right-2 top-2 z-[1000] max-w-[calc(100%-1rem)] sm:right-3 sm:top-3">
-        <div className="pointer-events-auto">
-          <PredictAreaMapCard
-            loading={predictAreaMapCard.loading}
-            regionLabel={predictAreaMapCard.regionLabel}
-            cropAreas={predictAreaMapCard.cropAreas}
-            cropColors={predictAreaMapCard.cropColors}
-            selectedCrops={predictAreaMapCard.selectedCrops}
-            onToggleCrop={predictAreaMapCard.onToggleCrop}
-          />
-        </div>
-      </div>
-    )}
     </div>
   );
 };

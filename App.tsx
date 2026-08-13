@@ -2,15 +2,19 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import PlotsMap from './components/PlotsMap';
 import EarthView from './components/EarthView';
 import VillageMapLayerCheckbox from './components/VillageMapLayerCheckbox';
-import CropDropdownChecklist, {
+import {
   CROP_SELECTION_KEYS,
   type CropSelectionKey,
   type CropSelectionState,
   emptyCropSelection,
   hasAnyCropSelected,
 } from './components/CropDropdownChecklist';
+import CropChecklist from './components/CropChecklist';
 import LegendCircles, { AnalysisType } from './components/LegendCircles';
 import ForestAgeClassMapCards from './components/ForestAgeClassMapCards';
+import VillageCropAreaPopup from './components/VillageCropAreaPopup';
+import PredictAreaMapCard from './components/PredictAreaMapCard';
+import SubdistrictVillageWiseCard from './components/SubdistrictVillageWiseCard';
 import { LoginPage } from './components/LoginPage';
 import { 
   fetchDistricts, 
@@ -29,6 +33,8 @@ import {
   fetchVillageSurveyPlots,
   type VillagePlotMeta,
   fetchPredictArea,
+  fetchPredictAreaCropAreas,
+  type PredictAreaCropAreasResponse,
   loadPredictCropFieldPlots,
   formatPredictAreaMonthLabel,
   type PredictAreaCropData,
@@ -396,6 +402,29 @@ const App: React.FC = () => {
   const [predictAreaDataMonth, setPredictAreaDataMonth] = useState<string | null>(null);
   /** Field polygons from predict-area (numeric field_id) for crop boundary coloring */
   const [predictCropFieldPlots, setPredictCropFieldPlots] = useState<MapPlot[]>([]);
+  /** Subdistrict village-wise crop areas from /predict-area/crop-areas */
+  const [subdistrictCropAreas, setSubdistrictCropAreas] = useState<PredictAreaCropAreasResponse | null>(null);
+  const [subdistrictCropAreasLoading, setSubdistrictCropAreasLoading] = useState(false);
+  const [subdistrictCropTotals, setSubdistrictCropTotals] = useState<
+    Record<CropSelectionKey, number | null>
+  >({
+    sugarcane: null,
+    wheat: null,
+    Soyabean: null,
+    Mango: null,
+    Banana: null,
+  });
+  /** Merged village_wise rows from crop-areas (all selected crops) */
+  const [subdistrictVillageWiseRows, setSubdistrictVillageWiseRows] = useState<
+    Array<{ village: string; crop: string; areaHa: number }>
+  >([]);
+  const [villageCropPopup, setVillageCropPopup] = useState<{
+    village: string;
+    cropAreas: Record<string, number>;
+  } | null>(null);
+  /** Same top-right PredictAreaMapCard when subdistrict (no village) is selected */
+  const [showSubdistrictCropCard, setShowSubdistrictCropCard] = useState(true);
+  const [showVillageWiseCard, setShowVillageWiseCard] = useState(true);
 
   // State for ET and Weather data
   const [etData, setEtData] = useState<ETResponse | null>(null);
@@ -1601,7 +1630,7 @@ const App: React.FC = () => {
     if (!subdistrictData?.geometry) return;
     const plots = geometryToBoundaryPlots(selectedSubdistrict, subdistrictData.geometry);
     applyBoundaryPlots(plots, setAllPlots, setPlotBounds);
-  }, [selectedVillage, selectedSubdistrict, splitScreenMode, subdistricts]);
+  }, [selectedVillage, selectedSubdistrict, splitScreenMode, subdistricts, selectedDistrict, predictAreaMonthInput, selectedCrops]);
 
   // Handle district selection and display coordinates on map (from list geometry or get-geojson API)
   useEffect(() => {
@@ -1706,7 +1735,7 @@ const App: React.FC = () => {
         return () => { cancelled = true; };
       }
     }
-  }, [selectedSubdistrict, subdistricts, selectedDistrict, districts]);
+  }, [selectedSubdistrict, subdistricts, selectedDistrict, districts, predictAreaMonthInput, selectedCrops]);
 
   // Village outline from /villages API when village is selected (before field plots)
   useEffect(() => {
@@ -1729,7 +1758,118 @@ const App: React.FC = () => {
     } else {
       setAllPlots([]);
     }
-  }, [selectedVillage, villages, showVillageBoundary, showVillageOwners, splitScreenMode, activeTab]);
+  }, [selectedVillage, villages, showVillageBoundary, showVillageOwners, splitScreenMode, activeTab, selectedDistrict, selectedSubdistrict, predictAreaMonthInput, selectedCrops]);
+
+  // Subdistrict crop areas from /predict-area/crop-areas (cards only; map keeps subdistrict boundary)
+  useEffect(() => {
+    if (splitScreenMode) return;
+    const emptyTotals = (): Record<CropSelectionKey, number | null> => ({
+      sugarcane: null,
+      wheat: null,
+      Soyabean: null,
+      Mango: null,
+      Banana: null,
+    });
+    if (!selectedDistrict || !selectedSubdistrict) {
+      setSubdistrictCropAreas(null);
+      setSubdistrictCropTotals(emptyTotals());
+      setSubdistrictVillageWiseRows([]);
+      setVillageCropPopup(null);
+      setSubdistrictCropAreasLoading(false);
+      return;
+    }
+    const month = predictAreaMonthInput.trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      setSubdistrictCropAreas(null);
+      setSubdistrictCropTotals(emptyTotals());
+      setSubdistrictVillageWiseRows([]);
+      setVillageCropPopup(null);
+      setSubdistrictCropAreasLoading(false);
+      return;
+    }
+    const selectedKeys = CROP_SELECTION_KEYS.filter((k) => selectedCrops[k]);
+    if (selectedKeys.length === 0) {
+      setSubdistrictCropAreas(null);
+      setSubdistrictCropTotals(emptyTotals());
+      setSubdistrictVillageWiseRows([]);
+      setVillageCropPopup(null);
+      setSubdistrictCropAreasLoading(false);
+      return;
+    }
+    const primaryCropKey = selectedKeys[0];
+
+    let cancelled = false;
+    setSubdistrictCropAreasLoading(true);
+
+    const load = async () => {
+      try {
+        const settled = await Promise.allSettled(
+          selectedKeys.map(async (key) => {
+            const res = await fetchPredictAreaCropAreas(
+              selectedDistrict,
+              selectedSubdistrict,
+              month,
+              cropResponseKey(key)
+            );
+            return { key, res };
+          })
+        );
+        if (cancelled) return;
+
+        const totals = emptyTotals();
+        let primary: PredictAreaCropAreasResponse | null = null;
+        const villageRows: Array<{ village: string; crop: string; areaHa: number }> = [];
+
+        settled.forEach((result) => {
+          if (result.status !== 'fulfilled') return;
+          const { key, res } = result.value;
+          if (!primary || key === primaryCropKey) primary = res;
+          const cropName = cropResponseKey(key);
+          const ha =
+            res.totals?.[cropName] ??
+            res.totals?.[key] ??
+            Object.values(res.totals || {}).find((v) => typeof v === 'number');
+          totals[key] = typeof ha === 'number' && !Number.isNaN(ha) ? ha : null;
+
+          Object.entries(res.village_wise || {}).forEach(([villageName, cropHaMap]) => {
+            Object.entries(cropHaMap || {}).forEach(([crop, area]) => {
+              if (typeof area !== 'number' || Number.isNaN(area)) return;
+              villageRows.push({ village: villageName, crop, areaHa: area });
+            });
+          });
+        });
+
+        setSubdistrictCropTotals(totals);
+        setSubdistrictCropAreas(primary);
+        setSubdistrictVillageWiseRows(villageRows);
+        setShowSubdistrictCropCard(true);
+        setShowVillageWiseCard(true);
+      } catch {
+        if (!cancelled) {
+          setSubdistrictCropAreas(null);
+          setSubdistrictCropTotals(emptyTotals());
+          setSubdistrictVillageWiseRows([]);
+        }
+      } finally {
+        if (!cancelled) setSubdistrictCropAreasLoading(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedDistrict,
+    selectedSubdistrict,
+    predictAreaMonthInput,
+    selectedCrops.sugarcane,
+    selectedCrops.wheat,
+    selectedCrops.Soyabean,
+    selectedCrops.Mango,
+    selectedCrops.Banana,
+    splitScreenMode,
+  ]);
 
   // Field plot boundaries from /field-boundaries API when "Display boundary" is clicked
   useEffect(() => {
@@ -1968,30 +2108,54 @@ const App: React.FC = () => {
   }, []);
 
   const predictAreaMapCard = useMemo(() => {
-    if (!showCropLayer) return null;
     if (!hasAnyCropSelected(selectedCrops)) return null;
     if (!/^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())) return null;
-    const inScope = splitScreenMode
-      ? !!(leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
-      : !!(selectedDistrict && selectedSubdistrict && selectedVillage);
-    if (!inScope) return null;
 
     const cropColors = CROP_SELECTION_KEYS.reduce<Partial<Record<CropSelectionKey, string>>>((acc, key) => {
       if (predictAreaByCrop[key]?.color) acc[key] = predictAreaByCrop[key]!.color;
+      else if (CROP_DEFAULT_COLORS[key]) acc[key] = CROP_DEFAULT_COLORS[key];
       return acc;
     }, {});
 
-    return {
-      loading: predictCropAreaLoading,
-      regionLabel: splitScreenMode ? leftSelectedVillage : selectedVillage,
-      cropAreas: predictCropAreas,
-      cropColors,
-      selectedCrops,
-      onToggleCrop: toggleSelectedCrop,
-    };
+    const villageInScope = splitScreenMode
+      ? !!(leftSelectedDistrict && leftSelectedSubdistrict && leftSelectedVillage)
+      : !!(selectedDistrict && selectedSubdistrict && selectedVillage);
+
+    // Village card (crop layer on)
+    if (showCropLayer && villageInScope) {
+      return {
+        loading: predictCropAreaLoading,
+        regionLabel: (splitScreenMode ? leftSelectedVillage : selectedVillage) || '',
+        cropAreas: predictCropAreas,
+        cropColors,
+        selectedCrops,
+        onToggleCrop: toggleSelectedCrop,
+      };
+    }
+
+    // Same card for subdistrict (no village) — totals from /predict-area/crop-areas
+    if (
+      !splitScreenMode &&
+      showSubdistrictCropCard &&
+      selectedDistrict &&
+      selectedSubdistrict &&
+      !selectedVillage
+    ) {
+      return {
+        loading: subdistrictCropAreasLoading,
+        regionLabel: selectedSubdistrict,
+        cropAreas: subdistrictCropTotals,
+        cropColors,
+        selectedCrops,
+        onToggleCrop: toggleSelectedCrop,
+      };
+    }
+
+    return null;
   }, [
     selectedCrops,
     showCropLayer,
+    showSubdistrictCropCard,
     predictAreaMonthInput,
     splitScreenMode,
     leftSelectedDistrict,
@@ -2003,7 +2167,33 @@ const App: React.FC = () => {
     predictCropAreaLoading,
     predictCropAreas,
     predictAreaByCrop,
+    subdistrictCropAreasLoading,
+    subdistrictCropTotals,
     toggleSelectedCrop,
+  ]);
+
+  const villageWiseMapCard = useMemo(() => {
+    if (splitScreenMode) return null;
+    if (!showVillageWiseCard) return null;
+    if (!hasAnyCropSelected(selectedCrops)) return null;
+    if (!/^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())) return null;
+    if (!selectedDistrict || !selectedSubdistrict || selectedVillage) return null;
+
+    return {
+      loading: subdistrictCropAreasLoading,
+      regionLabel: selectedSubdistrict,
+      rows: subdistrictVillageWiseRows,
+    };
+  }, [
+    splitScreenMode,
+    showVillageWiseCard,
+    selectedCrops,
+    predictAreaMonthInput,
+    selectedDistrict,
+    selectedSubdistrict,
+    selectedVillage,
+    subdistrictCropAreasLoading,
+    subdistrictVillageWiseRows,
   ]);
 
   useEffect(() => {
@@ -5794,6 +5984,73 @@ const App: React.FC = () => {
               >
                 <Thermometer size={18} strokeWidth={2.2} className="shrink-0" />
               </div>
+              {/* After temperature: split, download, 9-graphs, analysis trends (Home removed) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGraphPage(false);
+                  setShowAnalysisTrendsPage(false);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphFrequencyDropdown(false);
+                  setSplitScreenMode((p) => !p);
+                }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  splitScreenMode ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="Split screen"
+              >
+                <Columns size={16} />
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                  className="px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] text-gray-300 hover:bg-gray-700"
+                  title="Download"
+                >
+                  <Download size={16} />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showGraphPage) {
+                    setShowGraphPage(false);
+                    setShowGraphFrequencyDropdown(false);
+                    return;
+                  }
+                  setShowGraphPage(true);
+                  setShowAnalysisTrendsPage(false);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphFrequencyDropdown(true);
+                }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  showGraphPage ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="9 graphs dashboard"
+              >
+                <LineChartIcon size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showAnalysisTrendsPage) {
+                    setShowAnalysisTrendsPage(false);
+                    setFullscreenAnalysisTrendCard(null);
+                    return;
+                  }
+                  setShowAnalysisTrendsPage(true);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphPage(false);
+                  setShowGraphFrequencyDropdown(false);
+                }}
+                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
+                  showAnalysisTrendsPage ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+                title="All-date analysis trends"
+              >
+                <BarChart3 size={16} />
+              </button>
             </div>
           )}
         </div>
@@ -5817,6 +6074,16 @@ const App: React.FC = () => {
           >
             <Globe2 size={18} />
           </button>
+          {splitScreenMode && (
+            <button
+              type="button"
+              onClick={() => setSplitScreenMode(false)}
+              className="p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 bg-emerald-600/30 border-emerald-400 text-emerald-200 hover:bg-emerald-600/40"
+              title="Exit split screen"
+            >
+              <Columns size={18} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setIsDarkMode((prev) => !prev)}
@@ -5920,127 +6187,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Sidebar nav (icon-only): split-screen, dashboard, download, 9-graphs */}
-              <div className={`${!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-2' : ''}`}>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowGraphPage(false);
-                      setShowAnalysisTrendsPage(false);
-                      setFullscreenAnalysisTrendCard(null);
-                      setShowGraphFrequencyDropdown(false);
-                      setSplitScreenMode((p) => !p);
-                    }}
-                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
-                      isDarkMode
-                        ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
-                        : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
-                    }`}
-                    title="Split screen"
-                  >
-                    <Columns size={18} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowGraphPage(false);
-                      setShowAnalysisTrendsPage(false);
-                      setFullscreenAnalysisTrendCard(null);
-                      setShowGraphFrequencyDropdown(false);
-                      setSplitScreenMode(false);
-                    }}
-                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
-                      isDarkMode
-                        ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
-                        : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
-                    }`}
-                    title="Dashboard"
-                  >
-                    <Home size={18} />
-                  </button>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                      className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
-                        isDarkMode
-                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
-                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
-                      }`}
-                      title="Download"
-                    >
-                      <Download size={18} />
-                    </button>
-                    {showDownloadMenu && (
-                      <>
-                        <div className="fixed inset-0 z-[1199]" onClick={() => setShowDownloadMenu(false)} />
-                        <div className="absolute left-0 top-full mt-2 bg-white rounded-xl border border-emerald-100 shadow-xl overflow-hidden z-[1200] min-w-[140px]">
-                          <button
-                            type="button"
-                            onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
-                            className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors"
-                          >
-                            <FileText size={16} />
-                            <span className="text-xs">PDF</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
-                            className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors border-t border-emerald-100"
-                          >
-                            <FileSpreadsheet size={16} />
-                            <span className="text-xs">Excel</span>
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowGraphPage(true);
-                      setShowAnalysisTrendsPage(false);
-                      setFullscreenAnalysisTrendCard(null);
-                      setShowGraphFrequencyDropdown(true);
-                    }}
-                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
-                      showGraphFrequencyDropdown
-                        ? isDarkMode
-                          ? 'bg-emerald-900/40 border-emerald-600 text-emerald-200'
-                          : 'bg-emerald-100 border-emerald-300 text-emerald-900'
-                        : isDarkMode
-                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
-                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
-                    }`}
-                    title="9 graphs dashboard"
-                  >
-                    <LineChartIcon size={18} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAnalysisTrendsPage(true);
-                      setFullscreenAnalysisTrendCard(null);
-                      setShowGraphPage(false);
-                      setShowGraphFrequencyDropdown(false);
-                    }}
-                    className={`h-10 w-10 rounded-xl border flex items-center justify-center transition-colors ${
-                      showAnalysisTrendsPage
-                        ? isDarkMode
-                          ? 'bg-emerald-900/40 border-emerald-600 text-emerald-200'
-                          : 'bg-emerald-100 border-emerald-300 text-emerald-900'
-                        : isDarkMode
-                          ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'
-                          : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
-                    }`}
-                    title="All-date analysis trends"
-                  >
-                    <BarChart3 size={18} />
-                  </button>
-                </div>
-              </div>
-
               <div className={!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-4' : ''}>
                 {showGraphPage && showGraphFrequencyDropdown && (
                   <div className={`${isDarkMode ? 'bg-gray-800/60' : 'bg-white'} rounded-xl border ${isDarkMode ? 'border-gray-700' : 'border-emerald-100'} p-3 mb-3`}>
@@ -6101,6 +6247,40 @@ const App: React.FC = () => {
                 <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
                   CONFIGURATION
                 </div>
+
+          {/* Prediction month — top, before district */}
+          {!showGraphPage && !showAnalysisTrendsPage && (
+            <div className="space-y-1 mb-3">
+              <label
+                className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
+              >
+                Prediction month
+              </label>
+              <input
+                type="month"
+                value={predictAreaMonthInput}
+                onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                  isDarkMode
+                    ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
+                    : 'bg-white border border-emerald-100 text-slate-800'
+                }`}
+              />
+              <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
+                Select a month to load predict-area data (
+                <code className="text-[10px]">month=YYYY-MM</code>).
+                {predictAreaDataMonth && (
+                  <>
+                    {' '}
+                    Showing:{' '}
+                    <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                      {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                    </span>
+                  </>
+                )}
+              </p>
+            </div>
+          )}
 
           {/* District Dropdown */}
           <div>
@@ -6169,6 +6349,97 @@ const App: React.FC = () => {
               </div>
           )}
 
+          {/* Crops checklist — before village dropdown */}
+          {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('left') && (
+            <div>
+            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+              Crops
+            </label>
+            <CropChecklist
+              checkedCrops={selectedCrops}
+              onToggleCrop={toggleSelectedCrop}
+              isDarkMode={isDarkMode}
+            />
+          </div>
+          )}
+
+          {/* Map layer checkboxes — before village dropdown */}
+          {getSelectedSubdistrict('left') && (
+            <div className="space-y-2">
+              <VillageMapLayerCheckbox
+                label="Display boundary"
+                checked={splitScreenMode ? showLeftVillageBoundary : showVillageBoundary}
+                onChange={(checked) => {
+                  if (splitScreenMode) {
+                    setShowLeftVillageBoundary(checked);
+                  } else {
+                    setShowVillageBoundary(checked);
+                  }
+                }}
+                tone="emerald"
+                isDarkMode={isDarkMode}
+              />
+              <VillageMapLayerCheckbox
+                label="Owner name"
+                checked={splitScreenMode ? showLeftVillageOwners : showVillageOwners}
+                loading={villageOwnersLoading}
+                disabled={!getSelectedDistrict('left') || !getSelectedSubdistrict('left') || !getSelectedVillage('left')}
+                onChange={(checked) => {
+                  const district = getSelectedDistrict('left');
+                  const subdistrict = getSelectedSubdistrict('left');
+                  const village = getSelectedVillage('left');
+                  if (!checked) {
+                    if (splitScreenMode) {
+                      setShowLeftVillageOwners(false);
+                    } else {
+                      setShowVillageOwners(false);
+                    }
+                    setVillagePlotMetaById({});
+                    setVillageOwnersError(null);
+                    return;
+                  }
+                  if (!district || !subdistrict || !village) return;
+                  if (splitScreenMode) {
+                    void loadVillageOwnerOverlay({
+                      district,
+                      subdistrict,
+                      village,
+                      villageList: getVillages('left'),
+                      setPlots: setLeftAllPlots,
+                      setBounds: setPlotBounds,
+                      onOwnersShown: () => setShowLeftVillageOwners(true),
+                    });
+                  } else {
+                    void loadVillageOwnerOverlay({
+                      district,
+                      subdistrict,
+                      village,
+                      villageList: villages,
+                      setPlots: setAllPlots,
+                      setBounds: setPlotBounds,
+                      onOwnersShown: () => setShowVillageOwners(true),
+                    });
+                  }
+                }}
+                tone="sky"
+                isDarkMode={isDarkMode}
+              />
+              {villageOwnersError ? (
+                <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                  {villageOwnersError}
+                </p>
+              ) : null}
+              <VillageMapLayerCheckbox
+                label="Crop layer"
+                checked={showCropLayer}
+                onChange={setShowCropLayer}
+                tone="violet"
+                loading={predictCropAreaLoading}
+                isDarkMode={isDarkMode}
+              />
+            </div>
+          )}
+
           {/* Village Dropdown */}
           {getSelectedSubdistrict('left') && (
             <div>
@@ -6198,129 +6469,7 @@ const App: React.FC = () => {
                   </option>
                 ))}
               </select>
-              {getSelectedVillage('left') && (
-                <div className="mt-2 space-y-2">
-                  <VillageMapLayerCheckbox
-                    label="Display boundary"
-                    checked={splitScreenMode ? showLeftVillageBoundary : showVillageBoundary}
-                    onChange={(checked) => {
-                      if (splitScreenMode) {
-                        setShowLeftVillageBoundary(checked);
-                      } else {
-                        setShowVillageBoundary(checked);
-                      }
-                    }}
-                    tone="emerald"
-                    isDarkMode={isDarkMode}
-                  />
-                  <VillageMapLayerCheckbox
-                    label="Owner name"
-                    checked={splitScreenMode ? showLeftVillageOwners : showVillageOwners}
-                    loading={villageOwnersLoading}
-                    disabled={!getSelectedDistrict('left') || !getSelectedSubdistrict('left')}
-                    onChange={(checked) => {
-                      const district = getSelectedDistrict('left');
-                      const subdistrict = getSelectedSubdistrict('left');
-                      const village = getSelectedVillage('left');
-                      if (!checked) {
-                        if (splitScreenMode) {
-                          setShowLeftVillageOwners(false);
-                        } else {
-                          setShowVillageOwners(false);
-                        }
-                        setVillagePlotMetaById({});
-                        setVillageOwnersError(null);
-                        return;
-                      }
-                      if (!district || !subdistrict || !village) return;
-                      if (splitScreenMode) {
-                        void loadVillageOwnerOverlay({
-                          district,
-                          subdistrict,
-                          village,
-                          villageList: getVillages('left'),
-                          setPlots: setLeftAllPlots,
-                          setBounds: setPlotBounds,
-                          onOwnersShown: () => setShowLeftVillageOwners(true),
-                        });
-                      } else {
-                        void loadVillageOwnerOverlay({
-                          district,
-                          subdistrict,
-                          village,
-                          villageList: villages,
-                          setPlots: setAllPlots,
-                          setBounds: setPlotBounds,
-                          onOwnersShown: () => setShowVillageOwners(true),
-                        });
-                      }
-                    }}
-                    tone="sky"
-                    isDarkMode={isDarkMode}
-                  />
-                  {villageOwnersError ? (
-                    <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
-                      {villageOwnersError}
-                    </p>
-                  ) : null}
-                  <VillageMapLayerCheckbox
-                    label="Crop layer"
-                    checked={showCropLayer}
-                    onChange={setShowCropLayer}
-                    tone="violet"
-                    loading={predictCropAreaLoading}
-                    isDarkMode={isDarkMode}
-                  />
-                </div>
-              )}
             </div>
-          )}
-
-          {/* Crops + date panel — after village dropdown */}
-          {!showGraphPage && !showAnalysisTrendsPage && getSelectedVillage('left') && (
-            <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-              Crops
-            </label>
-            <CropDropdownChecklist
-              selectedCrops={selectedCrops}
-              onToggleCrop={toggleSelectedCrop}
-              onToggleAll={toggleAllCrops}
-              isDarkMode={isDarkMode}
-            />
-            {hasAnyCropSelected(selectedCrops) && (
-              <div className="mt-3 space-y-1">
-                <label
-                  className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
-                >
-                  Prediction month
-                </label>
-                <input
-                  type="month"
-                  value={predictAreaMonthInput}
-                  onChange={(e) => setPredictAreaMonthInput(e.target.value)}
-                  className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                    isDarkMode
-                      ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
-                      : 'bg-white border border-emerald-100 text-slate-800'
-                  }`}
-                />
-                <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
-                  Select a month to load predict-area data (
-                  <code className="text-[10px]">month=YYYY-MM</code>).
-                  {predictAreaDataMonth && (
-                    <>
-                      {' '}
-                      Showing:{' '}
-                      <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
-                        {formatPredictAreaMonthLabel(predictAreaDataMonth)}
-                      </span>
-                    </>
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
           )}
 
               </div>
@@ -6545,9 +6694,46 @@ const App: React.FC = () => {
         >
           {showGraphPage && (
             <div
-              className={`absolute inset-0 z-[1200] overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}
+              className="absolute inset-0 z-[1200] flex items-stretch justify-stretch p-2 md:p-3 bg-black/35 backdrop-blur-[1px]"
+              onClick={() => {
+                setShowGraphPage(false);
+                setShowGraphFrequencyDropdown(false);
+              }}
             >
-              <div className="min-h-[100%]">
+              <div
+                className={`relative flex flex-col flex-1 min-h-0 w-full overflow-hidden rounded-2xl border shadow-2xl ${
+                  isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-[#eaf6f0] border-emerald-100'
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div
+                  className={`flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b ${
+                    isDarkMode ? 'border-gray-700 bg-gray-800/90' : 'border-emerald-100 bg-white/90'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <LineChartIcon size={16} className={isDarkMode ? 'text-emerald-300' : 'text-emerald-700'} />
+                    <span className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>
+                      Indices graphs
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGraphPage(false);
+                      setShowGraphFrequencyDropdown(false);
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                      isDarkMode
+                        ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
+                        : 'border-emerald-200 bg-white text-slate-800 hover:bg-emerald-50'
+                    }`}
+                    title="Close"
+                  >
+                    Close
+                  </button>
+                </div>
+              <div className="min-h-0 flex-1 overflow-auto">
                 <div className="flex-1 p-4 md:p-6 overflow-auto">
                   {!selectedDistrict ? (
                     <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
@@ -7152,13 +7338,51 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
+              </div>
             </div>
           )}
           {showAnalysisTrendsPage && (
             <div
-              className={`absolute inset-0 z-[1200] overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}
+              className="absolute inset-0 z-[1200] flex items-stretch justify-stretch p-2 md:p-3 bg-black/35 backdrop-blur-[1px]"
+              onClick={() => {
+                setShowAnalysisTrendsPage(false);
+                setFullscreenAnalysisTrendCard(null);
+              }}
             >
-              <div className="min-h-[100%]">
+              <div
+                className={`relative flex flex-col flex-1 min-h-0 w-full overflow-hidden rounded-2xl border shadow-2xl ${
+                  isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-[#eaf6f0] border-emerald-100'
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div
+                  className={`flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b ${
+                    isDarkMode ? 'border-gray-700 bg-gray-800/90' : 'border-emerald-100 bg-white/90'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <BarChart3 size={16} className={isDarkMode ? 'text-emerald-300' : 'text-emerald-700'} />
+                    <span className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>
+                      Analysis trends
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAnalysisTrendsPage(false);
+                      setFullscreenAnalysisTrendCard(null);
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                      isDarkMode
+                        ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
+                        : 'border-emerald-200 bg-white text-slate-800 hover:bg-emerald-50'
+                    }`}
+                    title="Close"
+                  >
+                    Close
+                  </button>
+                </div>
+              <div className="min-h-0 flex-1 overflow-auto">
                 <div className="flex-1 p-4 md:p-6 overflow-auto">
                   {!selectedDistrict ? (
                     <div className={`w-full max-w-4xl mx-auto rounded-lg p-8 text-center border ${
@@ -7541,6 +7765,7 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
+              </div>
             </div>
           )}
 
@@ -7586,9 +7811,11 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* White mode: left-side analysis tabs (icon-only) */}
-          {!isDarkMode && !splitScreenMode && !isMapFullscreen && (
-            <div className="absolute top-16 left-4 z-[1100] flex flex-col gap-2">
+          {/* White mode: left-side analysis tabs + utility icons (after temperature) */}
+          {!isDarkMode && !isMapFullscreen && (
+            <div className="absolute top-16 left-4 z-[1300] flex flex-col gap-2">
+              {!splitScreenMode && (
+                <>
               {([
                 ['growth', <Sprout size={16} />],
                 ['water', <Droplets size={16} />],
@@ -7650,6 +7877,104 @@ const App: React.FC = () => {
                 title="Land Surface Temperature (click again to hide)"
               >
                 <Thermometer size={18} strokeWidth={2.2} />
+              </button>
+                </>
+              )}
+              {/* After temperature: split, download, 9-graphs, analysis trends (Home removed) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGraphPage(false);
+                  setShowAnalysisTrendsPage(false);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphFrequencyDropdown(false);
+                  setSplitScreenMode((p) => !p);
+                }}
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                  splitScreenMode
+                    ? 'bg-emerald-500 text-black border-emerald-300'
+                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
+                }`}
+                title="Split screen"
+              >
+                <Columns size={18} />
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                  className="w-10 h-10 rounded-xl border flex items-center justify-center transition-colors bg-white/90 text-gray-900 border-emerald-100 hover:bg-white"
+                  title="Download"
+                >
+                  <Download size={18} />
+                </button>
+                {showDownloadMenu && (
+                  <>
+                    <div className="fixed inset-0 z-[1199]" onClick={() => setShowDownloadMenu(false)} />
+                    <div className="absolute left-full top-0 ml-2 bg-white rounded-xl border border-emerald-100 shadow-xl overflow-hidden z-[1200] min-w-[140px]">
+                      <button
+                        type="button"
+                        onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
+                        className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <FileText size={16} />
+                        <span className="text-xs">PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
+                        className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors border-t border-emerald-100"
+                      >
+                        <FileSpreadsheet size={16} />
+                        <span className="text-xs">Excel</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showGraphPage) {
+                    setShowGraphPage(false);
+                    setShowGraphFrequencyDropdown(false);
+                    return;
+                  }
+                  setShowGraphPage(true);
+                  setShowAnalysisTrendsPage(false);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphFrequencyDropdown(true);
+                }}
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                  showGraphPage
+                    ? 'bg-emerald-100 border-emerald-300 text-emerald-900'
+                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
+                }`}
+                title="9 graphs dashboard"
+              >
+                <LineChartIcon size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showAnalysisTrendsPage) {
+                    setShowAnalysisTrendsPage(false);
+                    setFullscreenAnalysisTrendCard(null);
+                    return;
+                  }
+                  setShowAnalysisTrendsPage(true);
+                  setFullscreenAnalysisTrendCard(null);
+                  setShowGraphPage(false);
+                  setShowGraphFrequencyDropdown(false);
+                }}
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                  showAnalysisTrendsPage
+                    ? 'bg-emerald-100 border-emerald-300 text-emerald-900'
+                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
+                }`}
+                title="All-date analysis trends"
+              >
+                <BarChart3 size={18} />
               </button>
             </div>
           )}
@@ -8638,7 +8963,7 @@ const App: React.FC = () => {
             </div>
           ) : !splitScreenMode && useEarthViewMap ? (
             <EarthView
-              predictCard={predictAreaMapCard}
+              predictCard={null}
               className="h-full w-full min-h-[50vh] flex-1"
               height="100%"
             />
@@ -8664,6 +8989,24 @@ const App: React.FC = () => {
               }
               onSelectPlot={async (id) => {
                 setSelectedPlotId(id);
+
+                if (
+                  !splitScreenMode &&
+                  isVillageOutlinePlotId(id) &&
+                  subdistrictCropAreas?.village_wise
+                ) {
+                  const villageKey = id.replace(/^outline:/, '');
+                  const cropAreas =
+                    subdistrictCropAreas.village_wise[villageKey] ??
+                    Object.entries(subdistrictCropAreas.village_wise).find(
+                      ([name]) => name.trim().toLowerCase() === villageKey.trim().toLowerCase()
+                    )?.[1];
+                  setVillageCropPopup({
+                    village: villageKey,
+                    cropAreas: cropAreas ?? {},
+                  });
+                  return;
+                }
                 
                 const currentPlots = splitScreenMode ? leftAllPlots : plots;
                 const selectedPlot = currentPlots.find(p => p.id === id);
@@ -8751,7 +9094,67 @@ const App: React.FC = () => {
               }}
               windDirectPayload={windDirectData}
               showWindFlowLayer={showWindFlowLayer}
-              predictAreaMapCard={predictAreaMapCard}
+            />
+          )}
+          {!splitScreenMode && (predictAreaMapCard || villageWiseMapCard) ? (
+            <div
+              className="pointer-events-none"
+              style={{
+                position: 'absolute',
+                top: 16,
+                right: 16,
+                left: 'auto',
+                zIndex: 1300,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 8,
+                maxHeight: 'calc(100% - 32px)',
+                overflowY: 'auto',
+                width: 'max-content',
+                maxWidth: 'min(20rem, calc(100% - 32px))',
+              }}
+            >
+              {predictAreaMapCard ? (
+                <div className="pointer-events-auto" style={{ width: '100%' }}>
+                  <PredictAreaMapCard
+                    loading={predictAreaMapCard.loading}
+                    regionLabel={predictAreaMapCard.regionLabel}
+                    cropAreas={predictAreaMapCard.cropAreas}
+                    cropColors={predictAreaMapCard.cropColors}
+                    selectedCrops={predictAreaMapCard.selectedCrops}
+                    onToggleCrop={predictAreaMapCard.onToggleCrop}
+                  />
+                </div>
+              ) : null}
+              {villageWiseMapCard ? (
+                <div className="pointer-events-auto" style={{ width: '100%' }}>
+                  <SubdistrictVillageWiseCard
+                    loading={villageWiseMapCard.loading}
+                    regionLabel={villageWiseMapCard.regionLabel}
+                    rows={villageWiseMapCard.rows}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {!splitScreenMode && villageCropPopup && (
+            <VillageCropAreaPopup
+              village={villageCropPopup.village}
+              cropAreas={villageCropPopup.cropAreas}
+              cropLabel={
+                subdistrictCropAreas
+                  ? `${subdistrictCropAreas.crop_name} · ${subdistrictCropAreas.month}`
+                  : undefined
+              }
+              subdistrictTotal={
+                subdistrictCropAreas?.totals
+                  ? subdistrictCropAreas.totals[subdistrictCropAreas.crop_name] ??
+                    Object.values(subdistrictCropAreas.totals)[0]
+                  : null
+              }
+              onClose={() => setVillageCropPopup(null)}
+              isDarkMode={isDarkMode}
             />
           )}
           {getLoading('left') && getActiveTab('left') && (
@@ -10171,7 +10574,6 @@ const App: React.FC = () => {
                 onSelectWaterSource={setSelectedWaterSource}
                 windDirectPayload={null}
                 showWindFlowLayer={false}
-                predictAreaMapCard={predictAreaMapCard}
               />
             )}
             {rightLoading && getActiveTab('right') && (
@@ -10217,6 +10619,33 @@ const App: React.FC = () => {
             {/* Header section removed - no title or logout icon for right sidebar */}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Prediction month — top, before district */}
+              {!showGraphPage && !showAnalysisTrendsPage && (
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Prediction month
+                  </label>
+                  <input
+                    type="month"
+                    value={predictAreaMonthInput}
+                    onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
+                  />
+                  <p className="text-[11px] text-gray-500 leading-snug">
+                    Select a month to load predict-area. API: <code className="text-[10px]">month=YYYY-MM</code>.
+                    {predictAreaDataMonth && (
+                      <>
+                        {' '}
+                        Showing:{' '}
+                        <span className="font-medium text-emerald-300">
+                          {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                        </span>
+                      </>
+                    )}
+                  </p>
+                </div>
+              )}
+
               {/* District Dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -10265,6 +10694,70 @@ const App: React.FC = () => {
                 </div>
               )}
 
+              {/* Crops checklist — before village dropdown */}
+              {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('right') && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Crops
+                </label>
+                <CropChecklist
+                  checkedCrops={selectedCrops}
+                  onToggleCrop={toggleSelectedCrop}
+                  isDarkMode
+                />
+              </div>
+              )}
+
+              {/* Map layer checkboxes — before village dropdown */}
+              {getSelectedSubdistrict('right') && (
+                <div className="space-y-2">
+                  <VillageMapLayerCheckbox
+                    label="Display boundary"
+                    checked={showRightVillageBoundary}
+                    onChange={setShowRightVillageBoundary}
+                    tone="emerald"
+                  />
+                  <VillageMapLayerCheckbox
+                    label="Owner name"
+                    checked={showRightVillageOwners}
+                    loading={villageOwnersLoading}
+                    disabled={!getSelectedDistrict('right') || !getSelectedSubdistrict('right') || !getSelectedVillage('right')}
+                    onChange={(checked) => {
+                      const district = getSelectedDistrict('right');
+                      const subdistrict = getSelectedSubdistrict('right');
+                      const village = getSelectedVillage('right');
+                      if (!checked) {
+                        setShowRightVillageOwners(false);
+                        setVillagePlotMetaById({});
+                        setVillageOwnersError(null);
+                        return;
+                      }
+                      if (!district || !subdistrict || !village) return;
+                      void loadVillageOwnerOverlay({
+                        district,
+                        subdistrict,
+                        village,
+                        villageList: getVillages('right'),
+                        setPlots: setRightAllPlots,
+                        setBounds: setPlotBounds,
+                        onOwnersShown: () => setShowRightVillageOwners(true),
+                      });
+                    }}
+                    tone="sky"
+                  />
+                  {villageOwnersError ? (
+                    <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
+                  ) : null}
+                  <VillageMapLayerCheckbox
+                    label="Crop layer"
+                    checked={showCropLayer}
+                    onChange={setShowCropLayer}
+                    tone="violet"
+                    loading={predictCropAreaLoading}
+                  />
+                </div>
+              )}
+
               {/* Village Dropdown */}
               {getSelectedSubdistrict('right') && (
                 <div>
@@ -10284,95 +10777,7 @@ const App: React.FC = () => {
                       </option>
                     ))}
                   </select>
-                  {getSelectedVillage('right') && (
-                    <div className="mt-2 space-y-2">
-                      <VillageMapLayerCheckbox
-                        label="Display boundary"
-                        checked={showRightVillageBoundary}
-                        onChange={setShowRightVillageBoundary}
-                        tone="emerald"
-                      />
-                      <VillageMapLayerCheckbox
-                        label="Owner name"
-                        checked={showRightVillageOwners}
-                        loading={villageOwnersLoading}
-                        disabled={!getSelectedDistrict('right') || !getSelectedSubdistrict('right')}
-                        onChange={(checked) => {
-                          const district = getSelectedDistrict('right');
-                          const subdistrict = getSelectedSubdistrict('right');
-                          const village = getSelectedVillage('right');
-                          if (!checked) {
-                            setShowRightVillageOwners(false);
-                            setVillagePlotMetaById({});
-                            setVillageOwnersError(null);
-                            return;
-                          }
-                          if (!district || !subdistrict || !village) return;
-                          void loadVillageOwnerOverlay({
-                            district,
-                            subdistrict,
-                            village,
-                            villageList: getVillages('right'),
-                            setPlots: setRightAllPlots,
-                            setBounds: setPlotBounds,
-                            onOwnersShown: () => setShowRightVillageOwners(true),
-                          });
-                        }}
-                        tone="sky"
-                      />
-                      {villageOwnersError ? (
-                        <p className="text-[10px] leading-snug text-red-400">{villageOwnersError}</p>
-                      ) : null}
-                      <VillageMapLayerCheckbox
-                        label="Crop layer"
-                        checked={showCropLayer}
-                        onChange={setShowCropLayer}
-                        tone="violet"
-                        loading={predictCropAreaLoading}
-                      />
-                    </div>
-                  )}
                 </div>
-              )}
-
-              {/* Crops + date panel — after village dropdown */}
-              {!showGraphPage && !showAnalysisTrendsPage && getSelectedVillage('right') && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Crops
-                </label>
-                <CropDropdownChecklist
-                  selectedCrops={selectedCrops}
-                  onToggleCrop={toggleSelectedCrop}
-                  onToggleAll={toggleAllCrops}
-                  isDarkMode
-                />
-                {hasAnyCropSelected(selectedCrops) && (
-                  <div className="mt-3 space-y-1">
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                      Prediction month
-                    </label>
-                    <input
-                      type="month"
-                      value={predictAreaMonthInput}
-                      onChange={(e) => setPredictAreaMonthInput(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 [color-scheme:dark]"
-                    />
-                    <p className="text-[11px] text-gray-500 leading-snug">
-                      Select a month to load predict-area. API: <code className="text-[10px]">month=YYYY-MM</code>.
-                      {predictAreaDataMonth && (
-                        <>
-                          {' '}
-                          Showing:{' '}
-                          <span className="font-medium text-emerald-300">
-                            {formatPredictAreaMonthLabel(predictAreaDataMonth)}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                )}
-              </div>
               )}
 
               {/* Total Area Card */}

@@ -659,6 +659,57 @@ export const fetchPredictArea = async (
   return response.json();
 };
 
+/** GET /predict-area/crop-areas — village-wise crop area (ha) for a subdistrict */
+export interface PredictAreaCropAreasResponse {
+  scope: string;
+  district: string;
+  subdistrict: string;
+  month: string;
+  crop_name: string;
+  metric?: string;
+  unit?: string;
+  totals: Record<string, number>;
+  village_wise: Record<string, Record<string, number>>;
+  villages_with_data?: number;
+  source?: string;
+}
+
+export const fetchPredictAreaCropAreas = async (
+  district: string,
+  subdistrict: string,
+  month: string,
+  cropName: string
+): Promise<PredictAreaCropAreasResponse> => {
+  const params = new URLSearchParams({
+    district: district.trim(),
+    subdistrict: subdistrict.trim(),
+    month: month.trim(),
+    crop_name: cropName.trim().toLowerCase(),
+  });
+  const url = `${getBaseUrl()}/predict-area/crop-areas?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`Predict-area crop-areas API Error: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+};
+
+/** Match village_wise API key to a /villages list item (case-insensitive). */
+export function matchVillageItem(
+  apiVillageName: string,
+  villageList: VillageItem[]
+): VillageItem | undefined {
+  const norm = (s: string) => s.trim().toLowerCase();
+  const target = norm(apiVillageName);
+  return (
+    villageList.find((v) => norm(v.village) === target) ||
+    villageList.find((v) => norm(v.village).replace(/\s+/g, '') === target.replace(/\s+/g, ''))
+  );
+}
+
 // Fetch Growth Analysis for district/subdistrict/village
 export interface GrowthPlotData {
   type?: string; // "Feature" for GeoJSON format
