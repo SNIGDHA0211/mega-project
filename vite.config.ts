@@ -6,15 +6,17 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const villageDataApi =
       env.VITE_VILLAGE_DATA_API_URL || 'https://jam-hose-bride-plain.trycloudflare.com';
+    const apiProxyTarget =
+      env.VITE_API_PROXY_TARGET || 'https://web-production-72a7.up.railway.app';
     return {
       server: {
         port: 3000,
         host: '0.0.0.0', // Bind to all network interfaces (accessible from localhost and network)
         proxy: {
           '/railway': {
-            target: 'https://web-production-72a7.up.railway.app',
+            target: apiProxyTarget,
             changeOrigin: true,
-            secure: true,
+            secure: apiProxyTarget.startsWith('https'),
             rewrite: (path) => path.replace(/^\/railway/, ''),
           },
           '/api': {

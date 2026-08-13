@@ -122,21 +122,33 @@ const MapLayoutFix: React.FC = () => {
   const map = useMap();
   useEffect(() => {
     const el = map.getContainer();
+    const lastSize = { w: 0, h: 0 };
+    let raf = 0;
     const applyFloorHeight = () => {
       const h = el.getBoundingClientRect().height;
       if (h < 280) {
         const target = Math.max(400, Math.floor(window.innerHeight * 0.62));
-        el.style.minHeight = `${target}px`;
+        if (el.style.minHeight !== `${target}px`) {
+          el.style.minHeight = `${target}px`;
+        }
       }
     };
     const invalidate = () => {
       applyFloorHeight();
-      map.invalidateSize();
+      const { width, height } = el.getBoundingClientRect();
+      const w = Math.round(width);
+      const h = Math.round(height);
+      if (Math.abs(w - lastSize.w) < 2 && Math.abs(h - lastSize.h) < 2) return;
+      lastSize.w = w;
+      lastSize.h = h;
+      map.invalidateSize({ animate: false });
     };
-    const onWinResize = () => invalidate();
-    const ro = new ResizeObserver(() => {
-      requestAnimationFrame(invalidate);
-    });
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(invalidate);
+    };
+    const onWinResize = () => schedule();
+    const ro = new ResizeObserver(() => schedule());
     ro.observe(el);
     const root = el.closest('[data-plots-map-root]');
     if (root) ro.observe(root);
@@ -147,11 +159,11 @@ const MapLayoutFix: React.FC = () => {
     const t3 = window.setTimeout(invalidate, 800);
     return () => {
       ro.disconnect();
-      el.style.minHeight = '';
       window.removeEventListener('resize', onWinResize);
       window.clearTimeout(t1);
       window.clearTimeout(t2);
       window.clearTimeout(t3);
+      if (raf) cancelAnimationFrame(raf);
     };
   }, [map]);
   return null;
@@ -194,6 +206,9 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
 }) => {
   const hasFieldPolygons = plots.some(
     (p) => p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
+  );
+  const hasNumericFieldPlots = plots.some(
+    (p) => isFieldPlotId(p.id) && p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
   );
   
   return (
@@ -327,6 +342,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     fillOpacity: 0.06,
                     weight: 3,
                     opacity: 1,
+                    interactive: !hasNumericFieldPlots,
                   }
                 : {
                     // Inner field boundaries: green stroke (crop fields keep crop color)

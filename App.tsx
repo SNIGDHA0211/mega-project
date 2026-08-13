@@ -25,6 +25,7 @@ import {
   villageOutlinePlotId,
   isVillageOutlinePlotId,
   isFieldPlotId,
+  parseFieldPlotId,
   shouldHideFieldIdAreaOnMap,
   type VillageItem,
   fetchBoundaryGeoJSON,
@@ -52,6 +53,13 @@ import {
   peekPlotEtWeather,
   isPlotEtWeatherFresh,
   fetchPestStoredSeries,
+  fetchGrowthStoredSeries,
+  fetchWaterUptakeStoredSeries,
+  fetchSoilMoistureStoredSeries,
+  fetchGrowthStoredSeriesWithFallback,
+  fetchWaterUptakeStoredSeriesWithFallback,
+  fetchSoilMoistureStoredSeriesWithFallback,
+  fetchPestStoredSeriesWithFallback,
   fetchDashboardIndicesStore,
   fetchNominatimBounds,
   fetchWeatherDaily,
@@ -156,6 +164,14 @@ const buildForestOutlinePlot = (plotName: string, geometry: unknown): OutlinePlo
   const coordinates = parseGeometryToCoordinates(geometry);
   if (coordinates.length < 3) return null;
   return { id: villageOutlinePlotId(`forest:${plotName}`), area_ha: '0', boundary: coordinates };
+};
+
+const mergeOutlineWithFieldPlots = (
+  outline: OutlinePlot | null,
+  fieldPlots: MapPlot[]
+): MapPlot[] => {
+  if (!outline) return fieldPlots;
+  return [outline, ...fieldPlots];
 };
 
 const buildVillageOutlinePlot = (
@@ -276,14 +292,13 @@ const mergePlotsWithPredictCropFields = (
   showPredictFields: boolean
 ): MapPlot[] => {
   if (!showPredictFields || predictFields.length === 0) return basePlots;
-  const predictIds = new Set(predictFields.map((p) => p.id));
-  const base = basePlots.filter(
-    (p) =>
-      isVillageOutlinePlotId(p.id) ||
-      !isFieldPlotId(p.id) ||
-      !predictIds.has(p.id)
-  );
-  return [...base, ...predictFields];
+  const predictById = new Map(predictFields.map((p) => [p.id, p]));
+  const baseIds = new Set(basePlots.map((p) => p.id));
+  const merged = basePlots.map((p) => (predictById.has(p.id) ? predictById.get(p.id)! : p));
+  predictFields.forEach((p) => {
+    if (!baseIds.has(p.id)) merged.push(p);
+  });
+  return merged;
 };
 
 const buildClasswiseTabSnapshot = (response: GrowthAnalysisWithStoredResponse): Record<string, unknown> => {
@@ -1702,8 +1717,10 @@ const App: React.FC = () => {
     }
   };
 
-  // Handle subdistrict selection and display coordinates on map (from list geometry or get-geojson API)
+  // Handle subdistrict selection and display coordinates on map (from list geometry or fetch-boundaries API)
   useEffect(() => {
+    if (selectedVillage) return;
+
     setSelectedPlotId(null);
     setPlotBoundary([]);
     setAreaHa(null);
@@ -1725,7 +1742,7 @@ const App: React.FC = () => {
         }
       } else {
         let cancelled = false;
-        fetchBoundaryGeoJSON(selectedSubdistrict).then(async (plots) => {
+        fetchBoundaryGeoJSON(selectedDistrict, selectedSubdistrict).then(async (plots) => {
           if (cancelled) return;
           if (applyBoundaryPlots(plots, setAllPlots, setPlotBounds)) return;
           setAllPlots([]);
@@ -1749,30 +1766,84 @@ const App: React.FC = () => {
         return () => { cancelled = true; };
       }
     }
-  }, [selectedSubdistrict, subdistricts, selectedDistrict, districts, predictAreaMonthInput, selectedCrops]);
+  }, [selectedSubdistrict, subdistricts, selectedDistrict, districts, predictAreaMonthInput, selectedCrops, selectedVillage]);
 
-  // Village outline from /villages API when village is selected (before field plots)
+  /** Load village outline + all field polygons when a village is selected. */
   useEffect(() => {
     if (splitScreenMode) return;
-    if (!selectedVillage || showVillageBoundary || showVillageOwners) return;
-    if (activeTab && ANALYSIS_TABS_WITH_VILLAGE_OUTLINE.includes(activeTab)) return;
+    if (!selectedVillage || !selectedDistrict || !selectedSubdistrict) return;
+    if (showVillageOwners || villageOwnersLoading) return;
 
-    const villageData = villages.find((v) => v.village === selectedVillage);
-    if (!villageData) {
-      setAllPlots([]);
-      return;
-    }
+    let cancelled = false;
 
-    const coordinates = parseVillageBoundaryCoordinates(villageData);
-    if (coordinates.length >= 3) {
-      setAllPlots([{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: coordinates }]);
+    const loadVillageMapBoundaries = async () => {
+      const villageData = villages.find((v) => v.village === selectedVillage);
+      let outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+
+      if (outlineCoords.length < 3) {
+        const fallbackPlots = await fetchBoundaryGeoJSON(
+          selectedDistrict,
+          selectedSubdistrict,
+          selectedVillage
+        );
+        if (cancelled) return;
+        if (fallbackPlots.length > 0 && fallbackPlots[0].boundary.length >= 3) {
+          outlineCoords = fallbackPlots[0].boundary;
+        }
+      }
+
+      const outlinePlot: MapPlot[] =
+        outlineCoords.length >= 3
+          ? [{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]
+          : [];
+
+      let fieldPlots: MapPlot[] = [];
+      if (showVillageBoundary) {
+        try {
+          fieldPlots = await fetchFieldBoundaries(
+            selectedDistrict,
+            selectedSubdistrict,
+            selectedVillage
+          );
+        } catch (err) {
+          console.warn('field-boundaries load failed', err);
+        }
+      }
+      if (cancelled) return;
+
+      if (!showVillageOwners) setVillagePlotMetaById({});
+
+      const combined = mergeOutlineWithFieldPlots(
+        outlinePlot.length > 0 ? outlinePlot[0] : null,
+        fieldPlots
+      );
+      if (combined.length === 0) {
+        setAllPlots([]);
+        return;
+      }
+
+      setAllPlots(combined);
       const bounds = L.latLngBounds([]);
-      coordinates.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+      combined.forEach((plot) => {
+        (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+      });
       if (bounds.isValid()) setPlotBounds(bounds);
-    } else {
-      setAllPlots([]);
-    }
-  }, [selectedVillage, villages, showVillageBoundary, showVillageOwners, splitScreenMode, activeTab, selectedDistrict, selectedSubdistrict, predictAreaMonthInput, selectedCrops]);
+    };
+
+    void loadVillageMapBoundaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedVillage,
+    selectedDistrict,
+    selectedSubdistrict,
+    villages,
+    showVillageBoundary,
+    showVillageOwners,
+    villageOwnersLoading,
+    splitScreenMode,
+  ]);
 
   // Subdistrict crop areas from /predict-area/crop-areas (cards only; map keeps subdistrict boundary)
   useEffect(() => {
@@ -1884,57 +1955,6 @@ const App: React.FC = () => {
     selectedCrops.Banana,
     splitScreenMode,
   ]);
-
-  // Field plot boundaries from /field-boundaries API when "Display boundary" is clicked
-  useEffect(() => {
-    if (splitScreenMode) return;
-    if (!selectedVillage || !showVillageBoundary) return;
-    if (showVillageOwners || villageOwnersLoading) return;
-    if (!selectedDistrict || !selectedSubdistrict) return;
-
-    let cancelled = false;
-
-    const loadFieldPlots = async () => {
-      try {
-        const fieldPlots = await fetchFieldBoundaries(
-          selectedDistrict,
-          selectedSubdistrict,
-          selectedVillage
-        );
-        if (cancelled) return;
-        if (!showVillageOwners) setVillagePlotMetaById({});
-
-        const villageData = villages.find((v) => v.village === selectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        const outlinePlot =
-          outlineCoords.length >= 3
-            ? [{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]
-            : [];
-
-        const combined = [...outlinePlot, ...fieldPlots];
-        setAllPlots(combined);
-
-        const bounds = L.latLngBounds([]);
-        combined.forEach((plot) => {
-          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-        });
-        if (bounds.isValid()) setPlotBounds(bounds);
-      } catch {
-        if (cancelled) return;
-        setVillagePlotMetaById({});
-        const villageData = villages.find((v) => v.village === selectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        if (outlineCoords.length >= 3) {
-          setAllPlots([{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]);
-        }
-      }
-    };
-
-    void loadFieldPlots();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedVillage, selectedDistrict, selectedSubdistrict, villages, showVillageBoundary, showVillageOwners, villageOwnersLoading, splitScreenMode]);
 
   // When village + crop + location set, fetch predict-area (checklist controls map display)
   useEffect(() => {
@@ -2581,9 +2601,8 @@ const App: React.FC = () => {
     const selectedFieldId =
       fieldLevelTabs.includes(activeTab as (typeof fieldLevelTabs)[number]) &&
       !!selectedVillage &&
-      !!selectedPlotId &&
-      isFieldPlotId(selectedPlotId)
-        ? Number(selectedPlotId)
+      !!selectedPlotId
+        ? parseFieldPlotId(selectedPlotId)
         : null;
     const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
 
@@ -2593,11 +2612,8 @@ const App: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
-        // Clear old analysis tiles when location/tab changes.
-        // Field-level analysis keeps crop-layer / boundary polygons on the map.
-        if (!isFieldLevelAnalysis) {
-          setAllPlots([]);
-        }
+        // Keep current polygons on the map while analysis loads.
+        // Unmounting PlotsMap (empty plots + loader) causes full-UI black flashes on hosted.
         setAvailablePlots([]);
         setTotalPlotsCount(0);
         setAllPlotsTileUrls({});
@@ -2623,7 +2639,69 @@ const App: React.FC = () => {
 
          // Fetch data based on active tab (API first — cards update as soon as response arrives)
            let response: GrowthAnalysisResponse | NDWIDetectionResponse;
-         switch (activeTab) {
+         if (
+           isFieldLevelAnalysis &&
+           (activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil' || activeTab === 'pest')
+         ) {
+           const [growthRes, waterRes, soilRes, pestRes] = await Promise.all([
+             fetchGrowthAnalysis1(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchWaterUptakeAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchSoilMoistureAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, selectedFieldId),
+             fetchPestDetectionAnalysis(selectedDistrict, selectedSubdistrict || undefined, selectedVillage || undefined, undefined, selectedFieldId),
+           ]);
+           const growthTab = buildClasswiseTabSnapshot(growthRes);
+           const waterTab = buildClasswiseTabSnapshot(waterRes);
+           const soilTab = buildClasswiseTabSnapshot(soilRes);
+           setGrowthCurrentData(growthTab);
+           setGrowthStoredSeries(Array.isArray(growthRes.stored) ? growthRes.stored : []);
+           setGrowthStoredError(null);
+           setWaterCurrentSnapshot(waterTab);
+           setWaterData(waterTab as any);
+           setWaterStoredSeries(Array.isArray(waterRes.stored) ? waterRes.stored : []);
+           setSoilData(soilTab as any);
+           setSoilStoredSeries(Array.isArray(soilRes.stored) ? soilRes.stored : []);
+           const pestResponse: any = pestRes;
+           let pestSummary: any = null;
+           if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+             setPestHierarchy({
+               plot: pestResponse.plots?.[0]?.properties?.plot_id ?? String(selectedFieldId),
+               total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
+               hierarchy: pestResponse.hierarchy,
+             } as PestHierarchyResponse);
+             const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
+             pestSummary = {
+               healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
+               chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
+               fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
+               sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
+               wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
+               soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
+               healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
+               chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
+               fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
+               sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
+               wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
+               soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+               soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
+               total_area_hectare: pestResponse.total_area_ha ?? 0,
+             };
+             if (Array.isArray(pestResponse.stored)) {
+               setPestStoredSeries(pestResponse.stored as PestStoredResponse);
+             }
+           }
+           setAllPlotsAnalysisData((prev) => ({
+             growth: growthTab as any,
+             water: waterTab as any,
+             soil: soilTab as any,
+             pest: pestSummary ?? prev?.pest ?? null,
+             waterSource: prev?.waterSource ?? null,
+           }));
+           response =
+             activeTab === 'water' ? waterRes
+             : activeTab === 'soil' ? soilRes
+             : activeTab === 'pest' ? pestRes
+             : growthRes;
+         } else switch (activeTab) {
           case 'growth':
               response = await fetchGrowthAnalysis1(
                 selectedDistrict, 
@@ -2977,8 +3055,22 @@ const App: React.FC = () => {
                 setAvailablePlots(plotIds);
                 setTotalPlotsCount(plotIds.length);
               } else {
-                // One boundary only: use village/subdistrict outline; skip duplicate AOI polygon from analysis API
-                const finalPlots = locationBoundary ? [locationBoundary] : plotsForMap;
+                let fieldPlotsForMap: MapPlot[] = [];
+                if (showVillageBoundary && selectedVillage && selectedSubdistrict) {
+                  try {
+                    fieldPlotsForMap = await fetchFieldBoundaries(
+                      selectedDistrict,
+                      selectedSubdistrict,
+                      selectedVillage
+                    );
+                  } catch {
+                    fieldPlotsForMap = [];
+                  }
+                }
+                const finalPlots =
+                  locationBoundary || fieldPlotsForMap.length > 0
+                    ? mergeOutlineWithFieldPlots(locationBoundary, fieldPlotsForMap)
+                    : plotsForMap;
                 setAllPlots(finalPlots);
                 const plotIds = plotsForMap.map(p => p.id);
                 setAvailablePlots(plotIds);
@@ -2987,17 +3079,42 @@ const App: React.FC = () => {
             } else {
               // Keep village boundary visible when we have tile URLs but no field boundaries from API
               if (!isFieldLevelAnalysis) {
+                let fieldPlotsForMap: MapPlot[] = [];
+                if (showVillageBoundary && selectedVillage && selectedSubdistrict) {
+                  try {
+                    fieldPlotsForMap = await fetchFieldBoundaries(
+                      selectedDistrict,
+                      selectedSubdistrict,
+                      selectedVillage
+                    );
+                  } catch {
+                    fieldPlotsForMap = [];
+                  }
+                }
+                const outlinePlots = mergeOutlineWithFieldPlots(locationBoundary, fieldPlotsForMap);
                 if (Object.keys(tileUrlsMap).length === 0) {
-                  setAllPlots(locationBoundary ? [locationBoundary] : []);
-                } else if (locationBoundary) {
-                  setAllPlots([locationBoundary]);
+                  setAllPlots(outlinePlots);
+                } else if (outlinePlots.length > 0) {
+                  setAllPlots(outlinePlots);
                 }
               }
               setAvailablePlots([]);
               setTotalPlotsCount(0);
             }
           } else if (!isFieldLevelAnalysis) {
-            setAllPlots(locationBoundary ? [locationBoundary] : []);
+            let fieldPlotsForMap: MapPlot[] = [];
+            if (showVillageBoundary && selectedVillage && selectedSubdistrict) {
+              try {
+                fieldPlotsForMap = await fetchFieldBoundaries(
+                  selectedDistrict,
+                  selectedSubdistrict,
+                  selectedVillage
+                );
+              } catch {
+                fieldPlotsForMap = [];
+              }
+            }
+            setAllPlots(mergeOutlineWithFieldPlots(locationBoundary, fieldPlotsForMap));
             setAllPlotsTileUrls({});
           } else {
             setAllPlotsTileUrls({});
@@ -3084,7 +3201,7 @@ const App: React.FC = () => {
     }
   }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage, selectedPlotId]); // Fetch when tab, location, or selected field plot changes
 
-  // Trends page: fetch Growth, Water, Soil, Pest endpoints directly (not only whichever tab was opened on map)
+  // Trends page: fetch stored time series from /api-stored/* GET endpoints
   useEffect(() => {
     if (!showAnalysisTrendsPage || !selectedDistrict || splitScreenMode) return;
 
@@ -3104,108 +3221,38 @@ const App: React.FC = () => {
           return null;
         }
       };
-      const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
       try {
-        const growthRes = await fetchOne('growth', () =>
-          fetchGrowthAnalysis1(district, subdistrict, village)
-        );
-        if (cancelled) return;
-        await pause(400);
-
-        const waterRes = await fetchOne('water', () =>
-          fetchWaterUptakeAnalysis(district, subdistrict, village)
-        );
-        if (cancelled) return;
-        await pause(400);
-
-        const soilRes = await fetchOne('soil', () =>
-          fetchSoilMoistureAnalysis(district, subdistrict, village)
-        );
-        if (cancelled) return;
-        await pause(400);
-
-        const pestRes = await fetchOne('pest', () =>
-          fetchPestDetectionAnalysis(district, subdistrict, village)
-        );
+        const [growthStored, waterStored, soilStored, pestStored] = await Promise.all([
+          fetchOne('growth', () => fetchGrowthStoredSeriesWithFallback(district, subdistrict, village)),
+          fetchOne('water', () => fetchWaterUptakeStoredSeriesWithFallback(district, subdistrict, village)),
+          fetchOne('soil', () => fetchSoilMoistureStoredSeriesWithFallback(district, subdistrict, village)),
+          fetchOne('pest', () => fetchPestStoredSeriesWithFallback(district, subdistrict, village)),
+        ]);
         if (cancelled) return;
 
-        if (growthRes) {
-          const growthTab = buildClasswiseTabSnapshot(growthRes);
-          setGrowthCurrentData(growthTab);
-          setGrowthStoredSeries(Array.isArray(growthRes.stored) ? growthRes.stored : []);
+        if (growthStored) {
+          setGrowthStoredSeries(growthStored);
           setGrowthStoredError(null);
-          setAllPlotsAnalysisData((prev) => ({
-            growth: growthTab as any,
-            water: prev?.water ?? null,
-            soil: prev?.soil ?? null,
-            pest: prev?.pest ?? null,
-            waterSource: prev?.waterSource ?? null,
-          }));
         }
-
-        if (waterRes) {
-          const waterTab = buildClasswiseTabSnapshot(waterRes);
-          setWaterCurrentSnapshot(waterTab);
-          setWaterStoredSeries(Array.isArray(waterRes.stored) ? waterRes.stored : []);
-          setWaterData(waterTab);
-          setAllPlotsAnalysisData((prev) => ({
-            growth: prev?.growth ?? null,
-            water: waterTab as any,
-            soil: prev?.soil ?? null,
-            pest: prev?.pest ?? null,
-            waterSource: prev?.waterSource ?? null,
-          }));
+        if (waterStored) {
+          setWaterStoredSeries(waterStored);
         }
-
-        if (soilRes) {
-          const soilTab = buildClasswiseTabSnapshot(soilRes);
-          setSoilStoredSeries(Array.isArray(soilRes.stored) ? soilRes.stored : []);
-          setSoilData(soilTab);
-          setAllPlotsAnalysisData((prev) => ({
-            growth: prev?.growth ?? null,
-            water: prev?.water ?? null,
-            soil: soilTab as any,
-            pest: prev?.pest ?? null,
-            waterSource: prev?.waterSource ?? null,
-          }));
+        if (soilStored) {
+          setSoilStoredSeries(soilStored);
         }
-
-        if (pestRes) {
-          const pestResponse = pestRes as any;
-          if (pestResponse.hierarchy && typeof pestResponse.hierarchy === 'object') {
+        if (pestStored) {
+          setPestStoredSeries(pestStored);
+          const latest = pestStored.length > 0 ? pestStored[pestStored.length - 1] : null;
+          const hierarchy = latest?.response_data?.hierarchy;
+          if (hierarchy && typeof hierarchy === 'object') {
             setPestHierarchy({
-              plot: pestResponse.plots?.[0]?.properties?.plot_id ?? '',
-              total_area_ha: pestResponse.total_area_ha ?? pestResponse.plots?.[0]?.properties?.total_area_ha ?? 0,
-              hierarchy: pestResponse.hierarchy,
+              plot: '',
+              total_area_ha: latest?.response_data?.total_area_ha ?? 0,
+              hierarchy,
             } as PestHierarchyResponse);
-            const hierarchy = pestResponse.hierarchy as Record<string, { total_area_ha?: number; percentage?: number }>;
-            setAllPlotsAnalysisData((prev) => ({
-              growth: prev?.growth ?? null,
-              water: prev?.water ?? null,
-              soil: prev?.soil ?? null,
-              pest: {
-                healthy_pixel_percentage: hierarchy.healthy?.percentage ?? 0,
-                chewing_pixel_percentage: hierarchy.chewing?.percentage ?? 0,
-                fungi_pixel_percentage: hierarchy.fungi?.percentage ?? 0,
-                sucking_pixel_percentage: hierarchy.sucking?.percentage ?? 0,
-                wilt_pixel_percentage: hierarchy.wilt?.percentage ?? 0,
-                soilborne_pixel_percentage: hierarchy.soilborne?.percentage ?? 0,
-                healthy_area_hectare: hierarchy.healthy?.total_area_ha ?? 0,
-                chewing_area_hectare: hierarchy.chewing?.total_area_ha ?? 0,
-                fungi_area_hectare: hierarchy.fungi?.total_area_ha ?? 0,
-                sucking_area_hectare: hierarchy.sucking?.total_area_ha ?? 0,
-                wilt_area_hectare: hierarchy.wilt?.total_area_ha ?? 0,
-                soilborn_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
-                soilborne_area_hectare: hierarchy.soilborne?.total_area_ha ?? 0,
-                total_area_hectare: pestResponse.total_area_ha ?? 0,
-              },
-              waterSource: prev?.waterSource ?? null,
-            }));
-            setPestStoredSeries(
-              Array.isArray(pestResponse.stored) ? (pestResponse.stored as PestStoredResponse) : []
-            );
-            const firstCategory = Object.keys(pestResponse.hierarchy)[0];
+            const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+            const firstCategory = order.find((k) => hierarchy[k] != null) ?? Object.keys(hierarchy)[0];
             if (firstCategory) {
               setSelectedPestCategory((prev) => prev ?? firstCategory);
             }
@@ -4645,7 +4692,7 @@ const App: React.FC = () => {
       try {
         setLeftPestStoredLoading(true);
         setLeftPestStoredError(null);
-        const data = await fetchPestStoredSeries(leftSelectedDistrict, leftSelectedSubdistrict, 50);
+        const data = await fetchPestStoredSeries(leftSelectedDistrict, leftSelectedSubdistrict, undefined, 50);
         if (!cancelled) {
           setLeftPestStoredSeries(data);
           setLeftSelectedPestYearMonth(null);
@@ -4696,7 +4743,7 @@ const App: React.FC = () => {
       try {
         setRightPestStoredLoading(true);
         setRightPestStoredError(null);
-        const data = await fetchPestStoredSeries(rightSelectedDistrict, rightSelectedSubdistrict, 50);
+        const data = await fetchPestStoredSeries(rightSelectedDistrict, rightSelectedSubdistrict, undefined, 50);
         if (!cancelled) {
           setRightPestStoredSeries(data);
           setRightSelectedPestYearMonth(null);
@@ -5220,13 +5267,14 @@ const App: React.FC = () => {
         : [];
 
   const plots = useMemo(
-    () =>
-      mergePlotsWithPredictCropFields(
-        basePlots,
-        predictCropFieldPlots,
-        showCropLayer && hasAnyCropSelected(selectedCrops)
-      ),
-    [basePlots, predictCropFieldPlots, selectedCrops, showCropLayer]
+    () => {
+      const showCropPlots = showCropLayer && hasAnyCropSelected(selectedCrops);
+      const base = showVillageBoundary
+        ? basePlots
+        : basePlots.filter((p) => !isFieldPlotId(p.id));
+      return mergePlotsWithPredictCropFields(base, predictCropFieldPlots, showCropPlots);
+    },
+    [basePlots, predictCropFieldPlots, selectedCrops, showCropLayer, showVillageBoundary]
   );
 
   /** Field-level analysis: keep crop layer on other fields; selected field shows analysis tile instead. */
@@ -5294,14 +5342,20 @@ const App: React.FC = () => {
     currentPixelData = forestData; // Forest data for legend circles
   }
 
-  // Pest category colors for sidebar (same as map legend)
+  // Pest category colors (chips, cards, and trend bars)
   const PEST_CARD_COLORS: Record<string, string> = {
-    healthy: '#22c55e',
+    healthy: '#16a34a',
     chewing: '#f97316',
     fungi: '#a855f7',
     sucking: '#ef4444',
-    wilt: '#92400e',
-    soilborne: '#6b7280',
+    wilt: '#ca8a04',
+    soilborne: '#64748b',
+    soilborn: '#64748b',
+  };
+
+  const pestColorForKey = (key: string | null | undefined): string => {
+    const k = (key || '').toLowerCase().replace(/\s+/g, '_');
+    return PEST_CARD_COLORS[k] ?? '#64748b';
   };
 
   /** Growth class colors when API does not send per-class color (matches chart legend). */
@@ -5438,7 +5492,7 @@ const App: React.FC = () => {
       );
     } else if (sideActiveTab === 'pest') {
       if (sidePestHierarchy?.hierarchy) {
-        const order = ['chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
         order.forEach(k => {
           const node = sidePestHierarchy.hierarchy[k];
           if (node == null) return;
@@ -5446,18 +5500,19 @@ const App: React.FC = () => {
             label: formatClassLabel(k),
             value: Number(node.total_area_ha ?? 0),
             percentage: Number(node.percentage ?? 0),
-            color: PEST_CARD_COLORS[k] ?? '#f97316',
+            color: pestColorForKey(k),
             tileUrl: node.tile_url ?? undefined,
             pestKey: k,
           });
         });
       } else {
         areaCards.push(
-          { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0), percentage: Number(ps.chewing_pixel_percentage ?? 0), color: PEST_CARD_COLORS.chewing, pestKey: 'chewing' },
-          { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0), percentage: Number(ps.fungi_pixel_percentage ?? 0), color: PEST_CARD_COLORS.fungi, pestKey: 'fungi' },
-          { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0), percentage: Number(ps.sucking_pixel_percentage ?? 0), color: PEST_CARD_COLORS.sucking, pestKey: 'sucking' },
-          { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0), percentage: Number(ps.wilt_pixel_percentage ?? 0), color: PEST_CARD_COLORS.wilt, pestKey: 'wilt' },
-          { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0), percentage: Number(ps.soilborne_pixel_percentage ?? ps.soilborn_pixel_percentage ?? 0), color: PEST_CARD_COLORS.soilborne, pestKey: 'soilborne' },
+          { label: 'Healthy', value: Number(ps.healthy_area_hectare || 0), percentage: Number(ps.healthy_pixel_percentage ?? 0), color: pestColorForKey('healthy'), pestKey: 'healthy' },
+          { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0), percentage: Number(ps.chewing_pixel_percentage ?? 0), color: pestColorForKey('chewing'), pestKey: 'chewing' },
+          { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0), percentage: Number(ps.fungi_pixel_percentage ?? 0), color: pestColorForKey('fungi'), pestKey: 'fungi' },
+          { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0), percentage: Number(ps.sucking_pixel_percentage ?? 0), color: pestColorForKey('sucking'), pestKey: 'sucking' },
+          { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0), percentage: Number(ps.wilt_pixel_percentage ?? 0), color: pestColorForKey('wilt'), pestKey: 'wilt' },
+          { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0), percentage: Number(ps.soilborne_pixel_percentage ?? ps.soilborn_pixel_percentage ?? 0), color: pestColorForKey('soilborne'), pestKey: 'soilborne' },
         );
       }
     }
@@ -7764,7 +7819,6 @@ const App: React.FC = () => {
                       };
                       const normalizeLabel = (label: string): string => label.toLowerCase().replace(/\s+/g, '');
                       const buildClasswiseTrend = (
-                        currentClasswise: any[] | undefined,
                         storedSeries: GrowthStoredResponse | null,
                         preferredOrder: string[],
                         colorMap: Record<string, string>
@@ -7773,13 +7827,10 @@ const App: React.FC = () => {
                         seriesKeys: string[];
                         seriesColors: Record<string, string>;
                       } => {
-                        const periods = [
-                          { label: 'Current', classwise: currentClasswise || [] },
-                          ...((storedSeries || []).map((item: GrowthStoredItem) => ({
-                            label: monthLabel(item.year_month),
-                            classwise: (item.response_data as any)?.classwise || [],
-                          }))),
-                        ];
+                        const periods = (storedSeries || []).map((item: GrowthStoredItem) => ({
+                          label: monthLabel(item.year_month),
+                          classwise: (item.response_data as any)?.classwise || [],
+                        }));
                         const discovered = new Set<string>();
                         periods.forEach((p) => Object.keys(classwiseToMap(p.classwise)).forEach((k) => discovered.add(k)));
                         const preferredLower = preferredOrder.map((v) => normalizeLabel(v));
@@ -7807,19 +7858,16 @@ const App: React.FC = () => {
                         return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
                       };
                       const growthTrend = buildClasswiseTrend(
-                        growthCurrentData?.classwise,
                         growthStoredSeries,
                         ['Weak', 'Stress', 'Moderate', 'Healthy'],
                         { weak: '#bc1e29', stress: '#58cf54', moderate: '#28ae31', healthy: '#00351d' }
                       );
                       const waterTrend = buildClasswiseTrend(
-                        (allPlotsAnalysisData as any)?.water?.classwise ?? (waterData as any)?.classwise ?? (waterCurrentSnapshot as any)?.classwise,
                         waterStoredSeries,
                         ['Deficient', 'Less', 'Adequat', 'Excellent', 'Excess', 'Very low', 'Low', 'Moderate', 'High'],
                         {}
                       );
                       const soilTrend = buildClasswiseTrend(
-                        (allPlotsAnalysisData as any)?.soil?.classwise ?? (soilData as any)?.classwise,
                         soilStoredSeries,
                         ['Very dry', 'Dry', 'Moderate', 'Wet', 'Optimal'],
                         {}
@@ -7833,40 +7881,30 @@ const App: React.FC = () => {
                         if (!pestCategoryForGraph) {
                           return { rows: [] as Array<Record<string, string | number>>, seriesKeys: [] as string[], seriesColors: {} as Record<string, string> };
                         }
-                        const currentNode = (pestHierarchy?.hierarchy?.[pestCategoryForGraph] as any) || {};
                         const childKeys = new Set<string>();
-                        Object.keys((currentNode?.children || {}) as Record<string, unknown>).forEach((k) => childKeys.add(k));
                         (pestStoredSeries || []).forEach((item: PestStoredItem) => {
                           const node = (item as any)?.response_data?.hierarchy?.[pestCategoryForGraph];
                           Object.keys((node?.children || {}) as Record<string, unknown>).forEach((k) => childKeys.add(k));
                         });
                         const seriesKeys = ['Total', ...Array.from(childKeys)];
-                        const rows = [
-                          (() => {
-                            const row: Record<string, string | number> = { label: 'Current', Total: Number(currentNode?.total_area_ha ?? 0) };
+                        const rows = (pestStoredSeries || [])
+                          .filter((item: PestStoredItem) => (item as any)?.response_data?.hierarchy?.[pestCategoryForGraph])
+                          .map((item: PestStoredItem) => {
+                            const node = (item as any).response_data?.hierarchy?.[pestCategoryForGraph] || {};
+                            const row: Record<string, string | number> = {
+                              label: monthLabel(item.year_month),
+                              Total: Number(node?.total_area_ha ?? 0),
+                            };
                             Array.from(childKeys).forEach((child) => {
-                              row[child] = Number((currentNode?.children?.[child] as any)?.area_ha ?? (currentNode?.children?.[child] as any)?.total_area_ha ?? 0);
+                              row[child] = Number((node?.children?.[child] as any)?.area_ha ?? (node?.children?.[child] as any)?.total_area_ha ?? 0);
                             });
                             return row;
-                          })(),
-                          ...(pestStoredSeries || [])
-                            .filter((item: PestStoredItem) => (item as any)?.response_data?.hierarchy?.[pestCategoryForGraph])
-                            .map((item: PestStoredItem) => {
-                              const node = (item as any).response_data?.hierarchy?.[pestCategoryForGraph] || {};
-                              const row: Record<string, string | number> = {
-                                label: monthLabel(item.year_month),
-                                Total: Number(node?.total_area_ha ?? 0),
-                              };
-                              Array.from(childKeys).forEach((child) => {
-                                row[child] = Number((node?.children?.[child] as any)?.area_ha ?? (node?.children?.[child] as any)?.total_area_ha ?? 0);
-                              });
-                              return row;
-                            }),
-                        ];
+                          });
                         const hasValues = rows.some((r) => seriesKeys.some((k) => Number(r[k] ?? 0) > 0));
                         const seriesColors: Record<string, string> = {};
+                        const pestBarColor = pestColorForKey(pestCategoryForGraph);
                         seriesKeys.forEach((k, idx) => {
-                          seriesColors[k] = k === 'Total' ? '#f97316' : palette[(idx + 1) % palette.length];
+                          seriesColors[k] = k === 'Total' ? pestBarColor : palette[(idx + 1) % palette.length];
                         });
                         return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
                       })();
@@ -8032,7 +8070,7 @@ const App: React.FC = () => {
                           data: growthTrend.rows,
                           seriesKeys: growthTrend.seriesKeys,
                           seriesColors: growthTrend.seriesColors,
-                          emptyText: 'Growth all-date series not loaded yet',
+                          emptyText: 'No stored growth data for this location',
                         },
                         {
                           key: 'water',
@@ -8040,7 +8078,7 @@ const App: React.FC = () => {
                           data: waterTrend.rows,
                           seriesKeys: waterTrend.seriesKeys,
                           seriesColors: waterTrend.seriesColors,
-                          emptyText: 'Water uptake all-date series not loaded yet',
+                          emptyText: 'No stored water uptake data for this location',
                         },
                         {
                           key: 'soil',
@@ -8048,7 +8086,7 @@ const App: React.FC = () => {
                           data: soilTrend.rows,
                           seriesKeys: soilTrend.seriesKeys,
                           seriesColors: soilTrend.seriesColors,
-                          emptyText: 'Soil moisture all-date series not loaded yet',
+                          emptyText: 'No stored soil moisture data for this location',
                         },
                         {
                           key: 'pest',
@@ -8057,16 +8095,59 @@ const App: React.FC = () => {
                           seriesKeys: pestTrend.seriesKeys,
                           seriesColors: pestTrend.seriesColors,
                           emptyText: pestCategoryForGraph
-                            ? `Pest all-date series not loaded for ${pestCategoryForGraph}`
-                            : 'Select/open Pest once to load all-date series',
+                            ? `No stored pest data for ${pestCategoryForGraph} at this location`
+                            : 'No stored pest data for this location',
                         },
                       ] as const;
+                      const pestCategories = (() => {
+                        const keys = new Set<string>();
+                        (pestStoredSeries || []).forEach((item) => {
+                          Object.keys((item as any)?.response_data?.hierarchy || {}).forEach((k) => keys.add(k));
+                        });
+                        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+                        return [
+                          ...order.filter((k) => keys.has(k)),
+                          ...Array.from(keys).filter((k) => !order.includes(k)),
+                        ];
+                      })();
                       const fullscreenTrend = trendCards.find((c) => c.key === fullscreenAnalysisTrendCard);
                       return (
                         <div id="analysis-trends-cards" className="w-full px-4 md:px-6 space-y-6">
                           <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                             Growth / Water uptake / Soil moisture / Pest trends
                           </div>
+                          {pestCategories.length > 0 && (
+                            <div className={`flex flex-wrap items-center gap-2 text-[11px] ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
+                              <span className="font-semibold uppercase tracking-wider">Pest category</span>
+                              {pestCategories.map((cat) => {
+                                const catColor = pestColorForKey(cat);
+                                const isSelected = pestCategoryForGraph === cat;
+                                return (
+                                <button
+                                  key={`pest-cat-${cat}`}
+                                  type="button"
+                                  onClick={() => setSelectedPestCategory(cat)}
+                                  className="px-2 py-1 rounded-md border font-medium capitalize transition-colors"
+                                  style={
+                                    isSelected
+                                      ? {
+                                          backgroundColor: catColor,
+                                          borderColor: catColor,
+                                          color: textColorOnBackground(catColor),
+                                        }
+                                      : {
+                                          backgroundColor: isDarkMode ? '#1f2937' : '#ffffff',
+                                          borderColor: catColor,
+                                          color: catColor,
+                                        }
+                                  }
+                                >
+                                  {cat.replace(/_/g, ' ')}
+                                </button>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {trendCards.map((card) =>
                               renderAnalysisTrendCard(
@@ -8580,7 +8661,7 @@ const App: React.FC = () => {
               };
 
               const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-              const parentColor = '#f97316';
+              const parentColor = pestColorForKey(currentCategory);
 
               return (
                 <div 
@@ -9304,19 +9385,19 @@ const App: React.FC = () => {
           )}
 
           <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
-          {(splitScreenMode ? leftLoading : loading) &&
-          (splitScreenMode ? leftAllPlots : plots).length === 0 &&
-          !(useEarthViewMap && !splitScreenMode) ? (
-            <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
-              <Loader2 className="animate-spin" size={48} />
-            </div>
-          ) : !splitScreenMode && useEarthViewMap ? (
+          {!splitScreenMode && useEarthViewMap ? (
             <EarthView
               predictCard={null}
               className="h-full w-full min-h-[50vh] flex-1"
               height="100%"
             />
           ) : (
+            <>
+            {(splitScreenMode ? leftLoading : loading) && (splitScreenMode ? leftAllPlots : plots).length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[20] flex items-center justify-center bg-black/20">
+                <Loader2 className="animate-spin text-green-500" size={48} />
+              </div>
+            )}
             <PlotsMap
               plots={splitScreenMode ? leftAllPlots : plots}
               selectedPlotId={selectedPlotId}
@@ -9337,9 +9418,21 @@ const App: React.FC = () => {
                 splitScreenMode ? showLeftVillageOwners : showVillageOwners
               }
               onSelectPlot={async (id) => {
-                setSelectedPlotId(id);
+                const clickedFieldId = parseFieldPlotId(id);
+                if (clickedFieldId != null) {
+                  setVillageCropPopup(null);
+                  setSelectedPlotId(String(clickedFieldId));
+                  const fieldTabs: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
+                  if (!activeTab || !fieldTabs.includes(activeTab)) {
+                    setActiveTab('growth');
+                  }
+                } else {
+                  setSelectedPlotId(id);
+                }
 
                 if (
+                  clickedFieldId == null &&
+                  !selectedVillage &&
                   !splitScreenMode &&
                   isVillageOutlinePlotId(id) &&
                   subdistrictCropAreas?.village_wise
@@ -9444,6 +9537,7 @@ const App: React.FC = () => {
               windDirectPayload={windDirectData}
               showWindFlowLayer={showWindFlowLayer}
             />
+            </>
           )}
           {!splitScreenMode && (predictAreaMapCard || villageWiseMapCard) ? (
             <div
@@ -9803,7 +9897,7 @@ const App: React.FC = () => {
                       return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
                     };
                     const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-                    const parentColor = '#f97316';
+                    const parentColor = pestColorForKey(currentCategory);
                     const pestAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
                     const pestAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
@@ -10365,7 +10459,7 @@ const App: React.FC = () => {
                 };
 
                 const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-                const parentColor = '#f97316';
+                const parentColor = pestColorForKey(rightSelectedPestCategory);
 
                 return (
                   <div 
@@ -10803,12 +10897,12 @@ const App: React.FC = () => {
 
             {/* Map - Right Side */}
             <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
-            {rightLoading && rightAllPlots.length === 0 ? (
-              <div className="h-full w-full min-h-[50vh] flex flex-1 items-center justify-center bg-gray-900 text-green-500">
-                <Loader2 className="animate-spin" size={48} />
+            {rightLoading && rightAllPlots.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[20] flex items-center justify-center bg-black/20">
+                <Loader2 className="animate-spin text-green-500" size={48} />
               </div>
-            ) : (
-              <PlotsMap
+            )}
+            <PlotsMap
                 plots={rightAllPlots}
                 selectedPlotId={selectedPlotId}
                 cropColor={predictAreaCropColor}
@@ -10856,7 +10950,6 @@ const App: React.FC = () => {
                 windDirectPayload={null}
                 showWindFlowLayer={false}
               />
-            )}
             {rightLoading && getActiveTab('right') && (
               <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-black/30 pointer-events-none">
                 <div className="flex flex-col items-center gap-2 rounded-lg bg-black/65 px-5 py-4">
