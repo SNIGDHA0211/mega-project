@@ -12,9 +12,11 @@ interface WaterSource {
   water_pixel_percentage: number;
 }
 
-/** Predict-area crop fields: white outer border, dark green fill */
-const PREDICT_AREA_FIELD_STROKE = '#ffffff';
+/** Predict-area crop fields: green outer border, dark green fill */
+const PREDICT_AREA_FIELD_STROKE = '#16a34a';
 const PREDICT_AREA_FIELD_FILL = '#166534';
+/** Outer village/district outline + inner field boundaries */
+const BOUNDARY_STROKE = '#16a34a';
 
 /** Default map: continental India (matches typical “open on India” satellite view) */
 const INDIA_DEFAULT_CENTER: LeafletCoordinate = [20.5937, 78.9629];
@@ -317,25 +319,25 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
             key={plot.id}
             positions={polygonCoords}
             pathOptions={{
-              // Boundary-only (district/subdistrict): white outline (readable on satellite)
+              // Boundary-only (district/subdistrict/village outer outline): green
               ...(isBoundaryOnly
                 ? {
-                    color: '#ffffff',
-                    fillColor: '#ffffff',
-                    fillOpacity: 0.08,
+                    color: BOUNDARY_STROKE,
+                    fillColor: BOUNDARY_STROKE,
+                    fillOpacity: 0.06,
                     weight: 3,
                     opacity: 1,
                   }
                 : {
-                    // Crop fields (predict-area): white stroke, solid dark green fill
+                    // Inner field boundaries: green stroke (crop fields keep crop color)
                     color: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? cropStroke : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor ? cropStroke : (isSelected ? '#FFD700' : BOUNDARY_STROKE)),
                     fillColor: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : '#FFFFFF')),
+                      : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : BOUNDARY_STROKE)),
                     fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.88 : 0),
-                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 3 : 1),
+                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 3 : 1.5),
                     opacity: 1,
                   }),
             }}
