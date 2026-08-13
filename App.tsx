@@ -5342,14 +5342,20 @@ const App: React.FC = () => {
     currentPixelData = forestData; // Forest data for legend circles
   }
 
-  // Pest category colors for sidebar (same as map legend)
+  // Pest category colors (chips, cards, and trend bars)
   const PEST_CARD_COLORS: Record<string, string> = {
-    healthy: '#22c55e',
+    healthy: '#16a34a',
     chewing: '#f97316',
     fungi: '#a855f7',
     sucking: '#ef4444',
-    wilt: '#92400e',
-    soilborne: '#6b7280',
+    wilt: '#ca8a04',
+    soilborne: '#64748b',
+    soilborn: '#64748b',
+  };
+
+  const pestColorForKey = (key: string | null | undefined): string => {
+    const k = (key || '').toLowerCase().replace(/\s+/g, '_');
+    return PEST_CARD_COLORS[k] ?? '#64748b';
   };
 
   /** Growth class colors when API does not send per-class color (matches chart legend). */
@@ -5486,7 +5492,7 @@ const App: React.FC = () => {
       );
     } else if (sideActiveTab === 'pest') {
       if (sidePestHierarchy?.hierarchy) {
-        const order = ['chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
         order.forEach(k => {
           const node = sidePestHierarchy.hierarchy[k];
           if (node == null) return;
@@ -5494,18 +5500,19 @@ const App: React.FC = () => {
             label: formatClassLabel(k),
             value: Number(node.total_area_ha ?? 0),
             percentage: Number(node.percentage ?? 0),
-            color: PEST_CARD_COLORS[k] ?? '#f97316',
+            color: pestColorForKey(k),
             tileUrl: node.tile_url ?? undefined,
             pestKey: k,
           });
         });
       } else {
         areaCards.push(
-          { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0), percentage: Number(ps.chewing_pixel_percentage ?? 0), color: PEST_CARD_COLORS.chewing, pestKey: 'chewing' },
-          { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0), percentage: Number(ps.fungi_pixel_percentage ?? 0), color: PEST_CARD_COLORS.fungi, pestKey: 'fungi' },
-          { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0), percentage: Number(ps.sucking_pixel_percentage ?? 0), color: PEST_CARD_COLORS.sucking, pestKey: 'sucking' },
-          { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0), percentage: Number(ps.wilt_pixel_percentage ?? 0), color: PEST_CARD_COLORS.wilt, pestKey: 'wilt' },
-          { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0), percentage: Number(ps.soilborne_pixel_percentage ?? ps.soilborn_pixel_percentage ?? 0), color: PEST_CARD_COLORS.soilborne, pestKey: 'soilborne' },
+          { label: 'Healthy', value: Number(ps.healthy_area_hectare || 0), percentage: Number(ps.healthy_pixel_percentage ?? 0), color: pestColorForKey('healthy'), pestKey: 'healthy' },
+          { label: 'Chewing', value: Number(ps.chewing_area_hectare || 0), percentage: Number(ps.chewing_pixel_percentage ?? 0), color: pestColorForKey('chewing'), pestKey: 'chewing' },
+          { label: 'Fungi', value: Number(ps.fungi_area_hectare || 0), percentage: Number(ps.fungi_pixel_percentage ?? 0), color: pestColorForKey('fungi'), pestKey: 'fungi' },
+          { label: 'Sucking', value: Number(ps.sucking_area_hectare || 0), percentage: Number(ps.sucking_pixel_percentage ?? 0), color: pestColorForKey('sucking'), pestKey: 'sucking' },
+          { label: 'Wilt', value: Number(ps.wilt_area_hectare || 0), percentage: Number(ps.wilt_pixel_percentage ?? 0), color: pestColorForKey('wilt'), pestKey: 'wilt' },
+          { label: 'SoilBorn', value: Number(ps.soilborn_area_hectare || 0), percentage: Number(ps.soilborne_pixel_percentage ?? ps.soilborn_pixel_percentage ?? 0), color: pestColorForKey('soilborne'), pestKey: 'soilborne' },
         );
       }
     }
@@ -7895,8 +7902,9 @@ const App: React.FC = () => {
                           });
                         const hasValues = rows.some((r) => seriesKeys.some((k) => Number(r[k] ?? 0) > 0));
                         const seriesColors: Record<string, string> = {};
+                        const pestBarColor = pestColorForKey(pestCategoryForGraph);
                         seriesKeys.forEach((k, idx) => {
-                          seriesColors[k] = k === 'Total' ? '#f97316' : palette[(idx + 1) % palette.length];
+                          seriesColors[k] = k === 'Total' ? pestBarColor : palette[(idx + 1) % palette.length];
                         });
                         return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
                       })();
@@ -8111,24 +8119,33 @@ const App: React.FC = () => {
                           {pestCategories.length > 0 && (
                             <div className={`flex flex-wrap items-center gap-2 text-[11px] ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
                               <span className="font-semibold uppercase tracking-wider">Pest category</span>
-                              {pestCategories.map((cat) => (
+                              {pestCategories.map((cat) => {
+                                const catColor = pestColorForKey(cat);
+                                const isSelected = pestCategoryForGraph === cat;
+                                return (
                                 <button
                                   key={`pest-cat-${cat}`}
                                   type="button"
                                   onClick={() => setSelectedPestCategory(cat)}
-                                  className={`px-2 py-1 rounded-md border font-medium capitalize transition-colors ${
-                                    pestCategoryForGraph === cat
-                                      ? isDarkMode
-                                        ? 'bg-emerald-600 text-white border-emerald-500'
-                                        : 'bg-emerald-600 text-white border-emerald-600'
-                                      : isDarkMode
-                                        ? 'bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600'
-                                        : 'bg-white text-gray-700 border-emerald-200 hover:bg-emerald-50'
-                                  }`}
+                                  className="px-2 py-1 rounded-md border font-medium capitalize transition-colors"
+                                  style={
+                                    isSelected
+                                      ? {
+                                          backgroundColor: catColor,
+                                          borderColor: catColor,
+                                          color: textColorOnBackground(catColor),
+                                        }
+                                      : {
+                                          backgroundColor: isDarkMode ? '#1f2937' : '#ffffff',
+                                          borderColor: catColor,
+                                          color: catColor,
+                                        }
+                                  }
                                 >
                                   {cat.replace(/_/g, ' ')}
                                 </button>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -8644,7 +8661,7 @@ const App: React.FC = () => {
               };
 
               const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-              const parentColor = '#f97316';
+              const parentColor = pestColorForKey(currentCategory);
 
               return (
                 <div 
@@ -9880,7 +9897,7 @@ const App: React.FC = () => {
                       return `${months[parseInt(m, 10) - 1] || m} '${shortYear}`;
                     };
                     const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-                    const parentColor = '#f97316';
+                    const parentColor = pestColorForKey(currentCategory);
                     const pestAxisMain = isDarkMode ? '#e5e7eb' : '#111827';
                     const pestAxisTick = isDarkMode ? '#d1d5db' : '#111827';
                     return (
@@ -10442,7 +10459,7 @@ const App: React.FC = () => {
                 };
 
                 const childColors = ['#3b82f6', '#22c55e', '#eab308', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#06b6d4'];
-                const parentColor = '#f97316';
+                const parentColor = pestColorForKey(rightSelectedPestCategory);
 
                 return (
                   <div 

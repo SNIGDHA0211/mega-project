@@ -3,12 +3,13 @@ import React from 'react';
 export type AnalysisType = 'growth' | 'water' | 'soil' | 'pest' | 'waterSource' | 'forest';
 
 const PEST_COLORS: Record<string, string> = {
-  healthy: '#22c55e',
+  healthy: '#16a34a',
   chewing: '#f97316',
   fungi: '#a855f7',
   sucking: '#ef4444',
-  wilt: '#92400e',
-  soilborne: '#6b7280',
+  wilt: '#ca8a04',
+  soilborne: '#64748b',
+  soilborn: '#64748b',
 };
 
 function formatPestLabel(key: string): string {
@@ -81,11 +82,12 @@ const LegendCircles: React.FC<LegendCirclesProps> = ({ type, data, onForestAgeCl
           }));
       } else {
         items = [
-          { label: 'Chewing', value: data?.chewing_pixel_percentage || 0, color: '#f97316' },
-          { label: 'Fungi', value: data?.fungi_pixel_percentage || 0, color: '#f97316' },
-          { label: 'Sucking', value: data?.sucking_pixel_percentage || 0, color: '#f97316' },
-          { label: 'Wilt', value: data?.wilt_pixel_percentage || 0, color: '#f97316' },
-          { label: 'SoilBorn', value: data?.soilborne_pixel_percentage || data?.soilborn_pixel_percentage || 0, color: '#f97316' },
+          { label: 'Healthy', value: data?.healthy_pixel_percentage || 0, color: PEST_COLORS.healthy },
+          { label: 'Chewing', value: data?.chewing_pixel_percentage || 0, color: PEST_COLORS.chewing },
+          { label: 'Fungi', value: data?.fungi_pixel_percentage || 0, color: PEST_COLORS.fungi },
+          { label: 'Sucking', value: data?.sucking_pixel_percentage || 0, color: PEST_COLORS.sucking },
+          { label: 'Wilt', value: data?.wilt_pixel_percentage || 0, color: PEST_COLORS.wilt },
+          { label: 'SoilBorn', value: data?.soilborne_pixel_percentage || data?.soilborn_pixel_percentage || 0, color: PEST_COLORS.soilborne },
         ];
       }
       break;
