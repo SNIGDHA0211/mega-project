@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
+import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
 
 export interface AreaCardItem {
   label: string;
@@ -151,19 +151,6 @@ const PercentageAreaPieChart: React.FC<PercentageAreaPieChartProps> = ({
                 );
               })}
             </Pie>
-            <Tooltip
-              content={({ active, payload }) => {
-                if (!active || !payload?.length) return null;
-                const row = payload[0].payload as AreaCardItem & { pct: number };
-                return (
-                  <div className="rounded-md border border-gray-600 bg-gray-900 px-2.5 py-1.5 text-xs text-white shadow-lg">
-                    <div className="font-semibold">{row.label}</div>
-                    <div>{formatPct(row.pct)}%</div>
-                    <div>{row.value.toFixed(2)} ha</div>
-                  </div>
-                );
-              }}
-            />
           </PieChart>
         </ResponsiveContainer>
 

@@ -12,11 +12,11 @@ interface WaterSource {
   water_pixel_percentage: number;
 }
 
-/** Predict-area crop fields: green outer border, dark green fill */
-const PREDICT_AREA_FIELD_STROKE = '#16a34a';
+/** Predict-area crop fields: dark green border and fill */
+const PREDICT_AREA_FIELD_STROKE = '#166534';
 const PREDICT_AREA_FIELD_FILL = '#166534';
 /** Outer village/district outline + inner field boundaries */
-const BOUNDARY_STROKE = '#16a34a';
+const BOUNDARY_STROKE = '#166534';
 
 /** Default map: continental India (matches typical “open on India” satellite view) */
 const INDIA_DEFAULT_CENTER: LeafletCoordinate = [20.5937, 78.9629];

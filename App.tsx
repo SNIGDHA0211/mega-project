@@ -1588,8 +1588,6 @@ const App: React.FC = () => {
     setShowVillageBoundary(false);
     setShowVillageOwners(false);
     setVillageOwnersError(null);
-    setPredictAreaMonthInput('');
-    setPredictAreaDataMonth(null);
     setShowCropLayer(false);
   }, [selectedVillage]);
 
@@ -6787,7 +6785,39 @@ const App: React.FC = () => {
               </div>
           )}
 
-          {/* Crops dropdown — before village dropdown */}
+          {/* Village Dropdown — after subdistrict */}
+          {getSelectedSubdistrict('left') && (
+            <div>
+              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
+                Select Village
+              </label>
+              <select
+                value={getSelectedVillage('left')}
+                onChange={(e) => {
+                  if (splitScreenMode) {
+                    setLeftSelectedVillage(e.target.value);
+                  } else {
+                    setSelectedVillage(e.target.value);
+                  }
+                }}
+                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                  isDarkMode
+                    ? 'bg-gray-700 border border-gray-600 text-white'
+                    : 'bg-white border border-emerald-100 text-slate-800'
+                }`}
+                disabled={getVillages('left').length === 0}
+              >
+                <option value="">-- Select Village --</option>
+                {getVillages('left').map((village, index) => (
+                  <option key={`left-village-${index}-${village.village || 'empty'}`} value={village.village}>
+                    {village.village}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Crops dropdown */}
           {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('left') && (
             <div>
               <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
@@ -6913,38 +6943,6 @@ const App: React.FC = () => {
                   ) : null
                 }
               />
-            </div>
-          )}
-
-          {/* Village Dropdown */}
-          {getSelectedSubdistrict('left') && (
-            <div>
-              <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
-                Select Village
-              </label>
-              <select
-                value={getSelectedVillage('left')}
-                onChange={(e) => {
-                  if (splitScreenMode) {
-                    setLeftSelectedVillage(e.target.value);
-                  } else {
-                    setSelectedVillage(e.target.value);
-                  }
-                }}
-                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                  isDarkMode
-                    ? 'bg-gray-700 border border-gray-600 text-white'
-                    : 'bg-white border border-emerald-100 text-slate-800'
-                }`}
-                disabled={getVillages('left').length === 0}
-              >
-                <option value="">-- Select Village --</option>
-                {getVillages('left').map((village, index) => (
-                  <option key={`left-village-${index}-${village.village || 'empty'}`} value={village.village}>
-                    {village.village}
-                  </option>
-                ))}
-              </select>
             </div>
           )}
 
@@ -11068,7 +11066,29 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Crops dropdown — before village dropdown */}
+              {/* Village Dropdown — after subdistrict */}
+              {getSelectedSubdistrict('right') && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Select Village
+                  </label>
+                  <select
+                    value={getSelectedVillage('right')}
+                    onChange={(e) => setRightSelectedVillage(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    disabled={getVillages('right').length === 0}
+                  >
+                    <option value="">-- Select Village --</option>
+                    {getVillages('right').map((village, index) => (
+                      <option key={`right-village-${index}-${village.village || 'empty'}`} value={village.village}>
+                        {village.village}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Crops dropdown */}
               {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('right') && (
                 <div>
                   <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -11168,28 +11188,6 @@ const App: React.FC = () => {
                       ) : null
                     }
                   />
-                </div>
-              )}
-
-              {/* Village Dropdown */}
-              {getSelectedSubdistrict('right') && (
-                <div>
-                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                    Select Village
-                  </label>
-                  <select
-                    value={getSelectedVillage('right')}
-                    onChange={(e) => setRightSelectedVillage(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    disabled={getVillages('right').length === 0}
-                  >
-                    <option value="">-- Select Village --</option>
-                    {getVillages('right').map((village, index) => (
-                      <option key={`right-village-${index}-${village.village || 'empty'}`} value={village.village}>
-                        {village.village}
-                      </option>
-                    ))}
-                  </select>
                 </div>
               )}
 
