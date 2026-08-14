@@ -3,6 +3,7 @@ import PlotsMap from './components/PlotsMap';
 import EarthView from './components/EarthView';
 import CropDropdownChecklist, {
   CROP_SELECTION_KEYS,
+  CROP_SELECTION_OPTIONS,
   type CropSelectionKey,
   type CropSelectionState,
   emptyCropSelection,
@@ -87,7 +88,7 @@ import { Coordinate } from './types';
 import { Loader2, AlertCircle, Layers, Home, LogOut, Eye, EyeOff, Sprout, Droplets, Droplet, Bug, Waves, Trees, Wind, Thermometer, LineChart as LineChartIcon, BarChart3, Download, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, Columns, Maximize2, ChevronUp, ChevronDown, Move, TrendingUp, Globe2 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, BarChart, Bar } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, BarChart, Bar, Cell } from 'recharts';
 import { generateDashboardIndicesPdf } from './utils/dashboardIndicesPdf';
 import { appendPdfBrandedHeader } from './utils/pdfReportHeader';
 import { captureElementForPdf } from './utils/pdfExportCapture';
@@ -580,6 +581,18 @@ const App: React.FC = () => {
   const [showGraphPage, setShowGraphPage] = useState<boolean>(false);
   const [showAnalysisTrendsPage, setShowAnalysisTrendsPage] = useState<boolean>(false);
   const [analysisTrendsLoading, setAnalysisTrendsLoading] = useState<boolean>(false);
+  /** District crop-areas charts on the analysis-trends page */
+  const [trendCropAreaLoading, setTrendCropAreaLoading] = useState<boolean>(false);
+  const [trendCropAreaError, setTrendCropAreaError] = useState<string | null>(null);
+  const [trendCropAreaTotals, setTrendCropAreaTotals] = useState<Array<{ label: string; ha: number; fill: string }>>([]);
+  const [trendCropAreaByRegion, setTrendCropAreaByRegion] = useState<Array<Record<string, string | number>>>([]);
+  const [trendCropAreaRegionKeys, setTrendCropAreaRegionKeys] = useState<string[]>([]);
+  const [trendCropAreaRegionColors, setTrendCropAreaRegionColors] = useState<Record<string, string>>({});
+  const [trendCropAreaRegionTitle, setTrendCropAreaRegionTitle] = useState('Subdistrict crop area');
+  const [trendVillageCropArea, setTrendVillageCropArea] = useState<Array<Record<string, string | number>>>([]);
+  const [trendVillageCropAreaKeys, setTrendVillageCropAreaKeys] = useState<string[]>([]);
+  const [trendVillageCropAreaColors, setTrendVillageCropAreaColors] = useState<Record<string, string>>({});
+  const [trendVillageCropAreaLoading, setTrendVillageCropAreaLoading] = useState(false);
   const [showGraphFrequencyDropdown, setShowGraphFrequencyDropdown] = useState<boolean>(false);
   const [isMapFullscreen, setIsMapFullScreen] = useState<boolean>(false);
   /** Single-pane only: show Google Earth iframe + same predict card overlay instead of Leaflet */
@@ -3266,6 +3279,188 @@ const App: React.FC = () => {
       cancelled = true;
     };
   }, [showAnalysisTrendsPage, selectedDistrict, selectedSubdistrict, selectedVillage, splitScreenMode]);
+
+  // Analysis trends page: district crop-areas bar charts (totals + subdistrict_wise)
+  useEffect(() => {
+    if (!showAnalysisTrendsPage || !selectedDistrict || splitScreenMode) {
+      setTrendCropAreaTotals([]);
+      setTrendCropAreaByRegion([]);
+      setTrendCropAreaRegionKeys([]);
+      setTrendCropAreaError(null);
+      setTrendCropAreaLoading(false);
+      setTrendVillageCropArea([]);
+      setTrendVillageCropAreaKeys([]);
+      setTrendVillageCropAreaLoading(false);
+      return;
+    }
+
+    const month = predictAreaMonthInput.trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      setTrendCropAreaTotals([]);
+      setTrendCropAreaByRegion([]);
+      setTrendCropAreaRegionKeys([]);
+      setTrendCropAreaError('Select a prediction month to load crop area graphs.');
+      setTrendCropAreaLoading(false);
+      setTrendVillageCropArea([]);
+      setTrendVillageCropAreaKeys([]);
+      setTrendVillageCropAreaLoading(false);
+      return;
+    }
+
+    const cropKeys = CROP_SELECTION_KEYS.filter((k) => selectedCrops[k]);
+    const keysToFetch = cropKeys.length > 0 ? cropKeys : [...CROP_SELECTION_KEYS];
+    const cropColorByName: Record<string, string> = {};
+    const cropLabelByName: Record<string, string> = {};
+    CROP_SELECTION_OPTIONS.forEach((opt) => {
+      const name = cropResponseKey(opt.key);
+      cropColorByName[name] = opt.color || '#22c55e';
+      cropLabelByName[name] = opt.label;
+    });
+
+    const buildRegionRows = (
+      responses: Array<{ key: CropSelectionKey; res: PredictAreaCropAreasResponse }>,
+      breakdownKey: 'subdistrict_wise' | 'village_wise'
+    ) => {
+      const regionMap = new Map<string, Record<string, string | number>>();
+      const seriesSet = new Set<string>();
+      responses.forEach(({ key, res }) => {
+        const cropName = cropResponseKey(key);
+        const cropLabel = cropLabelByName[cropName] || cropName;
+        const breakdown = res[breakdownKey];
+        if (!breakdown || Object.keys(breakdown).length === 0) return;
+        seriesSet.add(cropLabel);
+        Object.entries(breakdown).forEach(([regionName, cropHaMap]) => {
+          const row = regionMap.get(regionName) || { label: regionName };
+          const area =
+            cropHaMap?.[cropName] ??
+            cropHaMap?.[key] ??
+            Object.values(cropHaMap || {}).find((v) => typeof v === 'number');
+          row[cropLabel] = typeof area === 'number' && !Number.isNaN(area) ? Number(area.toFixed(2)) : 0;
+          regionMap.set(regionName, row);
+        });
+      });
+      const rows = Array.from(regionMap.values()).sort((a, b) =>
+        String(a.label).localeCompare(String(b.label))
+      );
+      const seriesKeys = Array.from(seriesSet);
+      const seriesColors: Record<string, string> = {};
+      seriesKeys.forEach((label) => {
+        const opt = CROP_SELECTION_OPTIONS.find((o) => o.label === label);
+        seriesColors[label] = opt?.color || '#22c55e';
+      });
+      return { rows, seriesKeys, seriesColors };
+    };
+
+    let cancelled = false;
+    setTrendCropAreaLoading(true);
+    setTrendCropAreaError(null);
+    setTrendVillageCropAreaLoading(!!selectedSubdistrict);
+
+    const load = async () => {
+      try {
+        const districtSettled = await Promise.allSettled(
+          keysToFetch.map(async (key) => {
+            const res = await fetchPredictAreaCropAreas(
+              selectedDistrict,
+              null,
+              month,
+              cropResponseKey(key)
+            );
+            return { key, res };
+          })
+        );
+        if (cancelled) return;
+
+        const districtOk = districtSettled
+          .filter((r): r is PromiseFulfilledResult<{ key: CropSelectionKey; res: PredictAreaCropAreasResponse }> => r.status === 'fulfilled')
+          .map((r) => r.value);
+
+        const totalsRows: Array<{ label: string; ha: number; fill: string }> = [];
+        districtOk.forEach(({ key, res }) => {
+          const cropName = cropResponseKey(key);
+          const cropLabel = cropLabelByName[cropName] || cropName;
+          const ha =
+            res.totals?.[cropName] ??
+            res.totals?.[key] ??
+            Object.values(res.totals || {}).find((v) => typeof v === 'number');
+          if (typeof ha === 'number' && !Number.isNaN(ha)) {
+            totalsRows.push({
+              label: cropLabel,
+              ha: Number(ha.toFixed(2)),
+              fill: cropColorByName[cropName] || '#22c55e',
+            });
+          }
+        });
+
+        const subdistrictChart = buildRegionRows(districtOk, 'subdistrict_wise');
+        setTrendCropAreaTotals(totalsRows);
+        setTrendCropAreaByRegion(subdistrictChart.rows);
+        setTrendCropAreaRegionKeys(subdistrictChart.seriesKeys);
+        setTrendCropAreaRegionColors(subdistrictChart.seriesColors);
+        setTrendCropAreaRegionTitle('Subdistrict crop area');
+        setTrendCropAreaLoading(false);
+
+        if (!selectedSubdistrict) {
+          setTrendVillageCropArea([]);
+          setTrendVillageCropAreaKeys([]);
+          setTrendVillageCropAreaColors({});
+          setTrendVillageCropAreaLoading(false);
+          return;
+        }
+
+        const villageSettled = await Promise.allSettled(
+          keysToFetch.map(async (key) => {
+            const res = await fetchPredictAreaCropAreas(
+              selectedDistrict,
+              selectedSubdistrict,
+              month,
+              cropResponseKey(key)
+            );
+            return { key, res };
+          })
+        );
+        if (cancelled) return;
+
+        const villageOk = villageSettled
+          .filter((r): r is PromiseFulfilledResult<{ key: CropSelectionKey; res: PredictAreaCropAreasResponse }> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        const villageChart = buildRegionRows(villageOk, 'village_wise');
+        setTrendVillageCropArea(villageChart.rows);
+        setTrendVillageCropAreaKeys(villageChart.seriesKeys);
+        setTrendVillageCropAreaColors(villageChart.seriesColors);
+      } catch (err) {
+        if (!cancelled) {
+          setTrendCropAreaTotals([]);
+          setTrendCropAreaByRegion([]);
+          setTrendCropAreaRegionKeys([]);
+          setTrendCropAreaError(err instanceof Error ? err.message : 'Failed to load crop area graphs');
+          setTrendVillageCropArea([]);
+          setTrendVillageCropAreaKeys([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setTrendCropAreaLoading(false);
+          setTrendVillageCropAreaLoading(false);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showAnalysisTrendsPage,
+    selectedDistrict,
+    selectedSubdistrict,
+    predictAreaMonthInput,
+    selectedCrops.sugarcane,
+    selectedCrops.wheat,
+    selectedCrops.Soyabean,
+    selectedCrops.Mango,
+    selectedCrops.Banana,
+    splitScreenMode,
+  ]);
 
   // Handle left district boundary display in split screen mode (when only district selected, no subdistrict/village)
   useEffect(() => {
@@ -8158,6 +8353,132 @@ const App: React.FC = () => {
                               )
                             )}
                           </div>
+                          <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Crop area · predict-area / crop-areas
+                            {predictAreaMonthInput ? ` · ${predictAreaMonthInput}` : ''}
+                          </div>
+                          {trendCropAreaLoading ? (
+                            <div className={`rounded-lg border p-8 flex items-center justify-center gap-3 ${
+                              isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
+                            }`}>
+                              <Loader2 className={`animate-spin ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`} size={22} />
+                              <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                                Loading crop area graphs…
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
+                                <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                                  Crop area totals (ha)
+                                </div>
+                                {trendCropAreaTotals.length > 0 ? (
+                                  <div className="h-[300px]">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <BarChart data={trendCropAreaTotals} barCategoryGap="28%">
+                                        <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                        <XAxis dataKey="label" tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
+                                        <YAxis tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
+                                        <Tooltip formatter={(value: number) => [`${Number(value).toFixed(2)} ha`, 'Area']} />
+                                        <Bar dataKey="ha" radius={[2, 2, 0, 0]}>
+                                          {trendCropAreaTotals.map((row) => (
+                                            <Cell key={row.label} fill={row.fill} />
+                                          ))}
+                                        </Bar>
+                                      </BarChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                ) : (
+                                  <div className={`h-[300px] flex items-center justify-center text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                    {trendCropAreaError || 'No crop area totals for this district'}
+                                  </div>
+                                )}
+                              </div>
+                              <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
+                                <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                                  {trendCropAreaRegionTitle} (ha)
+                                </div>
+                                {trendCropAreaByRegion.length > 0 && trendCropAreaRegionKeys.length > 0 ? (
+                                  <div className="h-[300px]">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <BarChart data={trendCropAreaByRegion} barCategoryGap="18%">
+                                        <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                        <XAxis
+                                          dataKey="label"
+                                          tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 10 }}
+                                          interval={0}
+                                          angle={trendCropAreaByRegion.length > 4 ? -35 : 0}
+                                          textAnchor={trendCropAreaByRegion.length > 4 ? 'end' : 'middle'}
+                                          height={trendCropAreaByRegion.length > 4 ? 72 : 36}
+                                        />
+                                        <YAxis tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
+                                        <Tooltip formatter={(value: number) => [`${Number(value).toFixed(2)} ha`, 'Area']} />
+                                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                                        {trendCropAreaRegionKeys.map((k) => (
+                                          <Bar
+                                            key={k}
+                                            dataKey={k}
+                                            fill={trendCropAreaRegionColors[k] || '#22c55e'}
+                                            radius={[2, 2, 0, 0]}
+                                          />
+                                        ))}
+                                      </BarChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                ) : (
+                                  <div className={`h-[300px] flex items-center justify-center text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                    {trendCropAreaError || 'No subdistrict crop area data for this district'}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {selectedSubdistrict && (
+                            <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
+                              <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                                Village crop area (ha) · {selectedSubdistrict}
+                              </div>
+                              {trendVillageCropAreaLoading ? (
+                                <div className="h-[300px] flex items-center justify-center gap-3">
+                                  <Loader2 className={`animate-spin ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`} size={22} />
+                                  <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                                    Loading village crop area…
+                                  </span>
+                                </div>
+                              ) : trendVillageCropArea.length > 0 && trendVillageCropAreaKeys.length > 0 ? (
+                                <div className="h-[340px]">
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={trendVillageCropArea} barCategoryGap="18%">
+                                      <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                      <XAxis
+                                        dataKey="label"
+                                        tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 10 }}
+                                        interval={0}
+                                        angle={trendVillageCropArea.length > 4 ? -35 : 0}
+                                        textAnchor={trendVillageCropArea.length > 4 ? 'end' : 'middle'}
+                                        height={trendVillageCropArea.length > 4 ? 80 : 36}
+                                      />
+                                      <YAxis tick={{ fill: isDarkMode ? '#d1d5db' : '#374151', fontSize: 11 }} />
+                                      <Tooltip formatter={(value: number) => [`${Number(value).toFixed(2)} ha`, 'Area']} />
+                                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                                      {trendVillageCropAreaKeys.map((k) => (
+                                        <Bar
+                                          key={k}
+                                          dataKey={k}
+                                          fill={trendVillageCropAreaColors[k] || '#22c55e'}
+                                          radius={[2, 2, 0, 0]}
+                                        />
+                                      ))}
+                                    </BarChart>
+                                  </ResponsiveContainer>
+                                </div>
+                              ) : (
+                                <div className={`h-[300px] flex items-center justify-center text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  No village crop area data for {selectedSubdistrict}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           {fullscreenTrend && (
                             <>
                               <div

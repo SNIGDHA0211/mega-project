@@ -711,33 +711,38 @@ export const fetchPredictArea = async (
   return response.json();
 };
 
-/** GET /predict-area/crop-areas — village-wise crop area (ha) for a subdistrict */
+/** GET /predict-area/crop-areas — district rollup (subdistrict_wise) or village-wise for a subdistrict */
 export interface PredictAreaCropAreasResponse {
   scope: string;
   district: string;
-  subdistrict: string;
+  subdistrict?: string | null;
   month: string;
   crop_name: string;
   metric?: string;
   unit?: string;
   totals: Record<string, number>;
-  village_wise: Record<string, Record<string, number>>;
+  village_wise?: Record<string, Record<string, number>>;
+  subdistrict_wise?: Record<string, Record<string, number>>;
   villages_with_data?: number;
+  subdistricts_with_data?: number;
   source?: string;
+  aggregation?: string;
 }
 
 export const fetchPredictAreaCropAreas = async (
   district: string,
-  subdistrict: string,
+  subdistrict: string | null | undefined,
   month: string,
   cropName: string
 ): Promise<PredictAreaCropAreasResponse> => {
   const params = new URLSearchParams({
     district: district.trim(),
-    subdistrict: subdistrict.trim(),
     month: month.trim(),
     crop_name: cropName.trim().toLowerCase(),
   });
+  if (subdistrict?.trim()) {
+    params.set('subdistrict', subdistrict.trim());
+  }
   const url = `${getBaseUrl()}/predict-area/crop-areas?${params.toString()}`;
   const response = await fetch(url, {
     method: 'GET',
