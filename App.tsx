@@ -2105,17 +2105,27 @@ const App: React.FC = () => {
       progressiveViz?: { subdistrict?: string; village?: string };
     }> => {
       if (village && subdistrict) {
-        const res = await fetchPredictArea(district, subdistrict, village, monthParam, {
-          includeBoundaries: false,
-          limit: 100,
-          offset: 0,
-        });
+        let res: PredictAreaResponse | undefined;
+        try {
+          res = await fetchPredictArea(district, subdistrict, village, monthParam, {
+            includeBoundaries: false,
+            limit: 100,
+            offset: 0,
+          });
+        } catch {
+          // Map geometries load via stored-responses-viz below.
+        }
         return { res, progressiveViz: { subdistrict, village } };
       }
       if (subdistrict) {
-        const res = await fetchPredictAreaSubdistrict(district, subdistrict, monthParam, {
-          includeBoundaries: false,
-        });
+        let res: PredictAreaResponse | undefined;
+        try {
+          res = await fetchPredictAreaSubdistrict(district, subdistrict, monthParam, {
+            includeBoundaries: false,
+          });
+        } catch {
+          // crop-areas cards may still have totals; map loads via stored-responses-viz.
+        }
         return { res, progressiveViz: { subdistrict } };
       }
       return { progressiveViz: {} };
