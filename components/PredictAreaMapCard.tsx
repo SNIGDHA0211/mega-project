@@ -77,7 +77,7 @@ const PredictAreaMapCard: React.FC<PredictAreaMapCardProps> = ({
 
       {!collapsed && (
         <div className="px-2 pb-2.5 max-h-[min(50vh,280px)] overflow-y-auto">
-          {loading ? (
+          {loading && rows.every((row) => row.area == null) ? (
             <div className="flex items-center justify-center gap-2 py-4 text-gray-800">
               <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
               <span className="text-sm text-gray-800">Loading…</span>

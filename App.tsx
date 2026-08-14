@@ -1883,15 +1883,7 @@ const App: React.FC = () => {
       setSubdistrictCropAreasLoading(false);
       return;
     }
-    const selectedKeys = CROP_SELECTION_KEYS.filter((k) => selectedCrops[k]);
-    if (selectedKeys.length === 0) {
-      setSubdistrictCropAreas(null);
-      setSubdistrictCropTotals(emptyTotals());
-      setSubdistrictVillageWiseRows([]);
-      setVillageCropPopup(null);
-      setSubdistrictCropAreasLoading(false);
-      return;
-    }
+    const selectedKeys = [...CROP_SELECTION_KEYS];
     const primaryCropKey = selectedKeys[0];
 
     let cancelled = false;
@@ -1959,11 +1951,6 @@ const App: React.FC = () => {
     selectedDistrict,
     selectedSubdistrict,
     predictAreaMonthInput,
-    selectedCrops.sugarcane,
-    selectedCrops.wheat,
-    selectedCrops.Soyabean,
-    selectedCrops.Mango,
-    selectedCrops.Banana,
     splitScreenMode,
   ]);
 
@@ -1973,7 +1960,7 @@ const App: React.FC = () => {
     const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
     const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
 
-    if (!showCropLayer || !hasAnyCropSelected(selectedCrops) || !district || !subdistrict || !village) {
+    if (!showCropLayer || !district || !subdistrict || !village) {
       setPredictAreaByCrop({});
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
@@ -2094,7 +2081,6 @@ const App: React.FC = () => {
     };
   }, [
     showCropLayer,
-    selectedCrops,
     predictAreaMonthInput,
     splitScreenMode,
     selectedDistrict,
@@ -2253,7 +2239,6 @@ const App: React.FC = () => {
   }, []);
 
   const predictAreaMapCard = useMemo(() => {
-    if (!hasAnyCropSelected(selectedCrops)) return null;
     if (!/^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())) return null;
 
     const cropColors = CROP_SELECTION_KEYS.reduce<Partial<Record<CropSelectionKey, string>>>((acc, key) => {
@@ -2320,7 +2305,6 @@ const App: React.FC = () => {
   const villageWiseMapCard = useMemo(() => {
     if (splitScreenMode) return null;
     if (!showVillageWiseCard) return null;
-    if (!hasAnyCropSelected(selectedCrops)) return null;
     if (!/^\d{4}-\d{2}$/.test(predictAreaMonthInput.trim())) return null;
     if (!selectedDistrict || !selectedSubdistrict || selectedVillage) return null;
 
@@ -2332,7 +2316,6 @@ const App: React.FC = () => {
   }, [
     splitScreenMode,
     showVillageWiseCard,
-    selectedCrops,
     predictAreaMonthInput,
     selectedDistrict,
     selectedSubdistrict,
@@ -8101,6 +8084,17 @@ const App: React.FC = () => {
                         });
                         return hasValues ? { rows, seriesKeys, seriesColors } : { rows: [], seriesKeys: [], seriesColors: {} };
                       })();
+                      const pestCategories = (() => {
+                        const keys = new Set<string>();
+                        (pestStoredSeries || []).forEach((item) => {
+                          Object.keys((item as any)?.response_data?.hierarchy || {}).forEach((k) => keys.add(k));
+                        });
+                        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
+                        return [
+                          ...order.filter((k) => keys.has(k)),
+                          ...Array.from(keys).filter((k) => !order.includes(k)),
+                        ];
+                      })();
                       const renderAnalysisTrendCard = (
                         cardKey: string,
                         title: string,
@@ -8121,9 +8115,40 @@ const App: React.FC = () => {
                         return (
                         <div className={`rounded-lg border ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'} p-4 ${isFullscreen ? 'min-h-[82vh]' : 'min-h-[460px]'}`}>
                           <div className="flex items-center justify-between gap-2 mb-2">
-                            <div className={`text-[11px] font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                            <div className={`text-base font-bold shrink-0 ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
                               {title} · {selectedDate ?? 'all dates'}
                             </div>
+                            {cardKey === 'pest' && pestCategories.length > 0 && (
+                              <div className="flex flex-wrap items-center justify-center gap-1.5 flex-1 min-w-0 px-2">
+                                {pestCategories.map((cat) => {
+                                  const catColor = pestColorForKey(cat);
+                                  const isSelected = pestCategoryForGraph === cat;
+                                  return (
+                                    <button
+                                      key={`pest-card-cat-${cat}`}
+                                      type="button"
+                                      onClick={() => setSelectedPestCategory(cat)}
+                                      className="px-2 py-0.5 rounded-md border text-[10px] font-medium capitalize transition-colors whitespace-nowrap"
+                                      style={
+                                        isSelected
+                                          ? {
+                                              backgroundColor: catColor,
+                                              borderColor: catColor,
+                                              color: textColorOnBackground(catColor),
+                                            }
+                                          : {
+                                              backgroundColor: isDarkMode ? '#1f2937' : '#ffffff',
+                                              borderColor: catColor,
+                                              color: catColor,
+                                            }
+                                      }
+                                    >
+                                      {cat.replace(/_/g, ' ')}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                             <button
                               type="button"
                               onClick={() => setFullscreenAnalysisTrendCard(isFullscreen ? null : cardKey)}
@@ -8292,70 +8317,11 @@ const App: React.FC = () => {
                             : 'No stored pest data for this location',
                         },
                       ] as const;
-                      const pestCategories = (() => {
-                        const keys = new Set<string>();
-                        (pestStoredSeries || []).forEach((item) => {
-                          Object.keys((item as any)?.response_data?.hierarchy || {}).forEach((k) => keys.add(k));
-                        });
-                        const order = ['healthy', 'chewing', 'fungi', 'sucking', 'wilt', 'soilborne'];
-                        return [
-                          ...order.filter((k) => keys.has(k)),
-                          ...Array.from(keys).filter((k) => !order.includes(k)),
-                        ];
-                      })();
                       const fullscreenTrend = trendCards.find((c) => c.key === fullscreenAnalysisTrendCard);
                       return (
                         <div id="analysis-trends-cards" className="w-full px-4 md:px-6 space-y-6">
-                          <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            Growth / Water uptake / Soil moisture / Pest trends
-                          </div>
-                          {pestCategories.length > 0 && (
-                            <div className={`flex flex-wrap items-center gap-2 text-[11px] ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
-                              <span className="font-semibold uppercase tracking-wider">Pest category</span>
-                              {pestCategories.map((cat) => {
-                                const catColor = pestColorForKey(cat);
-                                const isSelected = pestCategoryForGraph === cat;
-                                return (
-                                <button
-                                  key={`pest-cat-${cat}`}
-                                  type="button"
-                                  onClick={() => setSelectedPestCategory(cat)}
-                                  className="px-2 py-1 rounded-md border font-medium capitalize transition-colors"
-                                  style={
-                                    isSelected
-                                      ? {
-                                          backgroundColor: catColor,
-                                          borderColor: catColor,
-                                          color: textColorOnBackground(catColor),
-                                        }
-                                      : {
-                                          backgroundColor: isDarkMode ? '#1f2937' : '#ffffff',
-                                          borderColor: catColor,
-                                          color: catColor,
-                                        }
-                                  }
-                                >
-                                  {cat.replace(/_/g, ' ')}
-                                </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {trendCards.map((card) =>
-                              renderAnalysisTrendCard(
-                                card.key,
-                                card.title,
-                                card.data,
-                                card.seriesKeys,
-                                card.seriesColors,
-                                card.emptyText
-                              )
-                            )}
-                          </div>
-                          <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            Crop area · predict-area / crop-areas
-                            {predictAreaMonthInput ? ` · ${predictAreaMonthInput}` : ''}
+                          <div className={`text-xl font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
+                            crop-areas{predictAreaMonthInput ? ` · ${predictAreaMonthInput}` : ''}
                           </div>
                           {trendCropAreaLoading ? (
                             <div className={`rounded-lg border p-8 flex items-center justify-center gap-3 ${
@@ -8369,7 +8335,7 @@ const App: React.FC = () => {
                           ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
-                                <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                                <div className={`text-base font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                                   Crop area totals (ha)
                                 </div>
                                 {trendCropAreaTotals.length > 0 ? (
@@ -8395,7 +8361,7 @@ const App: React.FC = () => {
                                 )}
                               </div>
                               <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
-                                <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                                <div className={`text-base font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                                   {trendCropAreaRegionTitle} (ha)
                                 </div>
                                 {trendCropAreaByRegion.length > 0 && trendCropAreaRegionKeys.length > 0 ? (
@@ -8435,7 +8401,7 @@ const App: React.FC = () => {
                           )}
                           {selectedSubdistrict && (
                             <div className={`rounded-lg border p-4 min-h-[360px] ${isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'}`}>
-                              <div className={`text-[11px] font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                              <div className={`text-base font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                                 Village crop area (ha) · {selectedSubdistrict}
                               </div>
                               {trendVillageCropAreaLoading ? (
@@ -8479,6 +8445,21 @@ const App: React.FC = () => {
                               )}
                             </div>
                           )}
+                          <div className={`text-xl font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
+                            Growth / Water uptake / Soil moisture / Pest trends
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {trendCards.map((card) =>
+                              renderAnalysisTrendCard(
+                                card.key,
+                                card.title,
+                                card.data,
+                                card.seriesKeys,
+                                card.seriesColors,
+                                card.emptyText
+                              )
+                            )}
+                          </div>
                           {fullscreenTrend && (
                             <>
                               <div
