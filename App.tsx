@@ -33,14 +33,22 @@ import {
   geometryToBoundaryPlots,
   parseGeometryToCoordinates, 
   fetchFieldBoundaries,
+  fetchFieldBoundariesProgressive,
   fetchVillageSurveyPlots,
   type VillagePlotMeta,
   fetchPredictArea,
+  fetchPredictAreaSubdistrict,
+  fetchPredictAreaStoredVizProgressive,
   fetchPredictAreaCropAreas,
   type PredictAreaCropAreasResponse,
   loadPredictCropFieldPlots,
+  loadSubdistrictPredictCropFieldPlots,
+  extractPredictCropFieldPlotsFromViz,
+  predictAreaPlotId,
   formatPredictAreaMonthLabel,
   type PredictAreaCropData,
+  type PredictAreaResponse,
+  type FieldBoundaryPlot,
   fetchGrowthAnalysis1,
   fetchLocationTotalAreaHectares,
   extractGrowthAreaHectares,
@@ -155,7 +163,15 @@ const CROP_DEFAULT_COLORS: Record<CropSelectionKey, string> = {
   Banana: '#fbbf24',
 };
 
-const cropResponseKey = (key: CropSelectionKey): string => key.toLowerCase();
+const CROP_API_RESPONSE_KEY: Record<CropSelectionKey, string> = {
+  sugarcane: 'sugarcane',
+  wheat: 'wheat',
+  Soyabean: 'onion',
+  Mango: 'mango',
+  Banana: 'banana',
+};
+
+const cropResponseKey = (key: CropSelectionKey): string => CROP_API_RESPONSE_KEY[key];
 
 const ANALYSIS_TABS_WITH_VILLAGE_OUTLINE: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
 
@@ -273,9 +289,18 @@ const parsePredictCropLayer = (
   const fills: Record<string, string> = {};
   const boundaries = cd.identified_field_boundaries ?? {};
   Object.values(boundaries).forEach((item) => {
-    const fid = String(item.field_id);
-    areas[fid] = item.field_area_ha;
-    fills[fid] = color;
+    const plotId = predictAreaPlotId(item);
+    const fieldId = item.field_id != null ? String(item.field_id) : null;
+    const ha = Number(item.field_area_ha);
+    const areaVal = Number.isNaN(ha) ? 0 : ha;
+    if (plotId) {
+      areas[plotId] = areaVal;
+      fills[plotId] = color;
+    }
+    if (fieldId) {
+      areas[fieldId] = areaVal;
+      fills[fieldId] = color;
+    }
   });
   let totalHa: number | null = null;
   if (typeof cd.crop_area_ha === 'number' && !Number.isNaN(cd.crop_area_ha)) {
@@ -284,7 +309,7 @@ const parsePredictCropLayer = (
   return { areas, fills, totalHa, color };
 };
 
-type MapPlot = { id: string; area_ha: string; boundary: Coordinate[] };
+type MapPlot = { id: string; area_ha: string; boundary: Coordinate[]; cropColor?: string };
 
 /** Overlay predict-area field polygons (numeric ids) for crop coloring on village survey maps. */
 const mergePlotsWithPredictCropFields = (
@@ -1786,6 +1811,7 @@ const App: React.FC = () => {
     if (showVillageOwners || villageOwnersLoading) return;
 
     let cancelled = false;
+    const cancelSignal = { cancelled: false };
 
     const loadVillageMapBoundaries = async () => {
       const villageData = villages.find((v) => v.village === selectedVillage);
@@ -1803,47 +1829,69 @@ const App: React.FC = () => {
         }
       }
 
-      const outlinePlot: MapPlot[] =
+      const outlinePlot: OutlinePlot | null =
         outlineCoords.length >= 3
-          ? [{ id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }]
-          : [];
-
-      let fieldPlots: MapPlot[] = [];
-      if (showVillageBoundary) {
-        try {
-          fieldPlots = await fetchFieldBoundaries(
-            selectedDistrict,
-            selectedSubdistrict,
-            selectedVillage
-          );
-        } catch (err) {
-          console.warn('field-boundaries load failed', err);
-        }
-      }
-      if (cancelled) return;
+          ? { id: villageOutlinePlotId(selectedVillage), area_ha: '0', boundary: outlineCoords }
+          : null;
 
       if (!showVillageOwners) setVillagePlotMetaById({});
 
-      const combined = mergeOutlineWithFieldPlots(
-        outlinePlot.length > 0 ? outlinePlot[0] : null,
-        fieldPlots
-      );
-      if (combined.length === 0) {
-        setAllPlots([]);
+      if (!showVillageBoundary) {
+        if (cancelled) return;
+        if (!outlinePlot) {
+          setAllPlots([]);
+          return;
+        }
+        setAllPlots([outlinePlot]);
+        const bounds = L.latLngBounds([]);
+        outlinePlot.boundary.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        if (bounds.isValid()) setPlotBounds(bounds);
         return;
       }
 
-      setAllPlots(combined);
-      const bounds = L.latLngBounds([]);
-      combined.forEach((plot) => {
-        (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-      });
-      if (bounds.isValid()) setPlotBounds(bounds);
+      // Show outline immediately, then append field pages as they arrive.
+      if (outlinePlot) {
+        setAllPlots([outlinePlot]);
+        const bounds = L.latLngBounds([]);
+        outlinePlot.boundary.forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+        if (bounds.isValid()) setPlotBounds(bounds);
+      }
+
+      try {
+        let firstPage = true;
+        await fetchFieldBoundariesProgressive(
+          selectedDistrict,
+          selectedSubdistrict,
+          selectedVillage,
+          (page) => {
+            if (cancelled || cancelSignal.cancelled || page.length === 0) return;
+            const isFirst = firstPage;
+            firstPage = false;
+            setAllPlots((prev) =>
+              isFirst && outlinePlot
+                ? mergeOutlineWithFieldPlots(outlinePlot, page)
+                : [...prev, ...page]
+            );
+            if (isFirst) {
+              const bounds = L.latLngBounds([]);
+              (outlinePlot ? [outlinePlot, ...page] : page).forEach((plot) => {
+                (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+              });
+              if (bounds.isValid()) setPlotBounds(bounds);
+            }
+          },
+          cancelSignal
+        );
+      } catch (err) {
+        console.warn('field-boundaries load failed', err);
+        if (!cancelled && outlinePlot) setAllPlots([outlinePlot]);
+      }
     };
 
     void loadVillageMapBoundaries();
     return () => {
       cancelled = true;
+      cancelSignal.cancelled = true;
     };
   }, [
     selectedVillage,
@@ -1892,51 +1940,38 @@ const App: React.FC = () => {
       setSubdistrictCropAreasLoading(false);
       return;
     }
-    const primaryCropKey = selectedKeys[0];
 
     let cancelled = false;
     setSubdistrictCropAreasLoading(true);
 
     const load = async () => {
       try {
-        const settled = await Promise.allSettled(
-          selectedKeys.map(async (key) => {
-            const res = await fetchPredictAreaCropAreas(
-              selectedDistrict,
-              selectedSubdistrict,
-              month,
-              cropResponseKey(key)
-            );
-            return { key, res };
-          })
+        const res = await fetchPredictAreaCropAreas(
+          selectedDistrict,
+          selectedSubdistrict,
+          month
         );
         if (cancelled) return;
 
         const totals = emptyTotals();
-        let primary: PredictAreaCropAreasResponse | null = null;
-        const villageRows: Array<{ village: string; crop: string; areaHa: number }> = [];
-
-        settled.forEach((result) => {
-          if (result.status !== 'fulfilled') return;
-          const { key, res } = result.value;
-          if (!primary || key === primaryCropKey) primary = res;
+        selectedKeys.forEach((key) => {
           const cropName = cropResponseKey(key);
-          const ha =
-            res.totals?.[cropName] ??
-            res.totals?.[key] ??
-            Object.values(res.totals || {}).find((v) => typeof v === 'number');
+          const ha = res.totals?.[cropName];
           totals[key] = typeof ha === 'number' && !Number.isNaN(ha) ? ha : null;
+        });
 
-          Object.entries(res.village_wise || {}).forEach(([villageName, cropHaMap]) => {
-            Object.entries(cropHaMap || {}).forEach(([crop, area]) => {
-              if (typeof area !== 'number' || Number.isNaN(area)) return;
-              villageRows.push({ village: villageName, crop, areaHa: area });
-            });
+        const villageRows: Array<{ village: string; crop: string; areaHa: number }> = [];
+        Object.entries(res.village_wise || {}).forEach(([villageName, cropHaMap]) => {
+          Object.entries(cropHaMap || {}).forEach(([crop, area]) => {
+            if (typeof area !== 'number' || Number.isNaN(area)) return;
+            const wanted = selectedKeys.some((k) => cropResponseKey(k) === crop.toLowerCase());
+            if (!wanted) return;
+            villageRows.push({ village: villageName, crop, areaHa: area });
           });
         });
 
         setSubdistrictCropTotals(totals);
-        setSubdistrictCropAreas(primary);
+        setSubdistrictCropAreas(res);
         setSubdistrictVillageWiseRows(villageRows);
         setShowSubdistrictCropCard(true);
         setShowVillageWiseCard(true);
@@ -1967,13 +2002,13 @@ const App: React.FC = () => {
     splitScreenMode,
   ]);
 
-  // When village + crop + location set, fetch predict-area (checklist controls map display)
+  // When crop layer is on, fetch predict-area polygons for village / subdistrict / district
   useEffect(() => {
     const district = splitScreenMode ? leftSelectedDistrict : selectedDistrict;
     const subdistrict = splitScreenMode ? leftSelectedSubdistrict : selectedSubdistrict;
     const village = splitScreenMode ? leftSelectedVillage : selectedVillage;
 
-    if (!showCropLayer || !hasAnyCropSelected(selectedCrops) || !district || !subdistrict || !village) {
+    if (!showCropLayer || !hasAnyCropSelected(selectedCrops) || !district) {
       setPredictAreaByCrop({});
       setPredictAreaCropColor(null);
       setPredictAreaFieldAreas({});
@@ -2013,59 +2048,178 @@ const App: React.FC = () => {
     let cancelled = false;
     setPredictCropAreaLoading(true);
 
-    fetchPredictArea(district, subdistrict, village, monthParam, {
-      includeBoundaries: false,
-      limit: 100,
-      offset: 0,
-    })
-      .then(async (res) => {
+    const emptyAreas = (): Record<CropSelectionKey, number | null> => ({
+      sugarcane: null,
+      wheat: null,
+      Soyabean: null,
+      Mango: null,
+      Banana: null,
+    });
+
+    const layersFromPayload = (res: PredictAreaResponse) => {
+      const next: Partial<Record<CropSelectionKey, PredictCropLayer>> = {};
+      const areas = emptyAreas();
+      CROP_SELECTION_KEYS.forEach((key) => {
+        const layer = parsePredictCropLayer(
+          res[cropResponseKey(key)] as PredictAreaCropData | undefined,
+          CROP_DEFAULT_COLORS[key]
+        );
+        if (layer) {
+          next[key] = layer;
+          areas[key] = layer.totalHa;
+        }
+      });
+      if (areas.sugarcane == null && typeof res.sugarcane_area_ha === 'number' && !Number.isNaN(res.sugarcane_area_ha)) {
+        areas.sugarcane = res.sugarcane_area_ha;
+        if (next.sugarcane) {
+          next.sugarcane = { ...next.sugarcane, totalHa: res.sugarcane_area_ha };
+        }
+      }
+      return { next, areas };
+    };
+
+    const mergeVillageLayers = (villages: PredictAreaResponse[]) => {
+      const next: Partial<Record<CropSelectionKey, PredictCropLayer>> = {};
+      const areas = emptyAreas();
+      villages.forEach((res) => {
+        const parsed = layersFromPayload(res);
+        CROP_SELECTION_KEYS.forEach((key) => {
+          const layer = parsed.next[key];
+          if (!layer) return;
+          const existing = next[key];
+          next[key] = {
+            areas: { ...(existing?.areas || {}), ...layer.areas },
+            fills: { ...(existing?.fills || {}), ...layer.fills },
+            totalHa: (existing?.totalHa || 0) + (layer.totalHa || 0),
+            color: existing?.color || layer.color,
+          };
+          areas[key] = (areas[key] || 0) + (parsed.areas[key] || 0);
+        });
+      });
+      return { next, areas };
+    };
+
+    const fetchPredictAreaPayload = async (): Promise<{
+      res?: PredictAreaResponse;
+      villages?: PredictAreaResponse[];
+      progressiveViz?: { subdistrict?: string; village?: string };
+    }> => {
+      if (village && subdistrict) {
+        const res = await fetchPredictArea(district, subdistrict, village, monthParam, {
+          includeBoundaries: false,
+          limit: 100,
+          offset: 0,
+        });
+        return { res, progressiveViz: { subdistrict, village } };
+      }
+      if (subdistrict) {
+        const res = await fetchPredictAreaSubdistrict(district, subdistrict, monthParam, {
+          includeBoundaries: false,
+        });
+        return { res, progressiveViz: { subdistrict } };
+      }
+      return { progressiveViz: {} };
+    };
+
+    fetchPredictAreaPayload()
+      .then(async ({ res, villages, progressiveViz }) => {
         if (cancelled) return;
 
+        const payload = res || villages?.[0];
         const resolvedMonth =
-          typeof res.month === 'string' && /^\d{4}-\d{2}$/.test(res.month.trim())
-            ? res.month.trim()
+          typeof payload?.month === 'string' && /^\d{4}-\d{2}$/.test(payload.month.trim())
+            ? payload.month.trim()
             : monthParam;
         setPredictAreaDataMonth(resolvedMonth);
 
-        const next: Partial<Record<CropSelectionKey, PredictCropLayer>> = {};
-        const areas: Record<CropSelectionKey, number | null> = {
-          sugarcane: null,
-          wheat: null,
-          Soyabean: null,
-          Mango: null,
-          Banana: null,
-        };
-
-        CROP_SELECTION_KEYS.forEach((key) => {
-          const layer = parsePredictCropLayer(
-            res[cropResponseKey(key)] as PredictAreaCropData | undefined,
-            CROP_DEFAULT_COLORS[key]
-          );
-          if (layer) {
-            next[key] = layer;
-            areas[key] = layer.totalHa;
-          }
-        });
-
-        if (areas.sugarcane == null && typeof res.sugarcane_area_ha === 'number' && !Number.isNaN(res.sugarcane_area_ha)) {
-          areas.sugarcane = res.sugarcane_area_ha;
-          if (next.sugarcane) {
-            next.sugarcane = { ...next.sugarcane, totalHa: res.sugarcane_area_ha };
-          }
-        }
+        const { next, areas } = villages?.length
+          ? mergeVillageLayers(villages)
+          : res
+            ? layersFromPayload(res)
+            : { next: {} as Partial<Record<CropSelectionKey, PredictCropLayer>>, areas: emptyAreas() };
 
         setPredictAreaByCrop(next);
         setPredictCropAreas(areas);
 
+        const applyFieldPlotsToLayers = (fieldPlots: FieldBoundaryPlot[]) => {
+          if (fieldPlots.length === 0) return;
+          setPredictAreaByCrop((prev) => {
+            const merged = { ...prev };
+            const fallbackKey =
+              CROP_SELECTION_KEYS.find((k) => selectedCrops[k]) || 'sugarcane';
+            fieldPlots.forEach((p) => {
+              const plotId = p.id.split('::')[0];
+              const ha = Number(p.area_ha);
+              const areaVal = Number.isNaN(ha) ? 0 : ha;
+              const color = p.cropColor || merged[fallbackKey]?.color || CROP_DEFAULT_COLORS[fallbackKey];
+              const uiKey =
+                CROP_SELECTION_KEYS.find(
+                  (k) => selectedCrops[k] && (merged[k]?.color || CROP_DEFAULT_COLORS[k]) === color
+                ) || fallbackKey;
+              const existing = merged[uiKey];
+              merged[uiKey] = {
+                areas: { ...(existing?.areas || {}), [plotId]: areaVal, [p.id]: areaVal },
+                fills: { ...(existing?.fills || {}), [plotId]: color, [p.id]: color },
+                totalHa: existing?.totalHa ?? null,
+                color: existing?.color || CROP_DEFAULT_COLORS[uiKey] || color,
+              };
+            });
+            return merged;
+          });
+        };
+
         try {
-          const fieldPlots = await loadPredictCropFieldPlots(
-            res,
-            district,
-            subdistrict,
-            village,
-            next
-          );
-          if (!cancelled) setPredictCropFieldPlots(fieldPlots);
+          if (progressiveViz) {
+            setPredictCropFieldPlots([]);
+            let accumulated: FieldBoundaryPlot[] = [];
+            await fetchPredictAreaStoredVizProgressive(district, monthParam, {
+              subdistrict: progressiveViz.subdistrict,
+              village: progressiveViz.village,
+              onPage: (page) => {
+                if (cancelled) return;
+                const pageMerged = mergeVillageLayers(page.data || []);
+                setPredictAreaByCrop((prev) => {
+                  const mergedLayers: Partial<Record<CropSelectionKey, PredictCropLayer>> = { ...prev };
+                  CROP_SELECTION_KEYS.forEach((key) => {
+                    const layer = pageMerged.next[key];
+                    if (!layer) return;
+                    const existing = mergedLayers[key];
+                    mergedLayers[key] = {
+                      areas: { ...(existing?.areas || {}), ...layer.areas },
+                      fills: { ...(existing?.fills || {}), ...layer.fills },
+                      totalHa: (existing?.totalHa || 0) + (layer.totalHa || 0),
+                      color: existing?.color || layer.color,
+                    };
+                  });
+                  return mergedLayers;
+                });
+                setPredictCropAreas((prev) => {
+                  const nextAreas = { ...prev };
+                  CROP_SELECTION_KEYS.forEach((key) => {
+                    const add = pageMerged.areas[key];
+                    if (add == null) return;
+                    nextAreas[key] = (nextAreas[key] || 0) + add;
+                  });
+                  return nextAreas;
+                });
+                const pagePlots = extractPredictCropFieldPlotsFromViz(page, pageMerged.next);
+                accumulated = accumulated.concat(pagePlots);
+                setPredictCropFieldPlots([...accumulated]);
+                applyFieldPlotsToLayers(pagePlots);
+              },
+            });
+            if (cancelled) return;
+            return;
+          }
+
+          const fieldPlots = villages?.length
+            ? extractPredictCropFieldPlotsFromViz({ data: villages, count: villages.length, district, month: resolvedMonth }, next)
+            : village
+              ? await loadPredictCropFieldPlots(res as PredictAreaResponse, district, subdistrict, village, next)
+              : await loadSubdistrictPredictCropFieldPlots(res as PredictAreaResponse, district, subdistrict, next);
+          if (cancelled) return;
+          setPredictCropFieldPlots(fieldPlots);
+          applyFieldPlotsToLayers(fieldPlots);
         } catch {
           if (!cancelled) setPredictCropFieldPlots([]);
         }
@@ -2075,13 +2229,7 @@ const App: React.FC = () => {
           setPredictAreaByCrop({});
           setPredictAreaCropColor(null);
           setPredictCropFieldPlots([]);
-          setPredictCropAreas({
-            sugarcane: null,
-            wheat: null,
-            Soyabean: null,
-            Mango: null,
-            Banana: null,
-          });
+          setPredictCropAreas(emptyAreas());
           setPredictAreaDataMonth(null);
         }
       })
@@ -3663,45 +3811,59 @@ const App: React.FC = () => {
     if (!leftSelectedDistrict || !leftSelectedSubdistrict) return;
 
     let cancelled = false;
+    const cancelSignal = { cancelled: false };
 
     const loadFieldPlots = async () => {
+      const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
+      const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+      const outlinePlot: OutlinePlot | null =
+        outlineCoords.length >= 3
+          ? { id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: outlineCoords }
+          : null;
+
+      if (!showLeftVillageOwners) setVillagePlotMetaById({});
+      if (outlinePlot) {
+        setLeftAllPlots([outlinePlot]);
+        const bounds = L.latLngBounds([]);
+        outlinePlot.boundary.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+        if (bounds.isValid()) setPlotBounds(bounds);
+      }
+
       try {
-        const fieldPlots = await fetchFieldBoundaries(
+        let firstPage = true;
+        await fetchFieldBoundariesProgressive(
           leftSelectedDistrict,
           leftSelectedSubdistrict,
-          leftSelectedVillage
+          leftSelectedVillage,
+          (page) => {
+            if (cancelled || cancelSignal.cancelled || page.length === 0) return;
+            const isFirst = firstPage;
+            firstPage = false;
+            setLeftAllPlots((prev) =>
+              isFirst && outlinePlot
+                ? mergeOutlineWithFieldPlots(outlinePlot, page)
+                : [...prev, ...page]
+            );
+            if (isFirst) {
+              const bounds = L.latLngBounds([]);
+              (outlinePlot ? [outlinePlot, ...page] : page).forEach((plot) => {
+                (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+              });
+              if (bounds.isValid()) setPlotBounds(bounds);
+            }
+          },
+          cancelSignal
         );
-        if (cancelled) return;
-        if (!showLeftVillageOwners) setVillagePlotMetaById({});
-
-        const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        const outlinePlot =
-          outlineCoords.length >= 3
-            ? [{ id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: outlineCoords }]
-            : [];
-
-        const combined = [...outlinePlot, ...fieldPlots];
-        setLeftAllPlots(combined);
-
-        const bounds = L.latLngBounds([]);
-        combined.forEach((plot) => {
-          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-        });
-        if (bounds.isValid()) setPlotBounds(bounds);
       } catch {
         if (cancelled) return;
-        const villageData = leftVillages.find((v) => v.village === leftSelectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        if (outlineCoords.length >= 3) {
-          setLeftAllPlots([{ id: villageOutlinePlotId(leftSelectedVillage), area_ha: '0', boundary: outlineCoords }]);
-        }
+        if (outlinePlot) setLeftAllPlots([outlinePlot]);
       }
     };
 
     void loadFieldPlots();
     return () => {
       cancelled = true;
+      cancelSignal.cancelled = true;
     };
   }, [splitScreenMode, leftSelectedVillage, showLeftVillageBoundary, showLeftVillageOwners, villageOwnersLoading, leftVillages, leftSelectedDistrict, leftSelectedSubdistrict, leftActiveTab]);
 
@@ -3876,45 +4038,59 @@ const App: React.FC = () => {
     if (!rightSelectedDistrict || !rightSelectedSubdistrict) return;
 
     let cancelled = false;
+    const cancelSignal = { cancelled: false };
 
     const loadFieldPlots = async () => {
+      const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
+      const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
+      const outlinePlot: OutlinePlot | null =
+        outlineCoords.length >= 3
+          ? { id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: outlineCoords }
+          : null;
+
+      if (!showRightVillageOwners) setVillagePlotMetaById({});
+      if (outlinePlot) {
+        setRightAllPlots([outlinePlot]);
+        const bounds = L.latLngBounds([]);
+        outlinePlot.boundary.forEach((coord) => bounds.extend([coord[1], coord[0]]));
+        if (bounds.isValid()) setPlotBounds(bounds);
+      }
+
       try {
-        const fieldPlots = await fetchFieldBoundaries(
+        let firstPage = true;
+        await fetchFieldBoundariesProgressive(
           rightSelectedDistrict,
           rightSelectedSubdistrict,
-          rightSelectedVillage
+          rightSelectedVillage,
+          (page) => {
+            if (cancelled || cancelSignal.cancelled || page.length === 0) return;
+            const isFirst = firstPage;
+            firstPage = false;
+            setRightAllPlots((prev) =>
+              isFirst && outlinePlot
+                ? mergeOutlineWithFieldPlots(outlinePlot, page)
+                : [...prev, ...page]
+            );
+            if (isFirst) {
+              const bounds = L.latLngBounds([]);
+              (outlinePlot ? [outlinePlot, ...page] : page).forEach((plot) => {
+                (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
+              });
+              if (bounds.isValid()) setPlotBounds(bounds);
+            }
+          },
+          cancelSignal
         );
-        if (cancelled) return;
-        if (!showRightVillageOwners) setVillagePlotMetaById({});
-
-        const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        const outlinePlot =
-          outlineCoords.length >= 3
-            ? [{ id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: outlineCoords }]
-            : [];
-
-        const combined = [...outlinePlot, ...fieldPlots];
-        setRightAllPlots(combined);
-
-        const bounds = L.latLngBounds([]);
-        combined.forEach((plot) => {
-          (plot.boundary || []).forEach((coord: Coordinate) => bounds.extend([coord[1], coord[0]]));
-        });
-        if (bounds.isValid()) setPlotBounds(bounds);
       } catch {
         if (cancelled) return;
-        const villageData = rightVillages.find((v) => v.village === rightSelectedVillage);
-        const outlineCoords = villageData ? parseVillageBoundaryCoordinates(villageData) : [];
-        if (outlineCoords.length >= 3) {
-          setRightAllPlots([{ id: villageOutlinePlotId(rightSelectedVillage), area_ha: '0', boundary: outlineCoords }]);
-        }
+        if (outlinePlot) setRightAllPlots([outlinePlot]);
       }
     };
 
     void loadFieldPlots();
     return () => {
       cancelled = true;
+      cancelSignal.cancelled = true;
     };
   }, [splitScreenMode, rightSelectedVillage, showRightVillageBoundary, showRightVillageOwners, villageOwnersLoading, rightVillages, rightSelectedDistrict, rightSelectedSubdistrict, rightActiveTab]);
 
@@ -6029,7 +6205,7 @@ const App: React.FC = () => {
                           onChange: setShowCropLayer,
                           tone: 'violet',
                           loading: predictCropAreaLoading,
-                          disabled: !selectedVillage,
+                          disabled: !selectedDistrict,
                         },
                         {
                           id: 'owner-name-dash',
@@ -7012,8 +7188,8 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Crops dropdown */}
-          {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('left') && (
+          {/* Crops dropdown — available at district level */}
+          {!showGraphPage && !showAnalysisTrendsPage && getSelectedDistrict('left') && (
             <div>
               <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
                 Crops
@@ -11409,8 +11585,8 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Crops dropdown */}
-              {!showGraphPage && !showAnalysisTrendsPage && getSelectedSubdistrict('right') && (
+              {/* Crops dropdown — available at district level */}
+              {!showGraphPage && !showAnalysisTrendsPage && getSelectedDistrict('right') && (
                 <div>
                   <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                     Crops

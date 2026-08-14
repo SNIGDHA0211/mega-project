@@ -306,11 +306,20 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
         const villagePlotMeta = villagePlotMetaById[plot.id];
         const isVillageSurveyPlot = !!villagePlotMeta;
         const isOutlineBoundary = plot.id.startsWith('outline:');
-        // Only color fields that are in identified_field_boundaries (predict-area); others stay default
-        const isInIdentifiedBoundaries = plot.id in fieldAreaByFieldId;
-        // Highlight predict-area fields whenever field_id matches; cropColor is optional (fill falls back to dark green)
-        const useCropColor = !isWaterSource && isInIdentifiedBoundaries;
-        const displayAreaHa = fieldAreaByFieldId[plot.id] ?? (plot.area_ha ? Number(plot.area_ha) : undefined);
+        const plotIdBase = plot.id.split('::')[0];
+        const plotCropColor = typeof plot.cropColor === 'string' ? plot.cropColor.trim() : '';
+        // Color identified crop fields by plot_id, field_id, or the plot's own cropColor
+        const isInIdentifiedBoundaries =
+          plot.id in fieldAreaByFieldId ||
+          plotIdBase in fieldAreaByFieldId ||
+          plot.id in fieldFillByFieldId ||
+          plotIdBase in fieldFillByFieldId ||
+          Boolean(plotCropColor);
+        const useCropColor = !isWaterSource && isFieldPlot && isInIdentifiedBoundaries;
+        const displayAreaHa =
+          fieldAreaByFieldId[plot.id] ??
+          fieldAreaByFieldId[plotIdBase] ??
+          (plot.area_ha ? Number(plot.area_ha) : undefined);
         const displayArea =
           displayAreaHa != null && !Number.isNaN(displayAreaHa)
             ? displayAreaHa
@@ -318,7 +327,11 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               ? Number(plot.area_ha)
               : 0;
         const fillFromPredict =
-          fieldFillByFieldId[plot.id] ?? cropColor ?? '';
+          fieldFillByFieldId[plot.id] ??
+          fieldFillByFieldId[plotIdBase] ??
+          plotCropColor ??
+          cropColor ??
+          '';
         const resolvedFillHex =
           typeof fillFromPredict === 'string' &&
           /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(fillFromPredict.trim())

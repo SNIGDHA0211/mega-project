@@ -4,6 +4,8 @@ export interface Plot {
   id: string;
   area_ha: string;
   boundary: Coordinate[];
+  /** Predict-area crop fill; used when field_id / plot_id maps do not match */
+  cropColor?: string;
 }
 
 export interface PlotResponse {

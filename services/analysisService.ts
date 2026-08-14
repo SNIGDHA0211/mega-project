@@ -2,8 +2,13 @@
 import { Coordinate } from '../types';
 import { createApiCache } from '../utils/apiCache';
 
-const isDevelopment = typeof window !== 'undefined' && 
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const isDevelopment =
+  Boolean(import.meta.env.DEV) ||
+  (typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1' ||
+      /^192\.168\./.test(window.location.hostname) ||
+      /^10\./.test(window.location.hostname)));
 
 /** Production Railway host (shown in error messages). */
 const RAILWAY_HOST = 'https://web-production-72a7.up.railway.app';
@@ -265,8 +270,46 @@ const ringFromLngLatPairs = (outerRing: unknown): Coordinate[] => {
 };
 
 /** All outer rings from GeoJSON Polygon / MultiPolygon (fixes districts like Kolhapur with multiple parts). */
+function ringsFromCoordinateArray(coords: unknown[]): Coordinate[][] {
+  if (coords.length === 0) return [];
+  const first = coords[0];
+  // Ring: [[lng, lat], ...]
+  if (Array.isArray(first) && typeof first[0] === 'number') {
+    const ring = ringFromLngLatPairs(coords);
+    return ring.length >= 3 ? [ring] : [];
+  }
+  // Polygon: [ring] or MultiPolygon: [[ring], ...]
+  if (Array.isArray(first) && Array.isArray(first[0])) {
+    if (typeof first[0][0] === 'number') {
+      const ring = ringFromLngLatPairs(first);
+      return ring.length >= 3 ? [ring] : [];
+    }
+    const rings: Coordinate[][] = [];
+    coords.forEach((poly) => {
+      const outer = Array.isArray(poly) ? poly[0] : null;
+      const ring = ringFromLngLatPairs(outer);
+      if (ring.length >= 3) rings.push(ring);
+    });
+    return rings;
+  }
+  return [];
+}
+
 export function parseGeometryToOuterRings(geometry: unknown): Coordinate[][] {
-  if (!geometry || typeof geometry !== 'object') return [];
+  if (geometry == null) return [];
+  if (typeof geometry === 'string') {
+    const trimmed = geometry.trim();
+    if (!trimmed) return [];
+    try {
+      return parseGeometryToOuterRings(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(geometry)) {
+    return ringsFromCoordinateArray(geometry);
+  }
+  if (typeof geometry !== 'object') return [];
   const geom = geometry as {
     type?: string;
     coordinates?: unknown;
@@ -291,21 +334,7 @@ export function parseGeometryToOuterRings(geometry: unknown): Coordinate[][] {
     } else if (geom.coordinates) {
       const coords = geom.coordinates;
       if (Array.isArray(coords)) {
-        if (Array.isArray(coords[0]) && Array.isArray((coords[0] as number[][])[0])) {
-          const first = coords[0] as number[][];
-          if (typeof first[0]?.[0] === 'number') {
-            const ring = ringFromLngLatPairs(first);
-            if (ring.length >= 3) rings.push(ring);
-          } else {
-            (coords as number[][][][]).forEach((poly) => {
-              const ring = ringFromLngLatPairs(poly?.[0]);
-              if (ring.length >= 3) rings.push(ring);
-            });
-          }
-        } else {
-          const ring = ringFromLngLatPairs(coords);
-          if (ring.length >= 3) rings.push(ring);
-        }
+        return ringsFromCoordinateArray(coords);
       }
     }
   } catch {
@@ -370,6 +399,14 @@ export interface FieldBoundariesResponse {
   subdistrict: string;
   village: string;
   count: number;
+  /** Total fields in village (all pages). Present on the first page. */
+  total_count?: number;
+  limit?: number;
+  offset?: number;
+  after_id?: number;
+  has_more?: boolean;
+  /** Pass as after_id on the next request (keyset pagination). */
+  next_after_id?: number | null;
   fields: Array<{
     id: number;
     field_id: number;
@@ -386,7 +423,159 @@ export interface FieldBoundariesResponse {
   }>;
 }
 
-export type FieldBoundaryPlot = { id: string; area_ha: string; boundary: Coordinate[] };
+/** Page size for GET /field-boundaries (API max). ~150 pages for 3 lakh plots. */
+export const FIELD_BOUNDARIES_PAGE_SIZE = 2000;
+
+export type FieldBoundaryPlot = { id: string; area_ha: string; boundary: Coordinate[]; cropColor?: string };
+
+type FieldBoundaryFeature = {
+  plotId: string;
+  fieldId: string;
+  area_ha: string;
+  boundary: Coordinate[];
+};
+
+function parseFieldBoundaryFeatures(data: FieldBoundariesResponse): FieldBoundaryFeature[] {
+  const payload = data as FieldBoundariesResponse & { plots?: FieldBoundariesResponse['fields'] };
+  const fields = payload.fields ?? payload.plots ?? [];
+  const out: FieldBoundaryFeature[] = [];
+  fields.forEach((field, index) => {
+    const geom = field.geometry ?? (field as { boundaries?: unknown }).boundaries;
+    if (!geom || isStrippedGeometry(geom)) return;
+    const rings = parseGeometryToOuterRings(geom);
+    if (rings.length === 0) return;
+    const plotId = String(field.id ?? field.field_id ?? `field-${index}`);
+    const fieldId = String(field.field_id ?? field.id ?? plotId);
+    const areaHa = field.area_ha != null ? String(field.area_ha) : '0';
+    rings.forEach((boundary, ringIndex) => {
+      if (boundary.length < 3) return;
+      out.push({
+        plotId: rings.length > 1 ? `${plotId}::${ringIndex}` : plotId,
+        fieldId,
+        area_ha: areaHa,
+        boundary,
+      });
+    });
+  });
+  return out;
+}
+
+async function fetchFieldBoundariesPage(
+  district: string,
+  subdistrict: string,
+  village: string,
+  limit: number,
+  offset: number,
+  simplify = 0,
+  afterId?: number
+): Promise<FieldBoundariesResponse | null> {
+  const params = new URLSearchParams({
+    district,
+    subdistrict,
+    village,
+    limit: String(limit),
+  });
+  if (afterId != null && afterId > 0) {
+    params.set('after_id', String(afterId));
+  } else if (offset > 0) {
+    params.set('offset', String(offset));
+  }
+  if (simplify > 0) params.set('simplify', String(simplify));
+  const url = `${getBaseUrl()}/field-boundaries?${params.toString()}`;
+  const response = await getJsonWithRetry(url);
+  if (!response.ok) {
+    if (response.status === 404 || response.status >= 500) {
+      console.warn(`field-boundaries ${response.status} for ${district}/${subdistrict}/${village}`);
+      return null;
+    }
+    throw new Error(`API Error: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as FieldBoundariesResponse;
+}
+
+const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+function lastNumericFieldId(data: FieldBoundariesResponse): number | undefined {
+  if (data.next_after_id != null && Number.isFinite(Number(data.next_after_id))) {
+    return Number(data.next_after_id);
+  }
+  const fields = data.fields ?? [];
+  for (let i = fields.length - 1; i >= 0; i -= 1) {
+    const id = fields[i]?.id;
+    if (id != null && Number.isFinite(Number(id))) return Number(id);
+  }
+  return undefined;
+}
+
+/**
+ * Fetch all field-boundary pages for a village.
+ * Loops while has_more is true until every page is loaded (including 3 lakh+ plots).
+ * When ``onPage`` is provided, each page is delivered as soon as it arrives (progressive UI).
+ */
+async function fetchFieldBoundaryFeatures(
+  district: string,
+  subdistrict: string,
+  village: string,
+  options?: {
+    pageSize?: number;
+    simplify?: number;
+    signal?: { cancelled?: boolean };
+    collectAll?: boolean;
+    onPage?: (pageFeatures: FieldBoundaryFeature[]) => void;
+  }
+): Promise<FieldBoundaryFeature[]> {
+  const pageSize = options?.pageSize ?? FIELD_BOUNDARIES_PAGE_SIZE;
+  const simplify = options?.simplify ?? 0;
+  const collectAll = options?.collectAll !== false;
+  const all: FieldBoundaryFeature[] = [];
+  let afterId: number | undefined;
+  let offset = 0;
+  let loaded = 0;
+  let totalCount: number | undefined;
+
+  try {
+    while (!options?.signal?.cancelled) {
+      const data = await fetchFieldBoundariesPage(
+        district,
+        subdistrict,
+        village,
+        pageSize,
+        offset,
+        simplify,
+        afterId
+      );
+      if (!data) break;
+
+      if (typeof data.total_count === 'number') totalCount = data.total_count;
+
+      const pageFeatures = parseFieldBoundaryFeatures(data);
+      loaded += data.count ?? pageFeatures.length;
+      if (collectAll) all.push(...pageFeatures);
+      options?.onPage?.(pageFeatures);
+
+      const hasMore =
+        typeof data.has_more === 'boolean'
+          ? data.has_more
+          : pageFeatures.length >= pageSize &&
+            (totalCount == null || loaded < totalCount);
+
+      if (!hasMore || (data.count ?? pageFeatures.length) === 0) break;
+
+      const nextId = lastNumericFieldId(data);
+      if (nextId == null) break;
+      afterId = nextId;
+      offset += data.limit ?? pageSize;
+
+      await yieldToUi();
+    }
+    return all;
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/field-boundaries`);
+    }
+    throw error;
+  }
+}
 
 // Fetch field boundaries for a village (district + subdistrict + village)
 export const fetchFieldBoundaries = async (
@@ -394,59 +583,29 @@ export const fetchFieldBoundaries = async (
   subdistrict: string,
   village: string
 ): Promise<FieldBoundaryPlot[]> => {
-  try {
-    const params = new URLSearchParams({
-      district,
-      subdistrict,
-      village
-    });
-    const url = `${getBaseUrl()}/field-boundaries?${params.toString()}`;
-    const response = await getJsonWithRetry(url);
+  const feats = await fetchFieldBoundaryFeatures(district, subdistrict, village);
+  return feats.map((f) => ({ id: f.plotId, area_ha: f.area_ha, boundary: f.boundary }));
+};
 
-    if (!response.ok) {
-      // Backend may 404 (no plots) or 500 (timeout) — don't break the map UI.
-      if (response.status === 404 || response.status >= 500) {
-        console.warn(`field-boundaries ${response.status} for ${district}/${subdistrict}/${village}`);
-        return [];
-      }
-      throw new Error(`API Error: ${response.status} ${response.statusText}`);
-    }
-
-    const data: FieldBoundariesResponse = await response.json();
-    const fields = data.fields ?? [];
-    if (fields.length === 0) {
-      return [];
-    }
-
-    const plots: FieldBoundaryPlot[] = [];
-    fields.forEach((field, index) => {
-      const geom = field.geometry;
-      if (!geom || isStrippedGeometry(geom)) {
-        return;
-      }
-      const rings = parseGeometryToOuterRings(geom);
-      if (rings.length === 0) {
-        return;
-      }
-      const id = String(field.field_id ?? field.id ?? `field-${index}`);
-      const areaHa = field.area_ha != null ? String(field.area_ha) : '0';
-      rings.forEach((boundary, ringIndex) => {
-        if (boundary.length < 3) return;
-        plots.push({
-          id: rings.length > 1 ? `${id}::${ringIndex}` : id,
-          area_ha: areaHa,
-          boundary,
-        });
-      });
-    });
-
-    return plots;
-  } catch (error) {
-    if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/field-boundaries`);
-    }
-    throw error;
-  }
+/**
+ * Progressive load for map "Display boundary": calls onPage after each API page so the UI can append plots.
+ * Loops until has_more is false (all pages, including 3 lakh+ plots).
+ */
+export const fetchFieldBoundariesProgressive = async (
+  district: string,
+  subdistrict: string,
+  village: string,
+  onPage: (pagePlots: FieldBoundaryPlot[]) => void,
+  signal?: { cancelled?: boolean }
+): Promise<void> => {
+  await fetchFieldBoundaryFeatures(district, subdistrict, village, {
+    signal,
+    collectAll: false,
+    onPage: (pageFeatures) => {
+      if (!pageFeatures.length) return;
+      onPage(pageFeatures.map((f) => ({ id: f.plotId, area_ha: f.area_ha, boundary: f.boundary })));
+    },
+  });
 };
 
 /** Maharashtra state code for village survey API */
@@ -564,12 +723,31 @@ export const fetchVillageSurveyPlots = async (
 };
 
 // Predict-area API response (POST): crop predictions per crop type with field_id and field_area_ha
+export interface PredictAreaIdentifiedField {
+  field_id?: number;
+  plot_id?: number;
+  id?: number;
+  field_area_ha: number;
+  village?: string;
+  village_name?: string;
+  boundaries?: { type?: string; coordinates?: unknown };
+}
+
 export interface PredictAreaCropData {
   crop_name: string;
   crop_area_ha: number;
   sugarcane_area_ha?: number;
   color: string;
-  identified_field_boundaries: Record<string, { field_id: number; field_area_ha: number }>;
+  identified_field_boundaries: Record<string, PredictAreaIdentifiedField>;
+}
+
+export interface PredictAreaVillageFields {
+  village: string;
+  sugarcane_fields?: PredictAreaIdentifiedField[];
+  wheat_fields?: PredictAreaIdentifiedField[];
+  onion_fields?: PredictAreaIdentifiedField[];
+  banana_fields?: PredictAreaIdentifiedField[];
+  mango_fields?: PredictAreaIdentifiedField[];
 }
 
 export interface PredictAreaResponse {
@@ -577,10 +755,23 @@ export interface PredictAreaResponse {
   subdistrict: string;
   village: string;
   month?: string;
+  scope?: string;
   /** Present when API returns total predicted sugarcane area at root (see predict-area). */
   sugarcane_area_ha?: number;
+  village_wise_fields?: PredictAreaVillageFields[];
+  village_wise_summary?: Array<Record<string, unknown>>;
   field_boundaries_geojson?: { type: string; features: unknown[]; note?: string };
   [cropKey: string]: unknown; // e.g. "sugarcane": PredictAreaCropData
+}
+
+/** Unique map join key: field_boundaries.id (plot_id). Never use field_id alone at subdistrict scope. */
+export function predictAreaPlotId(item: PredictAreaIdentifiedField | undefined | null): string | null {
+  if (!item) return null;
+  const raw = item.plot_id ?? item.id;
+  if (raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return String(n);
 }
 
 /** Query param crop keys in stored-responses body, e.g. wheat, sugarcane (lowercase). */
@@ -612,7 +803,7 @@ export function parsePredictAreaFieldGeoJson(
     if (!geom?.type || !geom.coordinates) return;
 
     const props = feat.properties ?? {};
-    const fieldId = props.field_id ?? props.fieldId ?? props.id;
+    const fieldId = props.plot_id ?? props.id ?? props.field_id ?? props.fieldId;
     if (fieldId == null) return;
     const id = String(fieldId);
 
@@ -632,7 +823,8 @@ export function parsePredictAreaFieldGeoJson(
     const areaRaw = props.area_ha ?? props.field_area_ha ?? props.area;
     const area_ha =
       areaRaw != null && !Number.isNaN(Number(areaRaw)) ? String(areaRaw) : '0';
-    plots.push({ id, area_ha, boundary });
+    const cropColor = typeof props.color === 'string' ? props.color : undefined;
+    plots.push({ id, area_ha, boundary, cropColor });
   });
 
   return plots;
@@ -648,22 +840,252 @@ export function collectPredictAreaFieldIds(
   return ids;
 }
 
-/** Field polygons for crop coloring — from geojson or /field-boundaries fallback. */
+function colorFromLayers(
+  layers: Partial<Record<string, { areas: Record<string, number>; fills?: Record<string, string>; color?: string }>>,
+  plotId: string,
+  fieldId: string
+): string | undefined {
+  for (const layer of Object.values(layers)) {
+    if (!layer) continue;
+    const fill = layer.fills?.[plotId] || layer.fills?.[fieldId];
+    if (fill) return fill;
+    if (layer.areas[plotId] != null || layer.areas[fieldId] != null) return layer.color;
+  }
+  return Object.values(layers).find((layer) => layer?.color)?.color;
+}
+
+/** Field polygons for crop coloring — from predict-area geojson or inline boundaries only. */
+export function extractPredictCropFieldPlots(
+  res: PredictAreaResponse,
+  layers: Partial<Record<string, { areas: Record<string, number>; fills?: Record<string, string>; color?: string }>>
+): FieldBoundaryPlot[] {
+  const fromGeo = parsePredictAreaFieldGeoJson(res.field_boundaries_geojson);
+  if (fromGeo.length > 0) {
+    return fromGeo.map((p) => ({
+      ...p,
+      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.id) || p.cropColor,
+    }));
+  }
+
+  const fromInline = plotsFromIdentifiedBoundaries(res, collectPredictAreaFieldIds(layers));
+  if (fromInline.length > 0) {
+    return fromInline.map((p) => ({
+      ...p,
+      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.id),
+    }));
+  }
+
+  return [];
+}
+
 export async function loadPredictCropFieldPlots(
   res: PredictAreaResponse,
-  district: string,
-  subdistrict: string,
-  village: string,
-  layers: Partial<Record<string, { areas: Record<string, number> }>>
+  _district: string,
+  _subdistrict: string,
+  _village: string,
+  layers: Partial<Record<string, { areas: Record<string, number>; fills?: Record<string, string>; color?: string }>>
 ): Promise<FieldBoundaryPlot[]> {
-  const fromGeo = parsePredictAreaFieldGeoJson(res.field_boundaries_geojson);
-  if (fromGeo.length > 0) return fromGeo;
+  return extractPredictCropFieldPlots(res, layers);
+}
 
-  const fieldIds = collectPredictAreaFieldIds(layers);
-  if (fieldIds.size === 0) return [];
+function plotsFromIdentifiedBoundaries(
+  res: PredictAreaResponse,
+  allowedIds: Set<string>
+): FieldBoundaryPlot[] {
+  const plots: FieldBoundaryPlot[] = [];
+  const cropKeys = ['sugarcane', 'wheat', 'onion', 'banana', 'mango'];
+  cropKeys.forEach((crop) => {
+    const block = res[crop] as PredictAreaCropData | undefined;
+    const ib = block?.identified_field_boundaries;
+    if (!ib) return;
+    Object.values(ib).forEach((fld) => {
+      const pid = predictAreaPlotId(fld);
+      if (!pid || (allowedIds.size > 0 && !allowedIds.has(pid))) return;
+      const geom = fld.boundaries;
+      if (!geom) return;
+      const rings = parseGeometryToOuterRings(geom);
+      rings.forEach((boundary, ringIndex) => {
+        if (boundary.length < 3) return;
+        plots.push({
+          id: rings.length > 1 ? `${pid}::${ringIndex}` : pid,
+          area_ha: String(fld.field_area_ha ?? 0),
+          boundary,
+        });
+      });
+    });
+  });
+  return plots;
+}
 
-  const all = await fetchFieldBoundaries(district, subdistrict, village);
-  return all.filter((p) => fieldIds.has(p.id));
+/** Load identified crop polygons for a whole subdistrict from predict-area payload only. */
+export async function loadSubdistrictPredictCropFieldPlots(
+  res: PredictAreaResponse,
+  _district: string,
+  _subdistrict: string,
+  layers: Partial<Record<string, { areas: Record<string, number>; fills?: Record<string, string>; color?: string }>>
+): Promise<FieldBoundaryPlot[]> {
+  return extractPredictCropFieldPlots(res, layers);
+}
+
+export interface PredictAreaStoredVizResponse {
+  count: number;
+  total_count?: number;
+  has_more?: boolean;
+  limit?: number;
+  offset?: number;
+  district: string;
+  subdistrict?: string;
+  village?: string;
+  month: string;
+  data: PredictAreaResponse[];
+}
+
+const PREDICT_AREA_VIZ_PAGE_SIZE = 6
+const PREDICT_AREA_VIZ_CONCURRENCY = 10
+
+/** Run async tasks with a fixed concurrency limit. */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        results[index] = await fn(items[index], index);
+      }
+    })
+  );
+
+  return results;
+}
+
+/** GET /predict-area/stored-responses-viz — paginated villages + plot geometries. */
+export const fetchPredictAreaStoredViz = async (
+  district: string,
+  month: string,
+  options?: {
+    subdistrict?: string | null;
+    village?: string | null;
+    cropName?: string | null;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<PredictAreaStoredVizResponse> => {
+  const params = new URLSearchParams({
+    district: district.trim(),
+    month: month.trim(),
+  });
+  const sub = (options?.subdistrict || '').trim();
+  const vil = (options?.village || '').trim();
+  const crop = (options?.cropName || '').trim();
+  if (sub) params.set('subdistrict', sub);
+  if (vil) params.set('village', vil);
+  if (crop && crop.toLowerCase() !== 'all') params.set('crop_name', crop.toLowerCase());
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.offset != null) params.set('offset', String(options.offset));
+  const url = `${getBaseUrl()}/predict-area/stored-responses-viz?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Predict-area stored-responses-viz API Error: ${response.status} ${response.statusText}`
+    );
+  }
+  return response.json();
+};
+
+/**
+ * Page through stored-responses-viz in parallel (concurrency pool).
+ * Fetches page 0 first for total_count, then loads remaining pages concurrently.
+ * Calls onPage as each page completes for progressive map updates.
+ */
+export const fetchPredictAreaStoredVizProgressive = async (
+  district: string,
+  month: string,
+  options?: {
+    subdistrict?: string | null;
+    village?: string | null;
+    cropName?: string | null;
+    limit?: number;
+    concurrency?: number;
+    onPage?: (page: PredictAreaStoredVizResponse) => void;
+  }
+): Promise<PredictAreaStoredVizResponse> => {
+  const pageSize = options?.limit ?? PREDICT_AREA_VIZ_PAGE_SIZE;
+  const concurrency = options?.concurrency ?? PREDICT_AREA_VIZ_CONCURRENCY;
+  const fetchOpts = {
+    subdistrict: options?.subdistrict,
+    village: options?.village,
+    cropName: options?.cropName,
+    limit: pageSize,
+  };
+
+  const firstPage = await fetchPredictAreaStoredViz(district, month, {
+    ...fetchOpts,
+    offset: 0,
+  });
+  options?.onPage?.(firstPage);
+
+  const merged: PredictAreaResponse[] = [...(firstPage.data || [])];
+  const pageLimit = firstPage.limit ?? pageSize;
+  const totalCount = firstPage.total_count ?? merged.length;
+
+  if (!firstPage.has_more || totalCount <= merged.length) {
+    return {
+      ...firstPage,
+      data: merged,
+      count: merged.length,
+      has_more: false,
+    };
+  }
+
+  const remainingOffsets: number[] = [];
+  for (let offset = pageLimit; offset < totalCount; offset += pageLimit) {
+    remainingOffsets.push(offset);
+  }
+
+  const restPages = await runWithConcurrency(
+    remainingOffsets,
+    concurrency,
+    async (offset) => {
+      const page = await fetchPredictAreaStoredViz(district, month, {
+        ...fetchOpts,
+        offset,
+      });
+      options?.onPage?.(page);
+      return page;
+    }
+  );
+
+  restPages
+    .sort((a, b) => (a.offset ?? 0) - (b.offset ?? 0))
+    .forEach((page) => {
+      merged.push(...(page.data || []));
+    });
+
+  return {
+    ...firstPage,
+    data: merged,
+    count: merged.length,
+    has_more: false,
+  };
+};
+
+export function extractPredictCropFieldPlotsFromViz(
+  viz: PredictAreaStoredVizResponse,
+  layers: Partial<Record<string, { areas: Record<string, number>; fills?: Record<string, string>; color?: string }>>
+): FieldBoundaryPlot[] {
+  const villages = Array.isArray(viz?.data) ? viz.data : [];
+  return villages.flatMap((villageRes) => extractPredictCropFieldPlots(villageRes, layers));
 }
 
 export function formatPredictAreaMonthLabel(ym: string): string {
@@ -711,6 +1133,39 @@ export const fetchPredictArea = async (
   return response.json();
 };
 
+/** GET /predict-area/stored-responses/subdistrict — all crops + plot_id for map join */
+export const fetchPredictAreaSubdistrict = async (
+  district: string,
+  subdistrict: string,
+  month: string,
+  options?: {
+    includeBoundaries?: boolean;
+    cropName?: string | null;
+  }
+): Promise<PredictAreaResponse> => {
+  const params = new URLSearchParams({
+    district: district.trim(),
+    subdistrict: subdistrict.trim(),
+    month: month.trim(),
+    include_boundaries: String(options?.includeBoundaries ?? false),
+  });
+  const crop = (options?.cropName || '').trim();
+  if (crop && crop.toLowerCase() !== 'all') {
+    params.set('crop_name', crop.toLowerCase());
+  }
+  const url = `${getBaseUrl()}/predict-area/stored-responses/subdistrict?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Predict-area subdistrict stored-responses API Error: ${response.status} ${response.statusText}`
+    );
+  }
+  return response.json();
+};
+
 /** GET /predict-area/crop-areas — district rollup (subdistrict_wise) or village-wise for a subdistrict */
 export interface PredictAreaCropAreasResponse {
   scope: string;
@@ -733,15 +1188,18 @@ export const fetchPredictAreaCropAreas = async (
   district: string,
   subdistrict: string | null | undefined,
   month: string,
-  cropName: string
+  cropName?: string
 ): Promise<PredictAreaCropAreasResponse> => {
   const params = new URLSearchParams({
     district: district.trim(),
     month: month.trim(),
-    crop_name: cropName.trim().toLowerCase(),
   });
   if (subdistrict?.trim()) {
     params.set('subdistrict', subdistrict.trim());
+  }
+  const crop = (cropName || '').trim();
+  if (crop && crop.toLowerCase() !== 'all') {
+    params.set('crop_name', crop.toLowerCase());
   }
   const url = `${getBaseUrl()}/predict-area/crop-areas?${params.toString()}`;
   const response = await fetch(url, {
@@ -2178,7 +2636,9 @@ async function fetchSugarcaneTileFromGrowthFallback(
       };
     }
   }
-  const cw = growth.classwise?.find((c) => c.tile_url);
+  const cw = growth.classwise?.find(
+    (c: NonNullable<GrowthAnalysisWithStoredResponse['classwise']>[number]) => c.tile_url
+  );
   if (cw?.tile_url) {
     return {
       tile_url: cw.tile_url,
