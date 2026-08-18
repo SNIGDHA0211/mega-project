@@ -252,7 +252,7 @@ const VILLAGE_OUTLINE_ID_PREFIX = 'outline:';
 export const villageOutlinePlotId = (village: string) => `${VILLAGE_OUTLINE_ID_PREFIX}${village}`;
 export const isVillageOutlinePlotId = (id: string) => id.startsWith(VILLAGE_OUTLINE_ID_PREFIX);
 
-/** Numeric field id from /field-boundaries (e.g. "159" or "159::0" for multi-ring). */
+/** Numeric plot id from /field-boundaries (field_boundaries.id / plot_id), e.g. "159" or "159::0". */
 export const parseFieldPlotId = (id: string): number | null => {
   const base = String(id || '').split('::')[0];
   if (!/^\d+$/.test(base)) return null;
@@ -261,6 +261,28 @@ export const parseFieldPlotId = (id: string): number | null => {
 };
 
 export const isFieldPlotId = (id: string) => parseFieldPlotId(id) != null;
+
+/**
+ * Analysis APIs expect field_boundaries.field_id, not plot_id (PK).
+ * Map polygons use plot_id as `id`; the real field_id is on `fieldId`.
+ */
+export function resolveAnalysisFieldId(
+  selectedPlotId: string | null | undefined,
+  plots: Array<{ id?: string; fieldId?: string } | null | undefined>
+): number | null {
+  if (!selectedPlotId) return null;
+  const selected = String(selectedPlotId);
+  const base = selected.split('::')[0];
+  for (const plot of plots) {
+    if (!plot) continue;
+    const pid = String(plot.id || '');
+    const pidBase = pid.split('::')[0];
+    if (pid !== selected && pidBase !== base && pid !== base) continue;
+    const fieldId = parseFieldPlotId(String(plot.fieldId || ''));
+    if (fieldId != null) return fieldId;
+  }
+  return null;
+}
 
 const ringFromLngLatPairs = (outerRing: unknown): Coordinate[] => {
   if (!Array.isArray(outerRing)) return [];
@@ -426,7 +448,13 @@ export interface FieldBoundariesResponse {
 /** Page size for GET /field-boundaries (API max). ~150 pages for 3 lakh plots. */
 export const FIELD_BOUNDARIES_PAGE_SIZE = 2000;
 
-export type FieldBoundaryPlot = { id: string; area_ha: string; boundary: Coordinate[]; cropColor?: string };
+export type FieldBoundaryPlot = {
+  id: string;
+  fieldId?: string;
+  area_ha: string;
+  boundary: Coordinate[];
+  cropColor?: string;
+};
 
 type FieldBoundaryFeature = {
   plotId: string;
@@ -584,7 +612,12 @@ export const fetchFieldBoundaries = async (
   village: string
 ): Promise<FieldBoundaryPlot[]> => {
   const feats = await fetchFieldBoundaryFeatures(district, subdistrict, village);
-  return feats.map((f) => ({ id: f.plotId, area_ha: f.area_ha, boundary: f.boundary }));
+  return feats.map((f) => ({
+    id: f.plotId,
+    fieldId: f.fieldId,
+    area_ha: f.area_ha,
+    boundary: f.boundary,
+  }));
 };
 
 /**
@@ -603,7 +636,12 @@ export const fetchFieldBoundariesProgressive = async (
     collectAll: false,
     onPage: (pageFeatures) => {
       if (!pageFeatures.length) return;
-      onPage(pageFeatures.map((f) => ({ id: f.plotId, area_ha: f.area_ha, boundary: f.boundary })));
+      onPage(pageFeatures.map((f) => ({
+        id: f.plotId,
+        fieldId: f.fieldId,
+        area_ha: f.area_ha,
+        boundary: f.boundary,
+      })));
     },
   });
 };
@@ -803,9 +841,11 @@ export function parsePredictAreaFieldGeoJson(
     if (!geom?.type || !geom.coordinates) return;
 
     const props = feat.properties ?? {};
-    const fieldId = props.plot_id ?? props.id ?? props.field_id ?? props.fieldId;
-    if (fieldId == null) return;
-    const id = String(fieldId);
+    const plotKey = props.plot_id ?? props.id;
+    const fieldKey = props.field_id ?? props.fieldId;
+    if (plotKey == null && fieldKey == null) return;
+    const id = String(plotKey ?? fieldKey);
+    const fieldId = fieldKey != null ? String(fieldKey) : undefined;
 
     let outerRing: number[][] = [];
     if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
@@ -824,7 +864,7 @@ export function parsePredictAreaFieldGeoJson(
     const area_ha =
       areaRaw != null && !Number.isNaN(Number(areaRaw)) ? String(areaRaw) : '0';
     const cropColor = typeof props.color === 'string' ? props.color : undefined;
-    plots.push({ id, area_ha, boundary, cropColor });
+    plots.push({ id, fieldId, area_ha, boundary, cropColor });
   });
 
   return plots;
@@ -863,7 +903,7 @@ export function extractPredictCropFieldPlots(
   if (fromGeo.length > 0) {
     return fromGeo.map((p) => ({
       ...p,
-      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.id) || p.cropColor,
+      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.fieldId || p.id) || p.cropColor,
     }));
   }
 
@@ -871,7 +911,7 @@ export function extractPredictCropFieldPlots(
   if (fromInline.length > 0) {
     return fromInline.map((p) => ({
       ...p,
-      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.id),
+      cropColor: colorFromLayers(layers, p.id.split('::')[0], p.fieldId || p.id),
     }));
   }
 
@@ -908,6 +948,7 @@ function plotsFromIdentifiedBoundaries(
         if (boundary.length < 3) return;
         plots.push({
           id: rings.length > 1 ? `${pid}::${ringIndex}` : pid,
+          fieldId: fld.field_id != null ? String(fld.field_id) : undefined,
           area_ha: String(fld.field_area_ha ?? 0),
           boundary,
         });

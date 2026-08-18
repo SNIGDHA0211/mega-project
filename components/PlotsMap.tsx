@@ -1,9 +1,146 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Polygon, Popup, Tooltip, useMap } from 'react-leaflet';
-import { Plot, LeafletCoordinate } from '../types';
+import { Coordinate, Plot, LeafletCoordinate } from '../types';
 import L from 'leaflet';
 import { isFieldPlotId, type WindDirectResponse } from '../services/analysisService';
 import WindFlowOverlay from './WindFlowOverlay';
+
+const GEE_CLIP_PANE = 'gee-clipped';
+
+const isGeeXyzUrl = (url: string | null | undefined): url is string =>
+  !!url && url.includes('{z}') && url.includes('{x}') && url.includes('{y}');
+
+const plotIsSelected = (plot: Plot, selectedPlotId: string | null): boolean => {
+  if (!selectedPlotId) return false;
+  const sel = String(selectedPlotId);
+  const selBase = sel.split('::')[0];
+  const plotBase = String(plot.id || '').split('::')[0];
+  return (
+    plot.id === sel ||
+    plotBase === selBase ||
+    String(plot.fieldId || '') === sel ||
+    String(plot.fieldId || '') === selBase
+  );
+};
+
+const pickSelectedPlotTileUrl = (
+  allPlotsTileUrls: Record<string, string>,
+  tileUrl: string | null | undefined,
+  plot: Plot | undefined,
+  selectedPlotId: string | null
+): string | null => {
+  const keys = [
+    selectedPlotId,
+    plot?.id,
+    plot?.id?.split('::')[0],
+    plot?.fieldId,
+    plot?.fieldId ? `field_${plot.fieldId}` : null,
+  ].filter((k): k is string => !!k);
+  for (const key of keys) {
+    if (isGeeXyzUrl(allPlotsTileUrls[key])) return allPlotsTileUrls[key];
+  }
+  for (const [id, url] of Object.entries(allPlotsTileUrls)) {
+    if (id === 'waterUptakeClass' || id.startsWith('wu-')) continue;
+    if (isGeeXyzUrl(url)) return url;
+  }
+  return isGeeXyzUrl(tileUrl || null) ? tileUrl! : null;
+};
+
+function ensureGeeClipPane(map: L.Map): HTMLElement | undefined {
+  try {
+    const existing = map.getPane(GEE_CLIP_PANE);
+    if (existing) return existing;
+    if (!map.getPane('mapPane') && !map.getContainer()) return undefined;
+    const pane = map.createPane(GEE_CLIP_PANE);
+    pane.style.zIndex = '350';
+    pane.style.pointerEvents = 'none';
+    return pane;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Create the clip pane before any TileLayer tries to append into it. */
+const EnsureGeeClipPane: React.FC = () => {
+  const map = useMap();
+  useLayoutEffect(() => {
+    ensureGeeClipPane(map);
+  }, [map]);
+  ensureGeeClipPane(map);
+  return null;
+};
+
+/** GEE analysis tiles clipped to the clicked field so other crop fills stay visible. */
+const ClippedGeeTileLayer: React.FC<{ url: string; boundary: Coordinate[] }> = ({
+  url,
+  boundary,
+}) => {
+  const map = useMap();
+  const pane = ensureGeeClipPane(map);
+  const [paneReady, setPaneReady] = useState(() => !!pane);
+  const clipKey = useMemo(
+    () => boundary.map((c) => `${c[0]},${c[1]}`).join('|'),
+    [boundary]
+  );
+
+  useLayoutEffect(() => {
+    const el = ensureGeeClipPane(map);
+    setPaneReady(!!el);
+  }, [map]);
+
+  useEffect(() => {
+    const applyClip = () => {
+      const el = map.getPane(GEE_CLIP_PANE);
+      if (!el) return;
+      if (!boundary || boundary.length < 3) {
+        el.style.clipPath = 'none';
+        el.style.setProperty('-webkit-clip-path', 'none');
+        return;
+      }
+      const pts = boundary
+        .filter((c) => Array.isArray(c) && c.length >= 2)
+        .map((c) => map.latLngToLayerPoint([c[1], c[0]]));
+      if (pts.length < 3) {
+        el.style.clipPath = 'none';
+        el.style.setProperty('-webkit-clip-path', 'none');
+        return;
+      }
+      const value = `polygon(${pts.map((p) => `${Math.round(p.x)}px ${Math.round(p.y)}px`).join(', ')})`;
+      el.style.clipPath = value;
+      el.style.setProperty('-webkit-clip-path', value);
+    };
+
+    applyClip();
+    map.on('move zoom viewreset zoomend moveend', applyClip);
+    return () => {
+      map.off('move zoom viewreset zoomend moveend', applyClip);
+      const el = map.getPane(GEE_CLIP_PANE);
+      if (el) {
+        el.style.clipPath = 'none';
+        el.style.setProperty('-webkit-clip-path', 'none');
+      }
+    };
+  }, [map, url, clipKey, boundary]);
+
+  if (!paneReady || !map.getPane(GEE_CLIP_PANE)) {
+    return null;
+  }
+
+  return (
+    <TileLayer
+      url={url}
+      pane={GEE_CLIP_PANE}
+      maxZoom={18}
+      maxNativeZoom={15}
+      opacity={0.92}
+      zIndex={350}
+      updateWhenZooming={false}
+      updateWhenIdle={true}
+      keepBuffer={2}
+      attribution="Google Earth Engine"
+    />
+  );
+};
 
 interface WaterSource {
   id: string;
@@ -13,10 +150,10 @@ interface WaterSource {
 }
 
 /** Predict-area crop fields: dark green border and fill */
-const PREDICT_AREA_FIELD_STROKE = '#166534';
-const PREDICT_AREA_FIELD_FILL = '#166534';
+const PREDICT_AREA_FIELD_STROKE = '#ffffff';
+const PREDICT_AREA_FIELD_FILL = '#ffffff';
 /** Outer village/district outline + inner field boundaries */
-const BOUNDARY_STROKE = '#166534';
+const BOUNDARY_STROKE = '#ffffff';
 
 /** Default map: continental India (matches typical “open on India” satellite view) */
 const INDIA_DEFAULT_CENTER: LeafletCoordinate = [20.5937, 78.9629];
@@ -30,6 +167,8 @@ interface PlotsMapProps {
   plotBounds?: L.LatLngBounds | null;
   allPlotsTileUrls?: Record<string, string>;
   showTileLayers?: boolean;
+  /** When true, clip GEE analysis tiles to the clicked field and hide that field's crop fill. */
+  showSelectedFieldAnalysisTile?: boolean;
   waterSources?: WaterSource[];
   onSelectWaterSource?: (id: string, data: WaterSource) => void;
   /** When set (e.g. from predict-area for selected crop), plot boundaries use this color */
@@ -193,6 +332,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   plotBounds,
   allPlotsTileUrls = {},
   showTileLayers = true,
+  showSelectedFieldAnalysisTile = false,
   waterSources = [],
   onSelectWaterSource,
   cropColor = null,
@@ -210,6 +350,19 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
   const hasNumericFieldPlots = plots.some(
     (p) => isFieldPlotId(p.id) && p.boundary && Array.isArray(p.boundary) && p.boundary.length >= 3
   );
+  const selectedPlot = selectedPlotId
+    ? plots.find((p) => plotIsSelected(p, selectedPlotId))
+    : undefined;
+  const clipTileToSelectedField = !!(
+    showSelectedFieldAnalysisTile &&
+    selectedPlot &&
+    isFieldPlotId(selectedPlot.id) &&
+    selectedPlot.boundary &&
+    selectedPlot.boundary.length >= 3
+  );
+  const selectedFieldTileUrl = clipTileToSelectedField
+    ? pickSelectedPlotTileUrl(allPlotsTileUrls, tileUrl, selectedPlot, selectedPlotId)
+    : null;
   
   return (
     <div
@@ -226,6 +379,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
     >
       <MapLayoutFix />
       <MapDefaultIndia plotBounds={plotBounds} hasPolygons={hasFieldPolygons} />
+      <EnsureGeeClipPane />
       {/* Google Hybrid — satellite + labels */}
       <TileLayer
         url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
@@ -236,8 +390,16 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
       {/* Overlay tile layers from Google Earth Engine for all plots (like Streamlit) */}
       {showTileLayers && (
         <>
-          {/* Single plot tile URL (for backward compatibility) */}
-          {tileUrl && (
+          {/* Clicked field: clip GEE tile to that plot only; other fields keep crop fill */}
+          {clipTileToSelectedField && selectedFieldTileUrl && selectedPlot && (
+            <ClippedGeeTileLayer
+              key={`clipped-${selectedPlot.id}-${selectedFieldTileUrl.slice(-24)}`}
+              url={selectedFieldTileUrl}
+              boundary={selectedPlot.boundary}
+            />
+          )}
+          {/* Village/district tiles — hide while a field is selected so the overlay stays inside the plot */}
+          {!clipTileToSelectedField && tileUrl && (
             <TileLayer
               url={tileUrl}
               maxZoom={18}
@@ -250,18 +412,17 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
               attribution="Google Earth Engine"
             />
           )}
-          {/* All plots tile URLs — one composite layer at a time to avoid GEE 429 rate limits */}
           {Object.entries(allPlotsTileUrls).map(([plotId, url]) => {
-            // Google Earth Engine tile URLs use {z}/{x}/{y} format
-            // Leaflet automatically replaces {z}, {x}, {y} with actual tile coordinates
             if (!url || typeof url !== 'string') {
               return null;
             }
             if (!url.includes('{z}') || !url.includes('{x}') || !url.includes('{y}')) {
               return null;
             }
-            // Water Uptake: classwise GEE tiles (wu-*) or single card overlay (waterUptakeClass)
             const isWaterClassOverlay = plotId === 'waterUptakeClass' || plotId.startsWith('wu-');
+            if (clipTileToSelectedField && !isWaterClassOverlay) {
+              return null;
+            }
             return (
               <TileLayer
                 key={isWaterClassOverlay ? `tile-water-class-${url.slice(-40)}` : `tile-${plotId}`}
@@ -300,7 +461,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           return null;
         }
 
-        const isSelected = selectedPlotId === plot.id;
+        const isSelected = plotIsSelected(plot, selectedPlotId);
         const isWaterSource = plot.id.startsWith('water-source-');
         const isFieldPlot = isFieldPlotId(plot.id);
         const villagePlotMeta = villagePlotMetaById[plot.id];
@@ -314,8 +475,13 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
           plotIdBase in fieldAreaByFieldId ||
           plot.id in fieldFillByFieldId ||
           plotIdBase in fieldFillByFieldId ||
+          (plot.fieldId ? plot.fieldId in fieldFillByFieldId : false) ||
+          (plot.fieldId ? plot.fieldId in fieldAreaByFieldId : false) ||
           Boolean(plotCropColor);
-        const useCropColor = !isWaterSource && isFieldPlot && isInIdentifiedBoundaries;
+        const showTileInsteadOfCrop =
+          showSelectedFieldAnalysisTile && isSelected && isFieldPlot && !isWaterSource;
+        const useCropColor =
+          !showTileInsteadOfCrop && !isWaterSource && isFieldPlot && isInIdentifiedBoundaries;
         const displayAreaHa =
           fieldAreaByFieldId[plot.id] ??
           fieldAreaByFieldId[plotIdBase] ??
@@ -358,15 +524,17 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                     interactive: !hasNumericFieldPlots,
                   }
                 : {
-                    // Inner field boundaries: green stroke (crop fields keep crop color)
+                    // Clicked field: no crop fill so the analysis tile shows through; other fields keep crop color
                     color: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? cropStroke : (isSelected ? '#FFD700' : BOUNDARY_STROKE)),
+                      : (showTileInsteadOfCrop
+                        ? '#f8fafc'
+                        : (useCropColor ? cropStroke : BOUNDARY_STROKE)),
                     fillColor: isWaterSource
                       ? '#3b82f6'
-                      : (useCropColor ? resolvedFillHex : (isSelected ? '#FFD700' : BOUNDARY_STROKE)),
-                    fillOpacity: isWaterSource ? 0.3 : (useCropColor ? 0.88 : 0),
-                    weight: isSelected ? 4 : (isWaterSource ? 2 : useCropColor ? 3 : 1.5),
+                      : (useCropColor ? resolvedFillHex : BOUNDARY_STROKE),
+                    fillOpacity: isWaterSource ? 0.3 : (showTileInsteadOfCrop ? 0 : (useCropColor ? 0.88 : 0)),
+                    weight: showTileInsteadOfCrop ? 3 : (isWaterSource ? 2 : useCropColor ? 3 : 1.5),
                     opacity: 1,
                   }),
             }}
@@ -398,7 +566,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                   </>
                 ) : (
                   <>
-                    <span className="font-medium">ID: {plot.id}</span>
+                    <span className="font-medium">ID: {plot.fieldId || plot.id}</span>
                     <br />
                     <span className="text-emerald-600 font-semibold">{displayArea.toFixed(2)} ha</span>
                   </>
@@ -455,7 +623,7 @@ const PlotsMap: React.FC<PlotsMapProps> = ({
                   // Regular Plot Popup (click) – show Field ID and area (from predict-area or plot)
                   <>
                     <span className="block font-bold text-gray-700 uppercase mb-1">Field ID</span>
-                    <span className="text-emerald-600 font-semibold">{plot.id}</span>
+                    <span className="text-emerald-600 font-semibold">{plot.fieldId || plot.id}</span>
                     {(displayArea > 0) ? (
                       <div className="mt-2">
                         <span className="text-xs text-gray-600">Area: </span>

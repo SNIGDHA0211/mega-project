@@ -2,6 +2,8 @@ export type Coordinate = [number, number]; // [Longitude, Latitude] from API
 
 export interface Plot {
   id: string;
+  /** field_boundaries.field_id — use this for analysis APIs, not plot id */
+  fieldId?: string;
   area_ha: string;
   boundary: Coordinate[];
   /** Predict-area crop fill; used when field_id / plot_id maps do not match */
