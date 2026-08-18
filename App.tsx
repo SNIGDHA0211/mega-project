@@ -27,6 +27,7 @@ import {
   isVillageOutlinePlotId,
   isFieldPlotId,
   parseFieldPlotId,
+  resolveAnalysisFieldId,
   shouldHideFieldIdAreaOnMap,
   type VillageItem,
   fetchBoundaryGeoJSON,
@@ -174,6 +175,9 @@ const CROP_API_RESPONSE_KEY: Record<CropSelectionKey, string> = {
 const cropResponseKey = (key: CropSelectionKey): string => CROP_API_RESPONSE_KEY[key];
 
 const ANALYSIS_TABS_WITH_VILLAGE_OUTLINE: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
+const FIELD_ANALYSIS_TILE_TABS: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
+const isFieldAnalysisTileTab = (tab: AnalysisType | null | undefined) =>
+  !!tab && (FIELD_ANALYSIS_TILE_TABS as string[]).includes(tab);
 
 type OutlinePlot = { id: string; area_ha: string; boundary: Coordinate[] };
 
@@ -309,7 +313,7 @@ const parsePredictCropLayer = (
   return { areas, fills, totalHa, color };
 };
 
-type MapPlot = { id: string; area_ha: string; boundary: Coordinate[]; cropColor?: string };
+type MapPlot = { id: string; fieldId?: string; area_ha: string; boundary: Coordinate[]; cropColor?: string };
 
 /** Overlay predict-area field polygons (numeric ids) for crop coloring on village survey maps. */
 const mergePlotsWithPredictCropFields = (
@@ -383,6 +387,11 @@ const App: React.FC = () => {
   const [villageOwnersLoading, setVillageOwnersLoading] = useState(false);
   const [villageOwnersError, setVillageOwnersError] = useState<string | null>(null);
   const [selectedPlotId, setSelectedPlotId] = useState<string | null>(null);
+  /** field_boundaries.field_id for analysis APIs (not plot_id / map polygon id) */
+  const [selectedAnalysisFieldId, setSelectedAnalysisFieldId] = useState<number | null>(null);
+  useEffect(() => {
+    if (!selectedPlotId) setSelectedAnalysisFieldId(null);
+  }, [selectedPlotId]);
   const [availablePlots, setAvailablePlots] = useState<string[]>([]);
   const [totalPlotsCount, setTotalPlotsCount] = useState<number>(0);
 
@@ -825,6 +834,8 @@ const App: React.FC = () => {
     setNdwiData(null);
     setWaterSources([]);
     setWaterAreaHectares(null);
+    setTileUrl(null);
+    setCropTileUrl(null);
 
     if (!splitScreenMode) {
       setAllPlotsTileUrls(stripAnalysisTiles);
@@ -843,10 +854,28 @@ const App: React.FC = () => {
     const tab = getActiveTab(side);
     if (tab === 'pest' && pestTileUrl) return pestTileUrl;
     if (tab === 'forest' && forestTileUrl) return forestTileUrl;
+    if (tab === 'growth' || tab === 'water' || tab === 'soil' || tab === 'pest') {
+      return cropTileUrl || tileUrl || null;
+    }
     if (lstTileUrl) return lstTileUrl;
-    if (cropTileUrl) return cropTileUrl;
-    if (tileUrl) return tileUrl;
     return null;
+  };
+
+  const tilesForActiveAnalysisLayer = (
+    tiles: Record<string, string>,
+    tab: AnalysisType | null
+  ): Record<string, string> => {
+    if (isFieldAnalysisTileTab(tab) || tab === 'forest' || tab === 'waterSource') {
+      return tiles;
+    }
+    const out: Record<string, string> = {};
+    if (tiles['land-surface-temperature']) {
+      out['land-surface-temperature'] = tiles['land-surface-temperature'];
+    }
+    if (tiles[BUILDING_BUILTUP_TILE_KEY]) {
+      out[BUILDING_BUILTUP_TILE_KEY] = tiles[BUILDING_BUILTUP_TILE_KEY];
+    }
+    return out;
   };
 
   const toggleActiveTabForSide = (tab: AnalysisType, side: 'left' | 'right' = 'left') => {
@@ -2754,7 +2783,8 @@ const App: React.FC = () => {
       fieldLevelTabs.includes(activeTab as (typeof fieldLevelTabs)[number]) &&
       !!selectedVillage &&
       !!selectedPlotId
-        ? parseFieldPlotId(selectedPlotId)
+        ? (selectedAnalysisFieldId ??
+          resolveAnalysisFieldId(selectedPlotId, [...allPlots, ...predictCropFieldPlots, ...geojsonPlots]))
         : null;
     const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
 
@@ -3191,6 +3221,7 @@ const App: React.FC = () => {
                 const firstUrl = Object.values(tileUrlsMap)[0];
                 if (firstUrl) {
                   tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                  if (selectedPlotId) tileUrlsMap[String(selectedPlotId)] = firstUrl;
                 }
               }
               setAllPlotsTileUrls(tileUrlsMap);
@@ -3351,7 +3382,7 @@ const App: React.FC = () => {
       setSoilStoredSeries(null);
       setGrowthCurrentData(null);
     }
-  }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage, selectedPlotId]); // Fetch when tab, location, or selected field plot changes
+  }, [activeTab, selectedDistrict, selectedSubdistrict, selectedVillage, selectedPlotId, selectedAnalysisFieldId]); // Fetch when tab, location, or selected field plot changes
 
   // Trends page: fetch stored time series from /api-stored/* GET endpoints
   useEffect(() => {
@@ -4138,7 +4169,8 @@ const App: React.FC = () => {
         !!leftSelectedVillage &&
         !!selectedPlotId &&
         isFieldPlotId(selectedPlotId)
-          ? Number(selectedPlotId)
+          ? (selectedAnalysisFieldId ??
+            resolveAnalysisFieldId(selectedPlotId, [...leftAllPlots, ...predictCropFieldPlots]))
           : null;
       const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
 
@@ -4291,7 +4323,10 @@ const App: React.FC = () => {
             if (Object.keys(tileUrlsMap).length > 0) {
               if (isFieldLevelAnalysis && selectedFieldId != null) {
                 const firstUrl = Object.values(tileUrlsMap)[0];
-                if (firstUrl) tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                if (firstUrl) {
+                  tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                  if (selectedPlotId) tileUrlsMap[String(selectedPlotId)] = firstUrl;
+                }
               }
               setLeftAllPlotsTileUrls(tileUrlsMap);
               setLeftShowTileLayers(true);
@@ -4485,7 +4520,7 @@ const App: React.FC = () => {
       setLeftAllPlotsTileUrls({});
       setLeftAllPlots([]);
     }
-  }, [splitScreenMode, leftActiveTab, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage, selectedPlotId]);
+  }, [splitScreenMode, leftActiveTab, leftSelectedDistrict, leftSelectedSubdistrict, leftSelectedVillage, selectedPlotId, selectedAnalysisFieldId]);
 
   // Fetch analysis data for right side (split screen mode)
   useEffect(() => {
@@ -4496,7 +4531,8 @@ const App: React.FC = () => {
         !!rightSelectedVillage &&
         !!selectedPlotId &&
         isFieldPlotId(selectedPlotId)
-          ? Number(selectedPlotId)
+          ? (selectedAnalysisFieldId ??
+            resolveAnalysisFieldId(selectedPlotId, [...rightAllPlots, ...predictCropFieldPlots]))
           : null;
       const isFieldLevelAnalysis = selectedFieldId != null && Number.isFinite(selectedFieldId);
 
@@ -4649,7 +4685,10 @@ const App: React.FC = () => {
             if (Object.keys(tileUrlsMap).length > 0) {
               if (isFieldLevelAnalysis && selectedFieldId != null) {
                 const firstUrl = Object.values(tileUrlsMap)[0];
-                if (firstUrl) tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                if (firstUrl) {
+                  tileUrlsMap[String(selectedFieldId)] = firstUrl;
+                  if (selectedPlotId) tileUrlsMap[String(selectedPlotId)] = firstUrl;
+                }
               }
               setRightAllPlotsTileUrls(tileUrlsMap);
               setRightShowTileLayers(true);
@@ -4843,7 +4882,7 @@ const App: React.FC = () => {
       setRightAllPlotsTileUrls({});
       setRightAllPlots([]);
     }
-  }, [splitScreenMode, rightActiveTab, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, selectedPlotId]);
+  }, [splitScreenMode, rightActiveTab, rightSelectedDistrict, rightSelectedSubdistrict, rightSelectedVillage, selectedPlotId, selectedAnalysisFieldId]);
 
   // Initialize left side data when split screen mode is activated
   useEffect(() => {
@@ -5639,33 +5678,41 @@ const App: React.FC = () => {
     [basePlots, predictCropFieldPlots, selectedCrops, showCropLayer, showVillageBoundary]
   );
 
-  /** Field-level analysis: keep crop layer on other fields; selected field shows analysis tile instead. */
+  /** Clicked field: drop crop fill only while an analysis layer (growth/water/soil/pest) is selected. */
   const fieldLevelAnalysisPlotId =
-    (activeTab === 'growth' || activeTab === 'water' || activeTab === 'soil' || activeTab === 'pest') &&
     selectedPlotId &&
     isFieldPlotId(selectedPlotId) &&
-    (
-      (activeTab === 'growth' && allPlotsAnalysisData?.growth) ||
-      (activeTab === 'water' && allPlotsAnalysisData?.water) ||
-      (activeTab === 'soil' && allPlotsAnalysisData?.soil) ||
-      (activeTab === 'pest' && allPlotsAnalysisData?.pest)
-    )
+    isFieldAnalysisTileTab(splitScreenMode ? leftActiveTab : activeTab)
       ? selectedPlotId
       : null;
 
   const mapFieldAreaByFieldId = useMemo(() => {
     if (!fieldLevelAnalysisPlotId) return predictAreaFieldAreas;
     const next = { ...predictAreaFieldAreas };
-    delete next[fieldLevelAnalysisPlotId];
+    const keys = [
+      fieldLevelAnalysisPlotId,
+      fieldLevelAnalysisPlotId.split('::')[0],
+      selectedAnalysisFieldId != null ? String(selectedAnalysisFieldId) : null,
+    ].filter((k): k is string => !!k);
+    keys.forEach((k) => {
+      delete next[k];
+    });
     return next;
-  }, [predictAreaFieldAreas, fieldLevelAnalysisPlotId]);
+  }, [predictAreaFieldAreas, fieldLevelAnalysisPlotId, selectedAnalysisFieldId]);
 
   const mapFieldFillByFieldId = useMemo(() => {
     if (!fieldLevelAnalysisPlotId) return predictFieldFillByFieldId;
     const next = { ...predictFieldFillByFieldId };
-    delete next[fieldLevelAnalysisPlotId];
+    const keys = [
+      fieldLevelAnalysisPlotId,
+      fieldLevelAnalysisPlotId.split('::')[0],
+      selectedAnalysisFieldId != null ? String(selectedAnalysisFieldId) : null,
+    ].filter((k): k is string => !!k);
+    keys.forEach((k) => {
+      delete next[k];
+    });
     return next;
-  }, [predictFieldFillByFieldId, fieldLevelAnalysisPlotId]);
+  }, [predictFieldFillByFieldId, fieldLevelAnalysisPlotId, selectedAnalysisFieldId]);
 
   // Helper function to get pixel data for a specific side
   const getCurrentPixelData = (side: 'left' | 'right' = 'left') => {
@@ -9904,20 +9951,23 @@ const App: React.FC = () => {
                 splitScreenMode ? showLeftVillageOwners : showVillageOwners
               }
               onSelectPlot={async (id) => {
-                const clickedFieldId = parseFieldPlotId(id);
-                if (clickedFieldId != null) {
+                const currentPlots = splitScreenMode ? leftAllPlots : plots;
+                const selectedPlot = currentPlots.find(p => p.id === id);
+                const analysisFieldId =
+                  parseFieldPlotId(String(selectedPlot?.fieldId || '')) ??
+                  resolveAnalysisFieldId(id, currentPlots);
+                const clickedPlotId = parseFieldPlotId(id);
+                if (clickedPlotId != null) {
                   setVillageCropPopup(null);
-                  setSelectedPlotId(String(clickedFieldId));
-                  const fieldTabs: AnalysisType[] = ['growth', 'water', 'soil', 'pest'];
-                  if (!activeTab || !fieldTabs.includes(activeTab)) {
-                    setActiveTab('growth');
-                  }
+                  setSelectedPlotId(id);
+                  setSelectedAnalysisFieldId(analysisFieldId);
                 } else {
                   setSelectedPlotId(id);
+                  setSelectedAnalysisFieldId(null);
                 }
 
                 if (
-                  clickedFieldId == null &&
+                  clickedPlotId == null &&
                   !selectedVillage &&
                   !splitScreenMode &&
                   isVillageOutlinePlotId(id) &&
@@ -9936,8 +9986,6 @@ const App: React.FC = () => {
                   return;
                 }
                 
-                const currentPlots = splitScreenMode ? leftAllPlots : plots;
-                const selectedPlot = currentPlots.find(p => p.id === id);
                 if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
                   return;
                 }
@@ -10007,8 +10055,14 @@ const App: React.FC = () => {
               etWeatherLoading={etWeatherLoading}
               tileUrl={getMapOverlayTileUrl('left')}
               plotBounds={plotBounds}
-              allPlotsTileUrls={splitScreenMode ? leftAllPlotsTileUrls : allPlotsTileUrls}
+              allPlotsTileUrls={tilesForActiveAnalysisLayer(
+                splitScreenMode ? leftAllPlotsTileUrls : allPlotsTileUrls,
+                splitScreenMode ? leftActiveTab : activeTab
+              )}
               showTileLayers={splitScreenMode ? leftShowTileLayers : showTileLayers}
+              showSelectedFieldAnalysisTile={isFieldAnalysisTileTab(
+                splitScreenMode ? leftActiveTab : activeTab
+              )}
               waterSources={waterSources}
               onSelectWaterSource={(id, data) => {
                 setSelectedWaterSource(id);
@@ -11406,8 +11460,12 @@ const App: React.FC = () => {
                 villagePlotMetaById={villagePlotMetaById}
                 showOwnerLabels={showRightVillageOwners}
                 onSelectPlot={async (id) => {
-                  setSelectedPlotId(id);
                   const selectedPlot = rightAllPlots.find(p => p.id === id);
+                  setSelectedPlotId(id);
+                  setSelectedAnalysisFieldId(
+                    parseFieldPlotId(String(selectedPlot?.fieldId || '')) ??
+                    resolveAnalysisFieldId(id, rightAllPlots)
+                  );
                   if (!selectedPlot || !selectedPlot.boundary || selectedPlot.boundary.length === 0) {
                     return;
                   }
@@ -11429,8 +11487,12 @@ const App: React.FC = () => {
                 }}
                 tileUrl={getMapOverlayTileUrl('right')}
                 plotBounds={plotBounds}
-                allPlotsTileUrls={rightAllPlotsTileUrls}
+                allPlotsTileUrls={tilesForActiveAnalysisLayer(
+                  rightAllPlotsTileUrls,
+                  rightActiveTab
+                )}
                 showTileLayers={rightShowTileLayers}
+                showSelectedFieldAnalysisTile={isFieldAnalysisTileTab(rightActiveTab)}
                 waterSources={waterSources}
                 onSelectWaterSource={setSelectedWaterSource}
                 windDirectPayload={null}
