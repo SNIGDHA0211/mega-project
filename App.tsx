@@ -8777,7 +8777,7 @@ const App: React.FC = () => {
                 ['pest', <Bug size={16} />],
                 ['waterSource', <Waves size={16} />],
                 ['forest', <Trees size={16} />],
-              ] as Array<[AnalysisType, JSX.Element]>).map(([tab, icon]) => (
+              ] as Array<[AnalysisType, React.ReactElement]>).map(([tab, icon]) => (
                 <button
                   key={tab}
                   type="button"
@@ -8949,15 +8949,6 @@ const App: React.FC = () => {
                 textColorOnBackground={textColorOnBackground}
               />
             )}
-          {!isMapFullscreen && showBuildingLayer && buildingData && (
-            <BuildingLayerCard
-              data={buildingData}
-              scopeLabel={buildingScopeLabel}
-              selectedClassId={selectedBuildingClassId}
-              onSelectClass={selectBuildingClass}
-              textColorOnBackground={textColorOnBackground}
-            />
-          )}
           {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
           {splitScreenMode && (
           <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
@@ -10079,7 +10070,8 @@ const App: React.FC = () => {
             />
             </>
           )}
-          {!splitScreenMode && (predictAreaMapCard || villageWiseMapCard) ? (
+          {!splitScreenMode &&
+          (predictAreaMapCard || villageWiseMapCard || (showBuildingLayer && buildingData)) ? (
             <div
               className="pointer-events-none"
               style={{
@@ -10092,8 +10084,6 @@ const App: React.FC = () => {
                 flexDirection: 'column',
                 alignItems: 'flex-end',
                 gap: 8,
-                maxHeight: 'calc(100% - 32px)',
-                overflowY: 'auto',
                 width: 'max-content',
                 maxWidth: 'min(20rem, calc(100% - 32px))',
               }}
@@ -10116,6 +10106,17 @@ const App: React.FC = () => {
                     loading={villageWiseMapCard.loading}
                     regionLabel={villageWiseMapCard.regionLabel}
                     rows={villageWiseMapCard.rows}
+                  />
+                </div>
+              ) : null}
+              {showBuildingLayer && buildingData ? (
+                <div className="pointer-events-auto" style={{ width: '100%' }}>
+                  <BuildingLayerCard
+                    data={buildingData}
+                    scopeLabel={buildingScopeLabel}
+                    selectedClassId={selectedBuildingClassId}
+                    onSelectClass={selectBuildingClass}
+                    textColorOnBackground={textColorOnBackground}
                   />
                 </div>
               ) : null}
