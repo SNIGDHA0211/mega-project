@@ -17,7 +17,9 @@ import PercentageAreaPieChart from './components/PercentageAreaPieChart';
 import VillageCropAreaPopup from './components/VillageCropAreaPopup';
 import PredictAreaMapCard from './components/PredictAreaMapCard';
 import SubdistrictVillageWiseCard from './components/SubdistrictVillageWiseCard';
+import TopNavBar from './components/TopNavBar';
 import { LoginPage } from './components/LoginPage';
+import LoginTransitionFlash from './components/LoginTransitionFlash';
 import { 
   fetchDistricts, 
   fetchSubdistricts, 
@@ -107,7 +109,7 @@ import {
   DASHBOARD_INDEX_CARD_COLORS_HEX,
   type DashboardIndexKey,
 } from './utils/dashboardIndicesConfig';
-import { MdFullscreen, MdFullscreenExit, MdModeNight, MdLightMode } from 'react-icons/md';
+import { MdFullscreen, MdFullscreenExit } from 'react-icons/md';
 // GiUpgrade icon removed (no auto-open pest)
 
 /** Merged into allPlotsTileUrls when user clicks a Water Uptake %/area card (classwise tile_url); drawn on top in PlotsMap */
@@ -341,20 +343,24 @@ const buildClasswiseTabSnapshot = (response: GrowthAnalysisWithStoredResponse): 
 };
 
 const App: React.FC = () => {
-  // Authentication state - load from localStorage on mount
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const savedAuth = localStorage.getItem('isAuthenticated');
-      return savedAuth === 'true';
+  // Always start at login — district splash only after successful credentials
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<string>('');
+
+  /** Only true after login succeeds; never on first paint */
+  const [showLoginFlash, setShowLoginFlash] = useState(false);
+  const loginFlashCompleteRef = useRef<() => void>(() => {});
+  loginFlashCompleteRef.current = () => setShowLoginFlash(false);
+
+  // Clear any leftover session so refresh always shows login first
+  useEffect(() => {
+    try {
+      localStorage.removeItem('isAuthenticated');
+      localStorage.removeItem('currentUser');
+    } catch {
+      /* ignore */
     }
-    return false;
-  });
-  const [currentUser, setCurrentUser] = useState<string>(() => {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      return localStorage.getItem('currentUser') || '';
-    }
-    return '';
-  });
+  }, []);
 
   // State for districts
   const [districts, setDistricts] = useState<Array<{district: string; geometry?: any}>>([]);
@@ -5835,10 +5841,10 @@ const App: React.FC = () => {
   // Location name for Daily Weather card header: village, or subdistrict, or district
   const getWeatherCardLocationName = (side: 'left' | 'right' = 'left'): string => {
     if (!splitScreenMode) {
-      return selectedVillage || selectedSubdistrict || selectedDistrict || 'â€”';
+      return selectedVillage || selectedSubdistrict || selectedDistrict || '—';
     }
-    if (side === 'left') return leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || 'â€”';
-    return rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || 'â€”';
+    if (side === 'left') return leftSelectedVillage || leftSelectedSubdistrict || leftSelectedDistrict || '—';
+    return rightSelectedVillage || rightSelectedSubdistrict || rightSelectedDistrict || '—';
   };
 
   // Helper function to calculate area cards for a specific side
@@ -6148,12 +6154,21 @@ const App: React.FC = () => {
     // Save to localStorage
     localStorage.setItem('isAuthenticated', 'true');
     localStorage.setItem('currentUser', user);
+    // Splash with district tabs on login background
+    setSelectedDistrict('');
+    setSelectedSubdistrict('');
+    setSelectedVillage('');
+    setShowLoginFlash(true);
   };
 
   // Handle logout
   const handleLogout = () => {
     setIsAuthenticated(false);
     setCurrentUser('');
+    setShowLoginFlash(false);
+    setSelectedDistrict('');
+    setSelectedSubdistrict('');
+    setSelectedVillage('');
     // Clear localStorage
     localStorage.removeItem('isAuthenticated');
     localStorage.removeItem('currentUser');
@@ -6166,6 +6181,18 @@ const App: React.FC = () => {
 
   return (
     <div className={`flex flex-col h-screen w-full font-sans overflow-hidden relative ${isDarkMode ? 'bg-gray-900 text-gray-100' : 'bg-[#eaf6f0] text-gray-900'} ${!isDarkMode ? 'theme-white' : ''}`}>
+      {showLoginFlash && (
+        <LoginTransitionFlash
+          districts={districts}
+          districtsLoading={districts.length === 0}
+          onSelectDistrict={(name) => {
+            setSelectedDistrict(name);
+            setSelectedSubdistrict('');
+            setSelectedVillage('');
+          }}
+          onComplete={() => loginFlashCompleteRef.current()}
+        />
+      )}
       {/* Bar Graph page - full screen when opened from header icon */}
       {false ? (
         <div className={`flex-1 flex flex-col overflow-auto ${isDarkMode ? 'bg-gray-900' : 'bg-[#eaf6f0]'}`}>
@@ -6611,10 +6638,10 @@ const App: React.FC = () => {
                                               flexWrap: 'wrap',
                                               justifyContent: 'center',
                                               alignItems: 'center',
-                                              gap: '6px 12px',
-                                              rowGap: '8px',
+                                              gap: '8px 14px',
+                                              rowGap: '10px',
                                               maxWidth: '100%',
-                                              fontSize: 10,
+                                              fontSize: 13,
                                             }}
                                           >
                                             {(payload ?? []).map(
@@ -6627,23 +6654,24 @@ const App: React.FC = () => {
                                                     <button
                                                       type="button"
                                                       onClick={() => toggleIndicesYearHighlight(yk)}
-                                                      title="Highlight this year on the chart (others stay visible, dimmed). Click again to clear."
-                                                      className="inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
+                                                      title="Click year to focus. Click again to show all years."
+                                                      className="inline-flex items-center gap-2 bg-transparent border-0 p-0 cursor-pointer"
                                                       style={{ opacity: dimmed ? 0.4 : 1 }}
                                                     >
                                                       <span
                                                         style={{
-                                                          width: 14,
-                                                          height: 3,
+                                                          width: 22,
+                                                          height: 5,
                                                           backgroundColor: entry.color,
-                                                          borderRadius: 1,
+                                                          borderRadius: 2,
                                                           flexShrink: 0,
                                                         }}
                                                       />
                                                       <span
                                                         style={{
                                                           color: isDarkMode ? '#e7e5e4' : '#57534e',
-                                                          fontWeight: indicesLegendHighlightedYear === yk ? 700 : 500,
+                                                          fontWeight: indicesLegendHighlightedYear === yk ? 700 : 600,
+                                                          fontSize: 13,
                                                         }}
                                                       >
                                                         {entry.value}
@@ -6723,374 +6751,170 @@ const App: React.FC = () => {
         </div>
       ) : (
         <>
-      {/* Top strip: dark mode header; white mode thin border only */}
-      {isDarkMode ? (
-      <header className={`flex-shrink-0 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 md:gap-3 px-4 md:px-6 py-2 border-b z-20 ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-emerald-100 bg-[#eaf6f0]'}`}>
-        <div className="justify-self-start min-w-0" />
+      <TopNavBar
+        isDarkMode={isDarkMode}
+        activeView={showGraphPage || showAnalysisTrendsPage ? 'dashboard' : 'map'}
+        onMapExplore={() => {
+          setShowGraphPage(false);
+          setShowAnalysisTrendsPage(false);
+          setFullscreenAnalysisTrendCard(null);
+          setShowGraphFrequencyDropdown(false);
+        }}
+        onDashboard={() => {
+          setShowGraphPage(true);
+          setShowAnalysisTrendsPage(false);
+          setFullscreenAnalysisTrendCard(null);
+          setShowGraphFrequencyDropdown(true);
+          setSidebarVisible(false);
+        }}
+        weatherData={weatherDailyData}
+        weatherLoading={weatherDailyLoading}
+        weatherError={weatherDailyError}
+        weatherLocation={getWeatherCardLocationName('left')}
+        showDownloadMenu={showDownloadMenu}
+        onToggleDownloadMenu={() => setShowDownloadMenu((p) => !p)}
+        onDownloadPdf={() => {
+          setShowDownloadMenu(false);
+          downloadChartPDF();
+        }}
+        onDownloadExcel={() => {
+          setShowDownloadMenu(false);
+          downloadChartExcel();
+        }}
+        onLogout={handleLogout}
+      />
 
-        <div className="justify-self-center min-w-0 max-w-[min(100vw-12rem,52rem)] flex justify-center">
-          {!splitScreenMode && (
-            <div className="flex gap-1 md:gap-1.5 bg-black/40 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto scrollbar-hide">
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('growth', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Growth (click again to hide)"
-              >
-                <Sprout size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('water', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Water Uptake (click again to hide)"
-              >
-                <Droplets size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('soil', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Soil Moisture (click again to hide)"
-              >
-                <Droplet size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('pest', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Pest (click again to hide)"
-              >
-                <Bug size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('waterSource', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'waterSource' ? 'bg-blue-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Water Source (click again to hide)"
-              >
-                <Waves size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleActiveTabForSide('forest', 'left')}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  getActiveTab('left') === 'forest' ? 'bg-lime-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Forest (click again to hide)"
-              >
-                <Trees size={16} />
-              </button>
-              <div
-                onClick={async () => {
-                  if (lstTileUrl) {
-                    clearLstTileLayer();
-                    return;
-                  }
-                  if (lstLoading || loading || !selectedDistrict) return;
-                  lstClosedByUserRef.current = false;
-                  try {
-                    setLstLoading(true);
-                    setError(null);
-                    const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                    if (lstClosedByUserRef.current) return;
-                    if (response.tile_url) {
-                      setLstTileUrl(response.tile_url);
-                      setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                      setShowTileLayers(true);
-                    } else {
-                      throw new Error('No tile_url in response');
-                    }
-                  } catch (err) {
-                    if (lstClosedByUserRef.current) return;
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                    setLstTileUrl(null);
-                  } finally {
-                    setLstLoading(false);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                className={`px-1.5 py-1 rounded-md border-2 transition-all duration-200 flex items-center shrink-0 ${
-                  (lstTileUrl || (selectedDistrict && !lstLoading && !loading))
-                    ? 'cursor-pointer hover:border-green-500 hover:bg-gray-600'
-                    : 'cursor-not-allowed opacity-50'
-                } ${lstTileUrl ? 'bg-green-600/20 border-green-500' : 'bg-gray-700 border-gray-600'}`}
-                title="Land Surface Temperature (click again to hide)"
-              >
-                <Thermometer size={18} strokeWidth={2.2} className="shrink-0" />
-              </div>
-              {/* After temperature: split, download, 9-graphs, analysis trends (Home removed) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowGraphPage(false);
-                  setShowAnalysisTrendsPage(false);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphFrequencyDropdown(false);
-                  setSplitScreenMode((p) => !p);
-                }}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  splitScreenMode ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="Split screen"
-              >
-                <Columns size={16} />
-              </button>
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                  className="px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] text-gray-300 hover:bg-gray-700"
-                  title="Download"
-                >
-                  <Download size={16} />
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (showGraphPage) {
-                    setShowGraphPage(false);
-                    setShowGraphFrequencyDropdown(false);
-                    return;
-                  }
-                  setShowGraphPage(true);
-                  setShowAnalysisTrendsPage(false);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphFrequencyDropdown(true);
-                }}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  showGraphPage ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="9 graphs dashboard"
-              >
-                <LineChartIcon size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (showAnalysisTrendsPage) {
-                    setShowAnalysisTrendsPage(false);
-                    setFullscreenAnalysisTrendCard(null);
-                    return;
-                  }
-                  setShowAnalysisTrendsPage(true);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphPage(false);
-                  setShowGraphFrequencyDropdown(false);
-                }}
-                className={`px-1.5 py-1 rounded-md transition-colors flex items-center justify-center shrink-0 min-w-[32px] ${
-                  showAnalysisTrendsPage ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                }`}
-                title="All-date analysis trends"
-              >
-                <BarChart3 size={16} />
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 md:gap-2 justify-self-end">
-          <button
-            type="button"
-            onClick={() => {
-              if (splitScreenMode) return;
-              setUseEarthViewMap((v) => !v);
-            }}
-            disabled={splitScreenMode}
-            className={`p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
-              splitScreenMode
-                ? 'cursor-not-allowed opacity-40 border-gray-600 bg-gray-800 text-gray-500'
-                : useEarthViewMap
-                  ? 'bg-cyan-600/30 border-cyan-400 text-cyan-200 hover:bg-cyan-600/40'
-                  : 'bg-gray-800 border-white/40 text-white hover:bg-gray-700'
+      <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
+        {/* Slide-out configuration menu (overlay — does not resize main content) */}
+        {(() => {
+          const isDashboardView = showGraphPage || showAnalysisTrendsPage;
+          const sidebarOpen = sidebarVisible;
+          const toolBtnBase = (active: boolean, activeClass: string) =>
+            `w-9 h-9 rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
+              active
+                ? activeClass
+                : isDarkMode
+                  ? 'bg-slate-800/90 border-gray-600 text-gray-200 hover:bg-slate-700'
+                  : 'bg-white border-emerald-100 text-gray-900 hover:bg-emerald-50'
+            }`;
+          return (
+        <div
+          className={`sidebar-slide-panel absolute inset-y-0 left-0 z-[40] w-[min(100%,16rem)] ${
+            sidebarOpen ? 'sidebar-slide-panel-open' : 'sidebar-slide-panel-closed'
+          }`}
+        >
+          <aside
+            className={`relative h-full w-full flex flex-col overflow-hidden border-r shadow-xl ${
+              isDarkMode ? 'border-gray-700' : 'border-emerald-100'
             }`}
-            title={splitScreenMode ? 'Google Earth: available in single view' : useEarthViewMap ? 'Switch to map view' : 'Google Earth + crop card'}
-          >
-            <Globe2 size={18} />
-          </button>
-          {splitScreenMode && (
-            <button
-              type="button"
-              onClick={() => setSplitScreenMode(false)}
-              className="p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 bg-emerald-600/30 border-emerald-400 text-emerald-200 hover:bg-emerald-600/40"
-              title="Exit split screen"
-            >
-              <Columns size={18} />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setIsDarkMode((prev) => !prev)}
-            className={`p-2 rounded-lg border transition-all flex items-center justify-center w-9 h-9 shrink-0 ${
-              isDarkMode
-                ? 'bg-gray-800 border-white/40 text-white hover:bg-gray-700'
-                : 'bg-white border-gray-300 text-gray-800 hover:bg-gray-100'
-            }`}
-            title={isDarkMode ? 'Switch to White Mode' : 'Switch to Dark Mode'}
-          >
-            {isDarkMode ? <MdLightMode size={18} /> : <MdModeNight size={18} />}
-          </button>
-          {/* Download - right side */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-              className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-gray-700 transition-all flex items-center justify-center w-9 h-9 shrink-0"
-              title="Download Data"
-            >
-              <Download size={18} />
-            </button>
-            {showDownloadMenu && (
-              <>
-                <div className="fixed inset-0 z-[998]" onClick={() => setShowDownloadMenu(false)} />
-                <div className="absolute right-0 top-full mt-2 bg-black/90 backdrop-blur-sm rounded-md border border-gray-600 shadow-xl overflow-hidden z-[1000] min-w-[120px]">
-                  <button
-                    type="button"
-                    onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
-                    className="w-full px-3 py-2 text-white hover:bg-red-500/30 hover:text-red-300 flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <FileText size={16} />
-                    <span className="text-xs">PDF</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
-                    className="w-full px-3 py-2 text-white hover:bg-green-500/30 hover:text-green-300 flex items-center justify-center gap-2 transition-colors border-t border-gray-600/50"
-                  >
-                    <FileSpreadsheet size={16} />
-                    <span className="text-xs">Excel</span>
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-          {/* Logout - right side */}
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="p-2 rounded-lg bg-gray-800 border border-white/40 text-white hover:bg-red-600/30 hover:border-red-500/50 transition-all flex items-center justify-center w-9 h-9 shrink-0"
-            title="Logout"
-          >
-            <LogOut size={18} />
-          </button>
-        </div>
-      </header>
-      ) : (
-        <div className="flex-shrink-0 h-2 bg-emerald-100 w-full" />
-      )}
-
-      <div className="relative flex h-full min-h-0 flex-1">
-        {/* Mobile Overlay when sidebar is visible */}
-        {sidebarVisible && (
-          <div 
-            className="md:hidden fixed inset-0 bg-black/50 z-[9]"
-            onClick={() => setSidebarVisible(false)}
-          />
-        )}
-        
-        {/* Sidebar - no header inside; starts with CONFIGURATION */}
-        {sidebarVisible && (
-          <aside 
-            className="w-full md:w-64 md:max-w-64 flex-shrink-0 min-w-0 border-r border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
             style={{
-              // White mode: mint canvas behind the configuration card (like your screenshot)
               backgroundColor: isDarkMode ? '#0f172a' : '#eaf6f0',
-              backgroundImage: 'none',
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-              backgroundRepeat: 'no-repeat'
             }}
+            aria-hidden={!sidebarOpen}
           >
-            {/* Overlay for better text readability */}
-            {isDarkMode && <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>}
-            
-            <div ref={sidebarScrollRef} className="relative z-10 flex flex-col h-full flex-1 overflow-y-auto p-4 space-y-4 pt-4">
-              {/* Sidebar branding (Type-2) */}
-              {!isDarkMode && (
-                <div className="px-1">
-                  <div className="leading-none font-extrabold text-[28px] tracking-tight">
-                    <span className="text-emerald-800">Nearlive</span>
-                    <br />
-                    <span className="text-emerald-500">Crop</span>
-                    <br />
-                    <span className="text-emerald-400">Monitoring</span>
-                  </div>
-                  <div className="mt-2 text-[10px] tracking-[0.35em] font-semibold text-slate-500">
-                    PRECISION INTELLIGENCE
+            {isDarkMode && <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm pointer-events-none" />}
+
+            <div ref={sidebarScrollRef} className="sidebar-scroll relative z-10 min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 pt-4">
+              {/* Map tools — top of sidebar (growth first, then layer icons) */}
+              {!isDashboardView && (
+                <div className={!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-3' : 'rounded-xl border border-gray-700 p-3'}>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {([
+                        ['growth', <Sprout size={15} />],
+                        ['water', <Droplets size={15} />],
+                        ['soil', <Droplet size={15} />],
+                        ['pest', <Bug size={15} />],
+                      ] as Array<[AnalysisType, React.ReactElement]>).map(([tab, icon]) => (
+                        <button
+                          key={tab}
+                          type="button"
+                          onClick={() => toggleActiveTabForSide(tab, 'left')}
+                          className={toolBtnBase(getActiveTab('left') === tab, 'bg-emerald-500 text-black border-emerald-300')}
+                          title={String(tab)}
+                        >
+                          {icon}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowWindFlowLayer((v) => !v)}
+                        disabled={!windDirectData?.points_weather?.length}
+                        className={`${toolBtnBase(
+                          !!(showWindFlowLayer && windDirectData?.points_weather?.length),
+                          isDarkMode ? 'bg-sky-700/95 border-sky-500 text-white shadow-md' : 'bg-sky-600 text-white border-sky-700 shadow-md'
+                        )} disabled:opacity-45 disabled:cursor-not-allowed`}
+                        title={
+                          !windDirectData?.points_weather?.length
+                            ? 'Wind flow: select a district and wait for AOI wind data'
+                            : showWindFlowLayer
+                              ? 'Hide wind flow'
+                              : 'Show wind flow'
+                        }
+                        aria-pressed={showWindFlowLayer}
+                      >
+                        <Wind size={16} strokeWidth={2.2} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleActiveTabForSide('waterSource', 'left')}
+                        className={toolBtnBase(getActiveTab('left') === 'waterSource', 'bg-blue-500 text-black border-blue-300')}
+                        title="Water Source (click again to hide)"
+                      >
+                        <Waves size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleActiveTabForSide('forest', 'left')}
+                        className={toolBtnBase(getActiveTab('left') === 'forest', 'bg-lime-500 text-black border-lime-300')}
+                        title="Forest (click again to hide)"
+                      >
+                        <Trees size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (lstTileUrl) {
+                            clearLstTileLayer();
+                            return;
+                          }
+                          if (lstLoading || loading || !selectedDistrict) return;
+                          lstClosedByUserRef.current = false;
+                          try {
+                            setLstLoading(true);
+                            setError(null);
+                            const response = await fetchLandSurfaceTemperature(selectedDistrict);
+                            if (lstClosedByUserRef.current) return;
+                            if (response.tile_url) {
+                              setLstTileUrl(response.tile_url);
+                              setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
+                              setShowTileLayers(true);
+                            } else {
+                              throw new Error('No tile_url in response');
+                            }
+                          } catch (err) {
+                            if (lstClosedByUserRef.current) return;
+                            const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                            setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
+                            setLstTileUrl(null);
+                          } finally {
+                            setLstLoading(false);
+                          }
+                        }}
+                        disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
+                        className={`${toolBtnBase(!!lstTileUrl, 'bg-orange-500 text-white border-orange-600 shadow-md')} disabled:opacity-45 disabled:cursor-not-allowed`}
+                        title="Land Surface Temperature (click again to hide)"
+                      >
+                        <Thermometer size={16} strokeWidth={2.2} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
 
               <div className={!isDarkMode ? 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-4' : ''}>
-                {showGraphPage && showGraphFrequencyDropdown && (
-                  <div className={`${isDarkMode ? 'bg-gray-800/60' : 'bg-white'} rounded-xl border ${isDarkMode ? 'border-gray-700' : 'border-emerald-100'} p-3 mb-3`}>
-                    <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white' : 'text-slate-700'}`}>
-                      Frequency
-                    </div>
-                    <select
-                      value={dashboardIndicesFrequency}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setDashboardIndicesFrequency(v === '' ? '' : (v as DashboardIndicesFrequency));
-                      }}
-                      className={`mt-2 w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                        isDarkMode
-                          ? 'bg-gray-700 border border-gray-600 text-white'
-                          : 'bg-white border border-emerald-100 text-slate-800'
-                      }`}
-                    >
-                      <option value=""></option>
-                      <option value="weekly">Weekly</option>
-                      <option value="monthly">Monthly</option>
-                      <option value="yearly">Yearly</option>
-                    </select>
-                    <div className={`mt-2 text-[10px] ${isDarkMode ? 'text-gray-300' : 'text-slate-500'}`}>
-                      (Graphs will update for this frequency.)
-                    </div>
-                    {(dashboardIndicesFrequency === 'weekly' || dashboardIndicesFrequency === 'monthly') && (
-                      <div className="mt-3 pt-3 border-t border-dashed border-gray-600/60">
-                        <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-300' : 'text-slate-600'}`}>
-                          Year lines
-                        </div>
-                        <button
-                          type="button"
-                          onClick={clearIndicesYearHighlight}
-                          disabled={indicesLegendHighlightedYear === null}
-                          className={`w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            indicesLegendHighlightedYear === null
-                              ? isDarkMode
-                                ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
-                                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                              : isDarkMode
-                                ? 'bg-emerald-800/80 text-emerald-100 hover:bg-emerald-700 border border-emerald-600'
-                                : 'bg-emerald-600 text-white hover:bg-emerald-700 border border-emerald-500'
-                          }`}
-                          title="Remove highlight — all years stay visible with equal emphasis"
-                        >
-                          Clear highlight
-                        </button>
-                        {indicesLegendHighlightedYear !== null && (
-                          <p className={`mt-2 text-[10px] leading-snug ${isDarkMode ? 'text-emerald-200/90' : 'text-emerald-900'}`}>
-                            <span className="font-semibold">{indicesLegendHighlightedYear}</span> is emphasized; other years are dimmed. All lines remain on the chart.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
                 <div className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white mb-3' : 'text-slate-400 mb-3'}`}>
                   CONFIGURATION
                 </div>
@@ -7129,7 +6953,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* District Dropdown */}
+          {/* District Dropdown — tabs are on login splash only */}
           <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
               Select District
@@ -7359,15 +7183,9 @@ const App: React.FC = () => {
 
               </div>
 
-          {/* Total Area Card */}
+          {/* Total Area — label + green disk, no white card */}
           {getSelectedDistrict('left') && (
-            <div
-              className={
-                isDarkMode
-                  ? 'p-4 bg-gray-700 rounded-lg border border-gray-600'
-                  : 'bg-white rounded-2xl border border-emerald-100 shadow-sm p-4'
-              }
-            >
+            <div className="px-0.5 py-1">
               <div
                 className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   isDarkMode ? 'text-gray-400' : 'text-slate-500'
@@ -7376,16 +7194,22 @@ const App: React.FC = () => {
                 {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
               </div>
               {selectedPlotArea !== null ? (
-                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
-                  {selectedPlotArea.toFixed(2)} ha
+                <div className="area-value-row">
+                  <div className="area-disk" title="Area">
+                    <img src="/images/Areadise.png" alt="" className="area-disk-img" draggable={false} />
+                    <span className="area-disk-label">{selectedPlotArea.toFixed(2)} ha</span>
+                  </div>
                 </div>
               ) : getTotalAreaLoading('left') ? (
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className={`animate-spin ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} size={20} />
                 </div>
               ) : getTotalAreaHectares('left') !== null && getTotalAreaHectares('left') !== undefined ? (
-                <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-emerald-700'}`}>
-                  {getTotalAreaHectares('left')!.toFixed(2)} ha
+                <div className="area-value-row">
+                  <div className="area-disk" title="Total Area">
+                    <img src="/images/Areadise.png" alt="" className="area-disk-img" draggable={false} />
+                    <span className="area-disk-label">{getTotalAreaHectares('left')!.toFixed(2)} ha</span>
+                  </div>
                 </div>
               ) : (
                 <div className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-400'}`}>
@@ -7450,8 +7274,8 @@ const App: React.FC = () => {
           )}
             </div>
             
-            {/* Logout Button at Bottom */}
-            <div className="p-1 border-t border-gray-700 bg-gray-900/50">
+            {/* Logout Button at Bottom — pinned outside scrubber */}
+            <div className={`relative z-10 flex-shrink-0 p-1 border-t ${isDarkMode ? 'border-gray-700 bg-gray-900/50' : 'border-emerald-100 bg-white/80'}`}>
               <button
                 onClick={handleLogout}
                 // className="w-full logout-btn px-1 py-0.5 rounded text-[10px] transition-colors flex items-center justify-center gap-0.5 bg-red-600/20 hover:bg-red-600/30 border border-red-700/50 hover:border-red-600 text-red-300 hover:text-red-200"
@@ -7461,10 +7285,26 @@ const App: React.FC = () => {
                 {/* <span className="text-[10px]">Logout</span> */}
               </button>
             </div>
-      </aside>
-      )}
+          </aside>
 
-      {/* Home Icon Toggle Button removed (do not display) */}
+          {/* Edge toggle handle — stays reachable when menu is collapsed */}
+          <button
+            type="button"
+            className={`sidebar-slide-handle ${isDarkMode ? 'sidebar-slide-handle-dark' : 'sidebar-slide-handle-light'}`}
+            onClick={() => setSidebarVisible((p) => !p)}
+            title={sidebarOpen ? 'Hide menu' : 'Show menu'}
+            aria-label={sidebarOpen ? 'Hide menu' : 'Show menu'}
+            aria-expanded={sidebarOpen}
+          >
+            {sidebarOpen ? (
+              <ChevronLeft size={18} strokeWidth={2.25} />
+            ) : (
+              <ChevronRight size={18} strokeWidth={2.25} />
+            )}
+          </button>
+        </div>
+          );
+        })()}
 
       {/* Main Map Area - Shows two maps in split screen mode; scroll at 1440/1024 so map is viewable */}
       <main
@@ -7496,52 +7336,122 @@ const App: React.FC = () => {
                     : 'flex-1 min-h-[calc(100vh-140px)]'
           }`}
         >
-          {showGraphPage && (
-            <div
-              className="absolute inset-0 z-[1200] flex items-stretch justify-stretch p-2 md:p-3 bg-black/35 backdrop-blur-[1px]"
-              onClick={() => {
-                setShowGraphPage(false);
-                setShowGraphFrequencyDropdown(false);
-              }}
-            >
-              <div
-                className={`relative flex flex-col flex-1 min-h-0 w-full overflow-hidden rounded-2xl border shadow-2xl ${
-                  isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-[#eaf6f0] border-emerald-100'
-                }`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div
-                  className={`flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b ${
-                    isDarkMode ? 'border-gray-700 bg-gray-800/90' : 'border-emerald-100 bg-white/90'
+          {(showGraphPage || showAnalysisTrendsPage) && (
+            <div className={`relative flex flex-col flex-1 min-h-0 w-full ${isDarkMode ? 'bg-gray-950' : 'bg-[#eaf6f0]'}`}>
+              {/* Graph switcher + frequency — one header row (no overlap on cards) */}
+              <div className="absolute top-3 left-3 right-3 z-[20] flex flex-wrap items-center gap-2 sm:top-4 sm:left-4 sm:right-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAnalysisTrendsPage(true);
+                    setShowGraphPage(false);
+                    setFullscreenAnalysisTrendCard(null);
+                    setShowGraphFrequencyDropdown(false);
+                    setSidebarVisible(true);
+                  }}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
+                    showAnalysisTrendsPage
+                      ? 'bg-emerald-500 text-black border-emerald-300'
+                      : isDarkMode
+                        ? 'bg-gray-700/90 text-gray-200 border-gray-600 hover:bg-gray-600'
+                        : 'bg-white text-gray-900 border-emerald-100 hover:bg-emerald-50'
                   }`}
+                  title="Analysis trends (opens sidebar)"
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <LineChartIcon size={16} className={isDarkMode ? 'text-emerald-300' : 'text-emerald-700'} />
-                    <span className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>
-                      Indices graphs
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowGraphPage(false);
-                      setShowGraphFrequencyDropdown(false);
-                    }}
-                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-                      isDarkMode
-                        ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
-                        : 'border-emerald-200 bg-white text-slate-800 hover:bg-emerald-50'
+                  <BarChart3 size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGraphPage(true);
+                    setShowAnalysisTrendsPage(false);
+                    setFullscreenAnalysisTrendCard(null);
+                    setShowGraphFrequencyDropdown(true);
+                  }}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
+                    showGraphPage
+                      ? 'bg-emerald-500 text-black border-emerald-300'
+                      : isDarkMode
+                        ? 'bg-gray-700/90 text-gray-200 border-gray-600 hover:bg-gray-600'
+                        : 'bg-white text-gray-900 border-emerald-100 hover:bg-emerald-50'
+                  }`}
+                  title="Indices graphs"
+                >
+                  <LineChartIcon size={18} />
+                </button>
+                {showGraphPage && !!dashboardIndicesFrequency && (
+                  <div
+                    className={`flex items-center gap-1 p-1 rounded-xl border shrink-0 ${
+                      isDarkMode ? 'border-gray-700 bg-gray-800/90' : 'border-emerald-100 bg-white shadow-sm'
                     }`}
-                    title="Close"
                   >
-                    Close
-                  </button>
-                </div>
+                    {([
+                      ['weekly', 'Weekly'],
+                      ['monthly', 'Monthly'],
+                      ['yearly', 'Yearly'],
+                    ] as Array<[DashboardIndicesFrequency, string]>).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => {
+                          if (dashboardIndicesFrequency === value) return;
+                          clearIndicesYearHighlight();
+                          setDashboardIndicesFrequency(value);
+                        }}
+                        className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                          dashboardIndicesFrequency === value
+                            ? isDarkMode
+                              ? 'bg-emerald-500 text-gray-900'
+                              : 'bg-emerald-600 text-white shadow-sm'
+                            : isDarkMode
+                              ? 'text-gray-300 hover:bg-gray-700/80'
+                              : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-800'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+          {showGraphPage && (
+            <div className="relative flex flex-col flex-1 min-h-0 w-full overflow-hidden">
               <div className="min-h-0 flex-1 overflow-auto">
-                <div className="flex-1 p-4 md:p-6 overflow-auto">
+                <div className="flex-1 pt-16 px-4 pb-4 md:pt-[4.5rem] md:px-6 md:pb-6 overflow-auto">
                   {!selectedDistrict ? (
-                    <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
-                      <p className="text-gray-400">Select District, then choose Frequency to load indices data. Subdistrict and Village are optional filters.</p>
+                    <div className={`w-full max-w-4xl mx-auto rounded-lg p-8 text-center border ${
+                      isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
+                    }`}>
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-slate-600'}>
+                        Select District, then choose Frequency to load indices data. Subdistrict and Village are optional filters.
+                      </p>
+                    </div>
+                  ) : !dashboardIndicesFrequency ? (
+                    <div className="w-full flex justify-center px-4 pt-6 md:pt-10">
+                      <div className="frequency-pick-card frequency-pick-card-flash w-full max-w-xl mx-auto rounded-2xl p-6 md:p-8 text-center border border-emerald-800/60 shadow-lg">
+                        <p className="mb-5 text-base md:text-lg font-semibold leading-snug text-white">
+                          Select Frequency to load indices. Subdistrict and Village can be selected to further filter data.
+                        </p>
+                        <div className="inline-flex items-center gap-1.5 p-1.5 rounded-xl border border-white/25 bg-black/20">
+                          {([
+                            ['weekly', 'Weekly'],
+                            ['monthly', 'Monthly'],
+                            ['yearly', 'Yearly'],
+                          ] as Array<[DashboardIndicesFrequency, string]>).map(([value, label]) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => {
+                                clearIndicesYearHighlight();
+                                setDashboardIndicesFrequency(value);
+                              }}
+                              className="px-5 py-2.5 rounded-lg text-base font-bold text-white transition-colors hover:bg-white/20"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   ) : dashboardIndicesLoading ? (
                     <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 flex flex-col items-center justify-center gap-3">
@@ -7850,10 +7760,10 @@ const App: React.FC = () => {
                                                     flexWrap: 'wrap',
                                                     justifyContent: 'center',
                                                     alignItems: 'center',
-                                                    gap: '6px 12px',
-                                                    rowGap: '8px',
+                                                    gap: '8px 14px',
+                                                    rowGap: '10px',
                                                     maxWidth: '100%',
-                                                    fontSize: isSplitFullscreen ? 8 : 11,
+                                                    fontSize: isSplitFullscreen ? 11 : 13,
                                                   }}
                                                 >
                                                   {(payload ?? []).map(
@@ -7869,23 +7779,24 @@ const App: React.FC = () => {
                                                           <button
                                                             type="button"
                                                             onClick={() => toggleIndicesYearHighlight(yk)}
-                                                            title="Highlight this year (all years stay on chart). Click again to clear."
-                                                            className="inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
+                                                            title="Click year to focus. Click again to show all years."
+                                                            className="inline-flex items-center gap-2 bg-transparent border-0 p-0 cursor-pointer"
                                                             style={{ opacity: dimmed ? 0.4 : 1 }}
                                                           >
                                                             <span
                                                               style={{
-                                                                width: 14,
-                                                                height: 3,
+                                                                width: isSplitFullscreen ? 18 : 22,
+                                                                height: isSplitFullscreen ? 4 : 5,
                                                                 backgroundColor: entry.color,
-                                                                borderRadius: 1,
+                                                                borderRadius: 2,
                                                                 flexShrink: 0,
                                                               }}
                                                             />
                                                             <span
                                                               style={{
                                                                 color: isDarkMode ? '#e7e5e4' : '#57534e',
-                                                                fontWeight: indicesLegendHighlightedYear === yk ? 700 : 500,
+                                                                fontWeight: indicesLegendHighlightedYear === yk ? 700 : 600,
+                                                                fontSize: isSplitFullscreen ? 11 : 13,
                                                               }}
                                                             >
                                                               {entry.value}
@@ -8094,33 +8005,6 @@ const App: React.FC = () => {
                               {idxMetaFull.note ? <p className="mt-1 text-gray-400">{idxMetaFull.note}</p> : null}
                             </div>
                           )}
-                          {(dashboardIndicesFrequency === 'weekly' || dashboardIndicesFrequency === 'monthly') && (
-                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-600 bg-gray-800/80 px-3 py-2">
-                              <span className="text-xs text-gray-400">
-                                {indicesLegendHighlightedYear !== null ? (
-                                  <>
-                                    Emphasizing <span className="font-semibold text-emerald-300">{indicesLegendHighlightedYear}</span>
-                                    <span className="text-gray-500"> — other years dimmed, all still shown</span>
-                                  </>
-                                ) : (
-                                  <>Click a year in any legend to emphasize that line; all years stay on the chart</>
-                                )}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={clearIndicesYearHighlight}
-                                disabled={indicesLegendHighlightedYear === null}
-                                className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                                  indicesLegendHighlightedYear === null
-                                    ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
-                                    : 'bg-emerald-700 text-white hover:bg-emerald-600 border border-emerald-500'
-                                }`}
-                                title="Clear highlight — equal emphasis on every year"
-                              >
-                                Clear highlight
-                              </button>
-                            </div>
-                          )}
                           <div className="flex flex-col gap-5 md:gap-6 w-full">
                             {indexChunks.map((chunk, chunkIdx) => (
                               <div
@@ -8136,58 +8020,22 @@ const App: React.FC = () => {
                       );
                     })()
                   ) : (
-                    <div className="w-full max-w-4xl mx-auto rounded-lg border border-gray-700 bg-gray-800/80 p-8 text-center">
-                      <p className="text-gray-400">Select District and Frequency to load indices. Subdistrict and Village can be selected to further filter data.</p>
+                    <div className={`w-full max-w-4xl mx-auto rounded-lg p-8 text-center border ${
+                      isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
+                    }`}>
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-slate-600'}>
+                        Select District and Frequency to load indices. Subdistrict and Village can be selected to further filter data.
+                      </p>
                     </div>
                   )}
                 </div>
               </div>
-              </div>
             </div>
           )}
           {showAnalysisTrendsPage && (
-            <div
-              className="absolute inset-0 z-[1200] flex items-stretch justify-stretch p-2 md:p-3 bg-black/35 backdrop-blur-[1px]"
-              onClick={() => {
-                setShowAnalysisTrendsPage(false);
-                setFullscreenAnalysisTrendCard(null);
-              }}
-            >
-              <div
-                className={`relative flex flex-col flex-1 min-h-0 w-full overflow-hidden rounded-2xl border shadow-2xl ${
-                  isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-[#eaf6f0] border-emerald-100'
-                }`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div
-                  className={`flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b ${
-                    isDarkMode ? 'border-gray-700 bg-gray-800/90' : 'border-emerald-100 bg-white/90'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <BarChart3 size={16} className={isDarkMode ? 'text-emerald-300' : 'text-emerald-700'} />
-                    <span className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>
-                      Analysis trends
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAnalysisTrendsPage(false);
-                      setFullscreenAnalysisTrendCard(null);
-                    }}
-                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-                      isDarkMode
-                        ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700'
-                        : 'border-emerald-200 bg-white text-slate-800 hover:bg-emerald-50'
-                    }`}
-                    title="Close"
-                  >
-                    Close
-                  </button>
-                </div>
+            <div className="relative flex flex-col flex-1 min-h-0 w-full overflow-hidden">
               <div className="min-h-0 flex-1 overflow-auto">
-                <div className="flex-1 p-4 md:p-6 overflow-auto">
+                <div className="flex-1 pt-14 px-4 pb-4 md:pt-16 md:px-6 md:pb-6 overflow-auto">
                   {!selectedDistrict ? (
                     <div className={`w-full max-w-4xl mx-auto rounded-lg p-8 text-center border ${
                       isDarkMode ? 'border-gray-700 bg-gray-800/80' : 'border-emerald-100 bg-white shadow-sm'
@@ -8719,64 +8567,117 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+            </div>
+          )}
+
+          {!splitScreenMode && !showGraphPage && !showAnalysisTrendsPage && !sidebarVisible && (
+            <div className="absolute top-3 left-3 z-[1300] flex flex-col gap-2 sm:top-4 sm:left-4">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowWindFlowLayer((v) => !v)}
+                  disabled={!windDirectData?.points_weather?.length}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                    isDarkMode
+                      ? showWindFlowLayer && windDirectData?.points_weather?.length
+                        ? 'bg-sky-700/95 border-sky-500 text-white shadow-md'
+                        : 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75 disabled:opacity-45 disabled:cursor-not-allowed'
+                      : showWindFlowLayer && windDirectData?.points_weather?.length
+                        ? 'bg-sky-600 text-white border-sky-700 shadow-md'
+                        : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
+                  }`}
+                  title={
+                    !windDirectData?.points_weather?.length
+                      ? 'Wind flow: select a district and wait for AOI wind data'
+                      : showWindFlowLayer
+                        ? 'Hide wind flow'
+                        : 'Show wind flow'
+                  }
+                  aria-pressed={showWindFlowLayer}
+                >
+                  <Wind size={18} strokeWidth={2.2} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleActiveTabForSide('waterSource', 'left')}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                    getActiveTab('left') === 'waterSource'
+                      ? 'bg-blue-500 text-black border-blue-300'
+                      : isDarkMode
+                        ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
+                        : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
+                  }`}
+                  title="Water Source (click again to hide)"
+                >
+                  <Waves size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleActiveTabForSide('forest', 'left')}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                    getActiveTab('left') === 'forest'
+                      ? 'bg-lime-500 text-black border-lime-300'
+                      : isDarkMode
+                        ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
+                        : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
+                  }`}
+                  title="Forest (click again to hide)"
+                >
+                  <Trees size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (lstTileUrl) {
+                      clearLstTileLayer();
+                      return;
+                    }
+                    if (lstLoading || loading || !selectedDistrict) return;
+                    lstClosedByUserRef.current = false;
+                    try {
+                      setLstLoading(true);
+                      setError(null);
+                      const response = await fetchLandSurfaceTemperature(selectedDistrict);
+                      if (lstClosedByUserRef.current) return;
+                      if (response.tile_url) {
+                        setLstTileUrl(response.tile_url);
+                        setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
+                        setShowTileLayers(true);
+                      } else {
+                        throw new Error('No tile_url in response');
+                      }
+                    } catch (err) {
+                      if (lstClosedByUserRef.current) return;
+                      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+                      setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
+                      setLstTileUrl(null);
+                    } finally {
+                      setLstLoading(false);
+                    }
+                  }}
+                  disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
+                  className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+                    lstTileUrl
+                      ? 'bg-orange-500 text-white border-orange-600 shadow-md'
+                      : isDarkMode
+                        ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75 disabled:opacity-45 disabled:cursor-not-allowed'
+                        : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
+                  }`}
+                  title="Land Surface Temperature (click again to hide)"
+                >
+                  <Thermometer size={18} strokeWidth={2.2} />
+                </button>
               </div>
-            </div>
-          )}
 
-          {!splitScreenMode && (
-            <div className="absolute top-4 left-4 z-[1100] flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsMapFullScreen((p) => !p)}
-                className={`p-2 rounded-lg border transition-colors flex items-center justify-center ${
-                  isDarkMode
-                    ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
-                    : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white'
-                }`}
-                title={isMapFullscreen ? 'Exit fullscreen map' : 'Fullscreen map'}
-              >
-                {isMapFullscreen ? <MdFullscreenExit size={22} /> : <MdFullscreen size={22} />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowWindFlowLayer((v) => !v)}
-                disabled={!windDirectData?.points_weather?.length}
-                className={`p-2 rounded-lg border transition-colors flex items-center justify-center gap-1.5 px-2.5 ${
-                  isDarkMode
-                    ? showWindFlowLayer && windDirectData?.points_weather?.length
-                      ? 'bg-sky-700/95 border-sky-500 text-white shadow-md'
-                      : 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75 disabled:opacity-45 disabled:cursor-not-allowed'
-                    : showWindFlowLayer && windDirectData?.points_weather?.length
-                      ? 'bg-sky-600 text-white border-sky-700 shadow-md'
-                      : 'bg-white/90 border-emerald-100 text-gray-900 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
-                }`}
-                title={
-                  !windDirectData?.points_weather?.length
-                    ? 'Wind flow: select a district and wait for AOI wind data'
-                    : showWindFlowLayer
-                      ? 'Hide wind flow (particles follow wind direction)'
-                      : 'Show wind flow â€” red streaks move with wind; â–² markers show speed (km/h)'
-                }
-                aria-pressed={showWindFlowLayer}
-              >
-                <Wind size={20} strokeWidth={2.2} />
-                <span className="text-xs font-semibold hidden min-[420px]:inline"></span>
-              </button>
-            </div>
-          )}
-
-          {/* White mode: left-side analysis tabs + utility icons (after temperature) */}
-          {!isDarkMode && !isMapFullscreen && (
-            <div className="absolute top-16 left-4 z-[1300] flex flex-col gap-2">
-              {!splitScreenMode && (
+              {!isMapFullscreen && (
                 <>
               {([
                 ['growth', <Sprout size={16} />],
                 ['water', <Droplets size={16} />],
                 ['soil', <Droplet size={16} />],
                 ['pest', <Bug size={16} />],
-                ['waterSource', <Waves size={16} />],
-                ['forest', <Trees size={16} />],
               ] as Array<[AnalysisType, React.ReactElement]>).map(([tab, icon]) => (
                 <button
                   key={tab}
@@ -8785,151 +8686,17 @@ const App: React.FC = () => {
                   className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
                     getActiveTab('left') === tab
                       ? 'bg-emerald-500 text-black border-emerald-300'
-                      : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
+                      : isDarkMode
+                        ? 'bg-black/60 border-gray-700 text-gray-200 hover:bg-black/75'
+                        : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
                   }`}
                   title={String(tab)}
                 >
                   {icon}
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={async () => {
-                  if (lstTileUrl) {
-                    clearLstTileLayer();
-                    return;
-                  }
-                  if (lstLoading || loading || !selectedDistrict) return;
-                  lstClosedByUserRef.current = false;
-                  try {
-                    setLstLoading(true);
-                    setError(null);
-                    const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                    if (lstClosedByUserRef.current) return;
-                    if (response.tile_url) {
-                      setLstTileUrl(response.tile_url);
-                      setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                      setShowTileLayers(true);
-                    } else {
-                      throw new Error('No tile_url in response');
-                    }
-                  } catch (err) {
-                    if (lstClosedByUserRef.current) return;
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                    setLstTileUrl(null);
-                  } finally {
-                    setLstLoading(false);
-                  }
-                }}
-                disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
-                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
-                  lstTileUrl
-                    ? 'bg-orange-500 text-white border-orange-600 shadow-md'
-                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white disabled:opacity-45 disabled:cursor-not-allowed'
-                }`}
-                title="Land Surface Temperature (click again to hide)"
-              >
-                <Thermometer size={18} strokeWidth={2.2} />
-              </button>
                 </>
               )}
-              {/* After temperature: split, download, 9-graphs, analysis trends (Home removed) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowGraphPage(false);
-                  setShowAnalysisTrendsPage(false);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphFrequencyDropdown(false);
-                  setSplitScreenMode((p) => !p);
-                }}
-                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
-                  splitScreenMode
-                    ? 'bg-emerald-500 text-black border-emerald-300'
-                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
-                }`}
-                title="Split screen"
-              >
-                <Columns size={18} />
-              </button>
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                  className="w-10 h-10 rounded-xl border flex items-center justify-center transition-colors bg-white/90 text-gray-900 border-emerald-100 hover:bg-white"
-                  title="Download"
-                >
-                  <Download size={18} />
-                </button>
-                {showDownloadMenu && (
-                  <>
-                    <div className="fixed inset-0 z-[1199]" onClick={() => setShowDownloadMenu(false)} />
-                    <div className="absolute left-full top-0 ml-2 bg-white rounded-xl border border-emerald-100 shadow-xl overflow-hidden z-[1200] min-w-[140px]">
-                      <button
-                        type="button"
-                        onClick={() => { setShowDownloadMenu(false); downloadChartPDF(); }}
-                        className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors"
-                      >
-                        <FileText size={16} />
-                        <span className="text-xs">PDF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setShowDownloadMenu(false); downloadChartExcel(); }}
-                        className="w-full px-3 py-2 text-gray-900 hover:bg-emerald-50 flex items-center justify-center gap-2 transition-colors border-t border-emerald-100"
-                      >
-                        <FileSpreadsheet size={16} />
-                        <span className="text-xs">Excel</span>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (showGraphPage) {
-                    setShowGraphPage(false);
-                    setShowGraphFrequencyDropdown(false);
-                    return;
-                  }
-                  setShowGraphPage(true);
-                  setShowAnalysisTrendsPage(false);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphFrequencyDropdown(true);
-                }}
-                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
-                  showGraphPage
-                    ? 'bg-emerald-100 border-emerald-300 text-emerald-900'
-                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
-                }`}
-                title="9 graphs dashboard"
-              >
-                <LineChartIcon size={18} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (showAnalysisTrendsPage) {
-                    setShowAnalysisTrendsPage(false);
-                    setFullscreenAnalysisTrendCard(null);
-                    return;
-                  }
-                  setShowAnalysisTrendsPage(true);
-                  setFullscreenAnalysisTrendCard(null);
-                  setShowGraphPage(false);
-                  setShowGraphFrequencyDropdown(false);
-                }}
-                className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
-                  showAnalysisTrendsPage
-                    ? 'bg-emerald-100 border-emerald-300 text-emerald-900'
-                    : 'bg-white/90 text-gray-900 border-emerald-100 hover:bg-white'
-                }`}
-                title="All-date analysis trends"
-              >
-                <BarChart3 size={18} />
-              </button>
             </div>
           )}
 
@@ -8951,7 +8718,7 @@ const App: React.FC = () => {
             )}
           {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
           {splitScreenMode && (
-          <div className={`absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
+          <div className={`absolute top-[4.5rem] left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
             {/* Active Tab Buttons - icons only */}
             <div className={`flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto ${splitScreenMode ? 'max-w-full' : 'w-auto'}`}>
               <button
@@ -8990,6 +8757,7 @@ const App: React.FC = () => {
               >
                 <Bug size={splitScreenMode ? 16 : 18} />
               </button>
+
               <button
                 onClick={() => toggleActiveTabForSide('waterSource', 'left')}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
@@ -8999,6 +8767,7 @@ const App: React.FC = () => {
               >
                 <Waves size={18} />
               </button>
+
               <button
                 onClick={() => toggleActiveTabForSide('forest', 'left')}
                 className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
@@ -9908,6 +9677,7 @@ const App: React.FC = () => {
           </div>
           )}
 
+          {!showGraphPage && !showAnalysisTrendsPage && (
           <div className="map-surface relative z-0 flex min-h-0 w-full min-w-0 flex-1 flex-col self-stretch">
           {!splitScreenMode && useEarthViewMap ? (
             <EarthView
@@ -10150,6 +9920,7 @@ const App: React.FC = () => {
             </div>
           )}
           </div>
+          )}
 
           {renderSplitScreenMapBottomGraph('left')}
 
@@ -10611,13 +10382,23 @@ const App: React.FC = () => {
                   {selectedPlotArea !== null ? 'Plot Area' : 'Total Area'}
                 </div>
                 {selectedPlotArea !== null ? (
-                  <div className="text-base font-bold text-green-400">{selectedPlotArea.toFixed(2)} ha</div>
+                  <div className="area-value-row">
+                    <div className="area-disk area-disk-sm" title="Area">
+                      <img src="/images/Areadise.png" alt="" className="area-disk-img" draggable={false} />
+                      <span className="area-disk-label">{selectedPlotArea.toFixed(2)} ha</span>
+                    </div>
+                  </div>
                 ) : getTotalAreaLoading('left') ? (
                   <div className="flex items-center justify-center py-3">
                     <Loader2 className="animate-spin text-green-400" size={18} />
                   </div>
                 ) : getTotalAreaHectares('left') !== null && getTotalAreaHectares('left') !== undefined ? (
-                  <div className="text-base font-bold text-green-400">{getTotalAreaHectares('left')!.toFixed(2)} ha</div>
+                  <div className="area-value-row">
+                    <div className="area-disk area-disk-sm" title="Total Area">
+                      <img src="/images/Areadise.png" alt="" className="area-disk-img" draggable={false} />
+                      <span className="area-disk-label">{getTotalAreaHectares('left')!.toFixed(2)} ha</span>
+                    </div>
+                  </div>
                 ) : (
                   <div className="text-sm text-gray-500">No area data available</div>
                 )}
@@ -10773,45 +10554,9 @@ const App: React.FC = () => {
         {splitScreenMode && (
           <div className="w-1/2 relative flex-1">
             {/* Top Navigation Tabs - Right Side; content-sized like left panel to avoid extra empty space */}
-            <div className="absolute top-12 md:top-4 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 max-w-[calc(50vw-120px)]">
+            <div className="absolute top-[4.5rem] left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 max-w-[calc(50vw-120px)]">
               {/* Active Tab Buttons - icons only; content-sized, no full-width stretch */}
               <div className="flex gap-1 md:gap-2 bg-black/60 backdrop-blur-sm rounded-lg border border-gray-700 p-1 overflow-x-auto overflow-y-hidden max-w-full tab-bar-scroll flex-nowrap">
-                <button
-                  onClick={() => toggleActiveTabForSide('growth', 'right')}
-                  className={`px-1.5 py-1 min-w-[28px] rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
-                    getActiveTab('right') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                  title="Growth (click again to hide)"
-                >
-                  <Sprout size={16} />
-                </button>
-                <button
-                  onClick={() => toggleActiveTabForSide('water', 'right')}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
-                    getActiveTab('right') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                  title="Water Uptake (click again to hide)"
-                >
-                  <Droplets size={18} />
-                </button>
-                <button
-                  onClick={() => toggleActiveTabForSide('soil', 'right')}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
-                    getActiveTab('right') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                  title="Soil Moisture (click again to hide)"
-                >
-                  <Droplet size={18} />
-                </button>
-                <button
-                  onClick={() => toggleActiveTabForSide('pest', 'right')}
-                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
-                    getActiveTab('right') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                  title="Pest (click again to hide)"
-                >
-                  <Bug size={18} />
-                </button>
                 <button
                   onClick={() => toggleActiveTabForSide('waterSource', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
@@ -10821,6 +10566,7 @@ const App: React.FC = () => {
                 >
                   <Waves size={18} />
                 </button>
+
                 <button
                   onClick={() => toggleActiveTabForSide('forest', 'right')}
                   className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
@@ -10884,6 +10630,46 @@ const App: React.FC = () => {
                 >
                   <Thermometer size={17} strokeWidth={2.2} className="shrink-0" />
                 </div>
+
+                <button
+                  onClick={() => toggleActiveTabForSide('growth', 'right')}
+                  className={`px-1.5 py-1 min-w-[28px] rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 ${
+                    getActiveTab('right') === 'growth' ? 'bg-emerald-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                  title="Growth (click again to hide)"
+                >
+                  <Sprout size={16} />
+                </button>
+
+                <button
+                  onClick={() => toggleActiveTabForSide('water', 'right')}
+                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                    getActiveTab('right') === 'water' ? 'bg-sky-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                  title="Water Uptake (click again to hide)"
+                >
+                  <Droplets size={18} />
+                </button>
+
+                <button
+                  onClick={() => toggleActiveTabForSide('soil', 'right')}
+                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                    getActiveTab('right') === 'soil' ? 'bg-teal-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                  title="Soil Moisture (click again to hide)"
+                >
+                  <Droplet size={18} />
+                </button>
+
+                <button
+                  onClick={() => toggleActiveTabForSide('pest', 'right')}
+                  className={`px-2 md:px-3 py-1.5 md:py-2 rounded-md transition-colors whitespace-nowrap flex items-center justify-center flex-shrink-0 min-w-[36px] ${
+                    getActiveTab('right') === 'pest' ? 'bg-rose-500 text-black' : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                  title="Pest (click again to hide)"
+                >
+                  <Bug size={18} />
+                </button>
               </div>
             </div>
 
@@ -11525,7 +11311,7 @@ const App: React.FC = () => {
       {/* Right Sidebar - Enabled for split screen mode */}
       {sidebarVisible && splitScreenMode && (
         <aside 
-          className="w-full md:w-64 md:max-w-64 flex-shrink-0 min-w-0 border-l border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden"
+          className="w-full md:w-64 md:max-w-64 h-full min-h-0 flex-shrink-0 min-w-0 border-l border-gray-700 flex flex-col z-10 shadow-xl relative overflow-hidden self-stretch"
           style={{
             backgroundColor: isDarkMode ? '#0f172a' : '#ffffff',
             backgroundImage: 'none',
@@ -11538,10 +11324,10 @@ const App: React.FC = () => {
           <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-sm"></div>
           
           {/* Content with relative positioning */}
-          <div className="relative z-10 flex flex-col h-full">
+          <div className="relative z-10 flex flex-col h-full min-h-0">
             {/* Header section removed - no title or logout icon for right sidebar */}
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4">
               {/* Prediction month — top, before district */}
               {!showGraphPage && !showAnalysisTrendsPage && (
                 <div className="space-y-1">
@@ -11742,9 +11528,9 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Total Area Card */}
+              {/* Total Area — label + green disk, no card */}
               {getSelectedDistrict('right') && (
-                <div className="p-4 bg-gray-700 rounded-lg border border-gray-600">
+                <div className="px-0.5 py-1">
                   <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                     Total Area
                   </div>
@@ -11753,8 +11539,11 @@ const App: React.FC = () => {
                       <Loader2 className="animate-spin text-green-400" size={20} />
                     </div>
                   ) : getTotalAreaHectares('right') !== null && getTotalAreaHectares('right') !== undefined ? (
-                    <div className="text-lg font-bold text-green-400">
-                      {getTotalAreaHectares('right')!.toFixed(2)} ha
+                    <div className="area-value-row">
+                      <div className="area-disk" title="Total Area">
+                        <img src="/images/Areadise.png" alt="" className="area-disk-img" draggable={false} />
+                        <span className="area-disk-label">{getTotalAreaHectares('right')!.toFixed(2)} ha</span>
+                      </div>
                     </div>
                   ) : (
                     <div className="text-sm text-gray-500">No area data available</div>

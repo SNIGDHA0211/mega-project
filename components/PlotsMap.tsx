@@ -153,7 +153,7 @@ interface WaterSource {
 const PREDICT_AREA_FIELD_STROKE = '#ffffff';
 const PREDICT_AREA_FIELD_FILL = '#ffffff';
 /** Outer village/district outline + inner field boundaries */
-const BOUNDARY_STROKE = '#ffffff';
+const BOUNDARY_STROKE = '#ff000d';
 
 /** Default map: continental India (matches typical “open on India” satellite view) */
 const INDIA_DEFAULT_CENTER: LeafletCoordinate = [20.5937, 78.9629];

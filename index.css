@@ -71,6 +71,202 @@ html, body {
   }
 }
 
+/* Brand name continuous blink / soft popup (same place) */
+.brand-name-blink {
+  animation: brand-name-blink 1.6s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+@keyframes brand-name-blink {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.04);
+  }
+}
+
+/* Header weather ticker */
+.weather-marquee {
+  overflow: hidden;
+  width: 100%;
+  mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+}
+
+.weather-marquee-track {
+  display: inline-flex;
+  width: max-content;
+  animation: weather-marquee-scroll 28s linear infinite;
+}
+
+.weather-marquee:hover .weather-marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes weather-marquee-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes earth-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Post-login / district select flash */
+.district-flash-ring {
+  animation: district-ring-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes district-ring-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 28px rgba(255, 255, 255, 0.85), 0 0 70px rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.35), 0 0 30px rgba(16, 185, 129, 0.2);
+  }
+}
+
+.district-name-flash {
+  animation: district-name-blink 0.85s ease-in-out infinite;
+}
+
+@keyframes district-name-blink {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(1.05);
+  }
+}
+
+/* District picker overlay: blur sidebar + map behind */
+.login-flash-overlay {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background-color: rgba(2, 6, 23, 0.35);
+}
+
+.login-flash-title,
+.theme-white .login-flash-title {
+  color: #ffffff !important;
+}
+
+.login-flash-bg-drift {
+  animation: login-flash-bg-drift 28s ease-in-out infinite alternate;
+}
+
+@keyframes login-flash-bg-drift {
+  0% {
+    transform: scale(1.08) translate(0, 0);
+  }
+  100% {
+    transform: scale(1.18) translate(-2%, 1.5%);
+  }
+}
+
+.login-flash-panel-in {
+  animation: login-flash-panel-in 0.55s ease-out both;
+}
+
+@keyframes login-flash-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.login-flash-title-pulse {
+  animation: login-flash-title-pulse 1.7s ease-in-out infinite;
+}
+
+@keyframes login-flash-title-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.25);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.04);
+    text-shadow: 0 0 22px rgba(255, 255, 255, 0.75);
+  }
+}
+
+.login-flash-uplink {
+  animation: login-flash-uplink 2s ease-in-out infinite;
+}
+
+@keyframes login-flash-uplink {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.login-flash-tab {
+  animation: login-flash-tab-in 0.4s ease-out both;
+  transition: transform 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-flash-tab:hover {
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.35);
+}
+
+@keyframes login-flash-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.login-flash-ring-idle {
+  animation: login-flash-ring-idle 3.2s ease-in-out infinite;
+}
+
+@keyframes login-flash-ring-idle {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  50% {
+    opacity: 0.65;
+    transform: translate(-50%, -50%) scale(1.02);
+  }
+}
+
 /* Light theme override (white UI) */
 .theme-white .bg-gray-900 {
   background-color: #ffffff !important;
@@ -158,6 +354,211 @@ html, body {
 .tab-bar-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(156, 163, 175, 0.5) rgba(255, 255, 255, 0.05);
+}
+
+/* Sidebar scrubber — always-visible vertical scrollbar */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+  scrollbar-color: #94a3b8 #e2e8f0;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: #e2e8f0;
+  border-radius: 8px;
+  margin: 4px 0;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 8px;
+  border: 2px solid #e2e8f0;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+.theme-white .sidebar-scroll {
+  scrollbar-color: #86efac #ecfdf5;
+}
+.theme-white .sidebar-scroll::-webkit-scrollbar-track {
+  background: #ecfdf5;
+}
+.theme-white .sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #6ee7b7;
+  border-color: #ecfdf5;
+}
+.theme-white .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #34d399;
+}
+
+/* Total Area — value on Areadise.png geometry (green, blink every 3s) */
+.area-value-row {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.area-disk {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 3.35rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: #16a34a;
+  box-shadow: 0 0.35rem 0.55rem rgba(22, 163, 74, 0.35);
+  animation: area-disk-blink-3s 3s ease-in-out infinite;
+}
+
+.area-disk-img {
+  position: absolute;
+  inset: -18% -8%;
+  width: 116%;
+  height: 136%;
+  object-fit: cover;
+  object-position: center 45%;
+  pointer-events: none;
+  user-select: none;
+}
+
+.area-disk-label {
+  position: relative;
+  z-index: 1;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #ffffff !important;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.area-disk-sm {
+  height: 2.55rem;
+}
+
+.area-disk-sm .area-disk-label {
+  font-size: 0.9rem;
+}
+
+/* Blink once every 3 seconds, then repeat */
+@keyframes area-disk-blink-3s {
+  0%,
+  70%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  80%,
+  90% {
+    opacity: 0.25;
+    filter: brightness(1.15);
+  }
+}
+
+/* Frequency pick card — dark green, white text, flash until a tab is clicked */
+.frequency-pick-card {
+  background-color: #14532d;
+}
+
+.frequency-pick-card-flash {
+  animation: frequency-pick-flash 1.4s ease-in-out infinite;
+}
+
+@keyframes frequency-pick-flash {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(20, 83, 45, 0.5);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 28px 4px rgba(34, 197, 94, 0.55);
+  }
+}
+
+.theme-white .frequency-pick-card,
+.theme-white .frequency-pick-card p,
+.theme-white .frequency-pick-card button {
+  color: #ffffff !important;
+}
+
+/* Slide-out configuration menu (overlay) */
+.sidebar-slide-panel {
+  transform: translateX(0);
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  pointer-events: none;
+}
+
+.sidebar-slide-panel > aside,
+.sidebar-slide-panel > .sidebar-slide-handle {
+  pointer-events: auto;
+}
+
+.sidebar-slide-panel-open {
+  transform: translateX(0);
+}
+
+.sidebar-slide-panel-closed {
+  transform: translateX(-100%);
+}
+
+.sidebar-slide-panel-closed > aside {
+  pointer-events: none;
+}
+
+.sidebar-slide-handle {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 3.25rem;
+  margin-left: 0;
+  border: 1px solid;
+  border-left: none;
+  border-radius: 0 0.5rem 0.5rem 0;
+  cursor: pointer;
+  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.12);
+  transition: background-color 180ms ease, color 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  z-index: 41;
+}
+
+.sidebar-slide-handle-light {
+  background: #ffffff;
+  border-color: #d1fae5;
+  color: #065f46;
+}
+
+.sidebar-slide-handle-light:hover {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+  box-shadow: 2px 0 12px rgba(16, 185, 129, 0.2);
+}
+
+.sidebar-slide-handle-dark {
+  background: #1e293b;
+  border-color: #475569;
+  color: #e2e8f0;
+}
+
+.sidebar-slide-handle-dark:hover {
+  background: #334155;
+  border-color: #64748b;
+  color: #ffffff;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.35);
+}
+
+.sidebar-slide-handle:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
 }
 
 /* Field ID + area labels drawn on each plot polygon */

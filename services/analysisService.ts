@@ -2955,7 +2955,12 @@ const fetchWeatherDailyFromNetwork = async (
   subdistrict?: string,
   village?: string
 ): Promise<WeatherDailyResponse> => {
-  const query = `district=${encodeURIComponent(district)}${subdistrict ? `&subdistrict=${encodeURIComponent(subdistrict)}` : ''}${village ? `&village=${encodeURIComponent(village)}` : ''}`;
+  const districtQ = district.trim();
+  const subdistrictQ = subdistrict?.trim() || '';
+  const villageQ = village?.trim() || '';
+  const query = `district=${encodeURIComponent(districtQ)}${
+    subdistrictQ ? `&subdistrict=${encodeURIComponent(subdistrictQ)}` : ''
+  }${villageQ ? `&village=${encodeURIComponent(villageQ)}` : ''}`;
 
   const tryUrl = (pathPrefix: string) => `${getBaseUrl()}${pathPrefix}/weather/daily?${query}`;
   const proxyUrl = typeof window !== 'undefined' ? `${window.location.origin}/railway/weather/daily?${query}` : '';
@@ -2979,7 +2984,21 @@ const fetchWeatherDailyFromNetwork = async (
       }
       lastError = null;
 
-      const data: WeatherDailyResponse = await response.json();
+      const raw = await response.json();
+      const dailyRaw = Array.isArray(raw?.daily) ? raw.daily : [];
+      const data: WeatherDailyResponse = {
+        level: String(raw?.level ?? ''),
+        name: String(raw?.name ?? (villageQ || subdistrictQ || districtQ)),
+        latitude: Number(raw?.latitude ?? 0),
+        longitude: Number(raw?.longitude ?? 0),
+        daily: dailyRaw.map((d: any) => ({
+          date: String(d?.date ?? ''),
+          temp_max: Number(d?.temp_max ?? d?.tempMax ?? 0),
+          temp_min: Number(d?.temp_min ?? d?.tempMin ?? 0),
+          rainfall: Number(d?.rainfall ?? d?.rain ?? 0),
+          wind_max: Number(d?.wind_max ?? d?.windMax ?? 0),
+        })),
+      };
       return data;
     } catch (err) {
       if (err instanceof Error && err.message.includes('404')) {
