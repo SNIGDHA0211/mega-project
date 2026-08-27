@@ -128,8 +128,13 @@ const withLstTilePreserved = (
   prev: Record<string, string>,
   next: Record<string, string>
 ): Record<string, string> => {
-  const lst = prev['land-surface-temperature'];
-  const base = lst ? { 'land-surface-temperature': lst } : {};
+  const base: Record<string, string> = {};
+  if (prev['land-surface-temperature']) {
+    base['land-surface-temperature'] = prev['land-surface-temperature'];
+  }
+  Object.keys(prev).forEach((k) => {
+    if (k.startsWith('lst-class:')) base[k] = prev[k];
+  });
   return { ...base, ...next };
 };
 
@@ -778,6 +783,7 @@ const App: React.FC = () => {
   };
 
   const lstClosedByUserRef = useRef(false);
+  const lstActiveRef = useRef(false);
 
   // State for Pest stored time series for left and right sides (split screen mode)
   const [leftPestStoredSeries, setLeftPestStoredSeries] = useState<PestStoredResponse | null>(null);
@@ -808,6 +814,7 @@ const App: React.FC = () => {
 
   const clearLstTileLayer = () => {
     lstClosedByUserRef.current = true;
+    lstActiveRef.current = false;
     setLstTileUrl(null);
     setLstClasswise([]);
     setSelectedLstClassLabel(null);
@@ -831,34 +838,77 @@ const App: React.FC = () => {
     }
   };
 
+  const stripLstTiles = (prev: Record<string, string>) => {
+    const n = { ...prev };
+    delete n['land-surface-temperature'];
+    Object.keys(n).forEach((k) => {
+      if (k.startsWith('lst-class:')) delete n[k];
+    });
+    return n;
+  };
+
   const applyLstResponse = (
     response: ProcessedLandSurfaceTemperatureResponse,
     side: 'left' | 'right' = 'left'
   ) => {
+    lstActiveRef.current = true;
     setLstTileUrl(response.tile_url);
     setLstClasswise(response.classwise || []);
     setSelectedLstClassLabel(null);
     const tileKey = 'land-surface-temperature';
     if (side === 'right' && splitScreenMode) {
       setRightAllPlotsTileUrls((prev) => {
-        const n = { ...prev };
-        Object.keys(n).forEach((k) => {
-          if (k.startsWith('lst-class:')) delete n[k];
-        });
+        const n = stripLstTiles(prev);
         n[tileKey] = response.tile_url;
         return n;
       });
       setRightShowTileLayers(true);
     } else {
       setAllPlotsTileUrls((prev) => {
-        const n = { ...prev };
-        Object.keys(n).forEach((k) => {
-          if (k.startsWith('lst-class:')) delete n[k];
-        });
+        const n = stripLstTiles(prev);
         n[tileKey] = response.tile_url;
         return n;
       });
       setShowTileLayers(true);
+    }
+  };
+
+  const loadLstForSelection = async (
+    district: string,
+    subdistrict?: string,
+    village?: string,
+    side: 'left' | 'right' = 'left'
+  ) => {
+    if (!district) return;
+    lstClosedByUserRef.current = false;
+    setLstLoading(true);
+    setError(null);
+    // Clear previous LST immediately so district tile/data do not overlap
+    setLstTileUrl(null);
+    setLstClasswise([]);
+    setSelectedLstClassLabel(null);
+    if (side === 'right' && splitScreenMode) {
+      setRightAllPlotsTileUrls(stripLstTiles);
+    } else {
+      setAllPlotsTileUrls(stripLstTiles);
+    }
+    try {
+      const response = await fetchLandSurfaceTemperature(district, '2025-11-20', '2025-12-23', {
+        subdistrict: subdistrict || undefined,
+        village: village || undefined,
+      });
+      if (lstClosedByUserRef.current) return;
+      applyLstResponse(response, side);
+    } catch (err) {
+      if (lstClosedByUserRef.current) return;
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+      setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
+      setLstTileUrl(null);
+      setLstClasswise([]);
+      setSelectedLstClassLabel(null);
+      lstActiveRef.current = false;
+    } finally {
+      setLstLoading(false);
     }
   };
 
@@ -869,10 +919,7 @@ const App: React.FC = () => {
       setSelectedLstClassLabel(null);
       if (lstTileUrl) {
         setAllPlotsTileUrls((prev) => {
-          const n = { ...prev };
-          Object.keys(n).forEach((k) => {
-            if (k.startsWith('lst-class:')) delete n[k];
-          });
+          const n = stripLstTiles(prev);
           n['land-surface-temperature'] = lstTileUrl;
           return n;
         });
@@ -881,13 +928,10 @@ const App: React.FC = () => {
     }
     setSelectedLstClassLabel(label);
     if (classTile) {
+      // Show only the selected class tile (no district/main LST overlap)
       setAllPlotsTileUrls((prev) => {
-        const n = { ...prev };
-        Object.keys(n).forEach((k) => {
-          if (k.startsWith('lst-class:')) delete n[k];
-        });
+        const n = stripLstTiles(prev);
         n[`lst-class:${label}`] = classTile;
-        if (lstTileUrl) n['land-surface-temperature'] = lstTileUrl;
         return n;
       });
       setShowTileLayers(true);
@@ -897,11 +941,16 @@ const App: React.FC = () => {
   /** Drop analysis GEE tiles immediately when switching tabs (keep LST layer if active). */
   const clearAnalysisLayersForSide = (side: 'left' | 'right', startLoading = true) => {
     const stripAnalysisTiles = (prev: Record<string, string>) => {
-      const lst = prev['land-surface-temperature'];
-      const building = prev[BUILDING_BUILTUP_TILE_KEY];
       const out: Record<string, string> = {};
-      if (lst) out['land-surface-temperature'] = lst;
-      if (building) out[BUILDING_BUILTUP_TILE_KEY] = building;
+      if (prev['land-surface-temperature']) {
+        out['land-surface-temperature'] = prev['land-surface-temperature'];
+      }
+      Object.keys(prev).forEach((k) => {
+        if (k.startsWith('lst-class:')) out[k] = prev[k];
+      });
+      if (prev[BUILDING_BUILTUP_TILE_KEY]) {
+        out[BUILDING_BUILTUP_TILE_KEY] = prev[BUILDING_BUILTUP_TILE_KEY];
+      }
       return out;
     };
 
@@ -930,7 +979,8 @@ const App: React.FC = () => {
     }
   };
 
-  /** Only expose tab-specific overlay tile URL for the active analysis tab. */
+  /** Only expose tab-specific overlay tile URL for the active analysis tab.
+   *  LST tiles come from allPlotsTileUrls only (never stale district lstTileUrl). */
   const getMapOverlayTileUrl = (side: 'left' | 'right') => {
     const tab = getActiveTab(side);
     if (tab === 'pest' && pestTileUrl) return pestTileUrl;
@@ -938,7 +988,6 @@ const App: React.FC = () => {
     if (tab === 'growth' || tab === 'water' || tab === 'soil' || tab === 'pest') {
       return cropTileUrl || tileUrl || null;
     }
-    if (lstTileUrl) return lstTileUrl;
     return null;
   };
 
@@ -953,6 +1002,9 @@ const App: React.FC = () => {
     if (tiles['land-surface-temperature']) {
       out['land-surface-temperature'] = tiles['land-surface-temperature'];
     }
+    Object.keys(tiles).forEach((k) => {
+      if (k.startsWith('lst-class:')) out[k] = tiles[k];
+    });
     if (tiles[BUILDING_BUILTUP_TILE_KEY]) {
       out[BUILDING_BUILTUP_TILE_KEY] = tiles[BUILDING_BUILTUP_TILE_KEY];
     }
@@ -1913,6 +1965,31 @@ const App: React.FC = () => {
       }
     }
   }, [selectedSubdistrict, subdistricts, selectedDistrict, districts, predictAreaMonthInput, selectedCrops, selectedVillage]);
+
+  // LST: when district / subdistrict / village changes, clear old tile+data and reload for new scope only
+  useEffect(() => {
+    if (splitScreenMode) return;
+    if (!lstActiveRef.current) return;
+    if (!selectedDistrict) {
+      clearLstTileLayer();
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      await loadLstForSelection(
+        selectedDistrict,
+        selectedSubdistrict || undefined,
+        selectedVillage || undefined,
+        'left'
+      );
+      if (cancelled) return;
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDistrict, selectedSubdistrict, selectedVillage, splitScreenMode]);
 
   /** Load village outline + all field polygons when a village is selected. */
   useEffect(() => {
@@ -5022,13 +5099,22 @@ const App: React.FC = () => {
     }
   }, [splitScreenMode]);
 
-  // When no analysis tab is selected, remove those tile layers (LST stays â€” separate control).
+  // When no analysis tab is selected, remove those tile layers (LST stays — separate control).
   useEffect(() => {
     if (splitScreenMode) return;
     if (activeTab !== null) return;
     setAllPlotsTileUrls((prev) => {
-      const t = prev['land-surface-temperature'];
-      return t ? { 'land-surface-temperature': t } : {};
+      const out: Record<string, string> = {};
+      if (prev['land-surface-temperature']) {
+        out['land-surface-temperature'] = prev['land-surface-temperature'];
+      }
+      Object.keys(prev).forEach((k) => {
+        if (k.startsWith('lst-class:')) out[k] = prev[k];
+      });
+      if (prev[BUILDING_BUILTUP_TILE_KEY]) {
+        out[BUILDING_BUILTUP_TILE_KEY] = prev[BUILDING_BUILTUP_TILE_KEY];
+      }
+      return out;
     });
     setPestTileUrl(null);
     setForestTileUrl(null);
@@ -6956,23 +7042,12 @@ const App: React.FC = () => {
                             return;
                           }
                           if (lstLoading || loading || !selectedDistrict) return;
-                          lstClosedByUserRef.current = false;
-                          try {
-                            setLstLoading(true);
-                            setError(null);
-                            const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                            if (lstClosedByUserRef.current) return;
-                            applyLstResponse(response, 'left');
-                          } catch (err) {
-                            if (lstClosedByUserRef.current) return;
-                            const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                            setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                            setLstTileUrl(null);
-                            setLstClasswise([]);
-                            setSelectedLstClassLabel(null);
-                          } finally {
-                            setLstLoading(false);
-                          }
+                          await loadLstForSelection(
+                            selectedDistrict,
+                            selectedSubdistrict || undefined,
+                            selectedVillage || undefined,
+                            'left'
+                          );
                         }}
                         disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
                         className={`${toolBtnBase(!!lstTileUrl, 'bg-orange-500 text-white border-orange-600 shadow-md')} disabled:opacity-45 disabled:cursor-not-allowed`}
@@ -8704,23 +8779,12 @@ const App: React.FC = () => {
                       return;
                     }
                     if (lstLoading || loading || !selectedDistrict) return;
-                    lstClosedByUserRef.current = false;
-                    try {
-                      setLstLoading(true);
-                      setError(null);
-                      const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                      if (lstClosedByUserRef.current) return;
-                      applyLstResponse(response, 'left');
-                    } catch (err) {
-                      if (lstClosedByUserRef.current) return;
-                      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                      setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                      setLstTileUrl(null);
-                      setLstClasswise([]);
-                      setSelectedLstClassLabel(null);
-                    } finally {
-                      setLstLoading(false);
-                    }
+                    await loadLstForSelection(
+                      selectedDistrict,
+                      selectedSubdistrict || undefined,
+                      selectedVillage || undefined,
+                      'left'
+                    );
                   }}
                   disabled={!lstTileUrl && (!selectedDistrict || lstLoading || loading)}
                   className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
@@ -8879,25 +8943,12 @@ const App: React.FC = () => {
                     return;
                   }
                   if (lstLoading || loading || !selectedDistrict) return;
-                  lstClosedByUserRef.current = false;
-                  try {
-                    setLstLoading(true);
-                    setError(null);
-                    
-                    const response = await fetchLandSurfaceTemperature(selectedDistrict);
-                    
-                    if (lstClosedByUserRef.current) return;
-                    applyLstResponse(response, 'left');
-                  } catch (err) {
-                    if (lstClosedByUserRef.current) return;
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                    setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                    setLstTileUrl(null);
-                    setLstClasswise([]);
-                    setSelectedLstClassLabel(null);
-                  } finally {
-                    setLstLoading(false);
-                  }
+                  await loadLstForSelection(
+                    selectedDistrict,
+                    selectedSubdistrict || undefined,
+                    selectedVillage || undefined,
+                    'left'
+                  );
                 }}
                 role="button"
                 tabIndex={0}
@@ -10674,26 +10725,15 @@ const App: React.FC = () => {
                       return;
                     }
                     const currentDistrict = splitScreenMode ? rightSelectedDistrict : selectedDistrict;
+                    const currentSub = splitScreenMode ? rightSelectedSubdistrict : selectedSubdistrict;
+                    const currentVillage = splitScreenMode ? rightSelectedVillage : selectedVillage;
                     if (lstLoading || loading || !currentDistrict) return;
-                    lstClosedByUserRef.current = false;
-                    try {
-                      setLstLoading(true);
-                      setError(null);
-                      
-                      const response = await fetchLandSurfaceTemperature(currentDistrict);
-                      
-                      if (lstClosedByUserRef.current) return;
-                      applyLstResponse(response, splitScreenMode ? 'right' : 'left');
-                    } catch (err) {
-                      if (lstClosedByUserRef.current) return;
-                      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-                      setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
-                      setLstTileUrl(null);
-                      setLstClasswise([]);
-                      setSelectedLstClassLabel(null);
-                    } finally {
-                      setLstLoading(false);
-                    }
+                    await loadLstForSelection(
+                      currentDistrict,
+                      currentSub || undefined,
+                      currentVillage || undefined,
+                      splitScreenMode ? 'right' : 'left'
+                    );
                   }}
                   role="button"
                   tabIndex={0}

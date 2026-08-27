@@ -2865,14 +2865,23 @@ function normalizeLstResponse(
   };
 }
 
-// Fetch Land Surface Temperature
+// Fetch Land Surface Temperature (district / optional subdistrict / village)
 export const fetchLandSurfaceTemperature = async (
   district: string,
   startDate: string = '2025-11-20',
-  endDate: string = '2025-12-23'
+  endDate: string = '2025-12-23',
+  options?: { subdistrict?: string; village?: string }
 ): Promise<ProcessedLandSurfaceTemperatureResponse> => {
   try {
-    const url = `${getBaseUrl()}/land-surface-temperature?district=${encodeURIComponent(district)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+    const params = new URLSearchParams({
+      district,
+      start_date: startDate,
+      end_date: endDate,
+    });
+    if (options?.subdistrict) params.set('subdistrict', options.subdistrict);
+    if (options?.village) params.set('village', options.village);
+
+    const url = `${getBaseUrl()}/land-surface-temperature?${params.toString()}`;
     
     const response = await fetch(url, {
       method: 'POST',
