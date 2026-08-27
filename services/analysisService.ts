@@ -2759,10 +2759,34 @@ export const fetchNDVISugarcaneDetection = async (
   }
 };
 
-// Land Surface Temperature Response
+// Land Surface Temperature Response (legacy FeatureCollection + new flat payload)
 export interface LandSurfaceTemperatureResponse {
-  type: string;
-  features: Array<{
+  type?: string;
+  plot_id?: string;
+  geometry?: {
+    type: string;
+    coordinates: unknown;
+  };
+  /** New API field */
+  lst_tile_url?: string;
+  lst_class_combined_tile?: string;
+  lst_class_tiles?: Record<string, string>;
+  lst_classwise_area_hectare?: {
+    type?: string;
+    features?: Array<{
+      type?: string;
+      geometry?: unknown;
+      properties?: {
+        area_hectare?: number;
+        class_id?: number;
+        class_label?: string;
+      };
+    }>;
+  };
+  start_date?: string;
+  end_date?: string;
+  last_updated?: string;
+  features?: Array<{
     type: string;
     geometry: {
       type: string;
@@ -2770,7 +2794,8 @@ export interface LandSurfaceTemperatureResponse {
     };
     properties: {
       plot_id?: string;
-      tile_url: string;
+      tile_url?: string;
+      lst_tile_url?: string;
       data_source?: string;
       start_date?: string;
       end_date?: string;
@@ -2779,12 +2804,65 @@ export interface LandSurfaceTemperatureResponse {
   }>;
 }
 
+export interface LstClassAreaItem {
+  class_id: number;
+  class_label: string;
+  area_hectare: number;
+  tile_url?: string | null;
+}
+
 // Processed Land Surface Temperature Response
 export interface ProcessedLandSurfaceTemperatureResponse {
   tile_url: string;
   district?: string;
   start_date?: string;
   end_date?: string;
+  class_combined_tile?: string | null;
+  class_tiles?: Record<string, string>;
+  classwise: LstClassAreaItem[];
+}
+
+function normalizeLstResponse(
+  data: LandSurfaceTemperatureResponse,
+  district: string
+): ProcessedLandSurfaceTemperatureResponse {
+  const tileUrl =
+    data.lst_tile_url ||
+    data.lst_class_combined_tile ||
+    data.features?.[0]?.properties?.lst_tile_url ||
+    data.features?.[0]?.properties?.tile_url ||
+    '';
+
+  if (!tileUrl) {
+    throw new Error('No tile_url found in response');
+  }
+
+  const classTiles = data.lst_class_tiles || {};
+  const features = data.lst_classwise_area_hectare?.features || [];
+  const classwise: LstClassAreaItem[] = features
+    .map((f) => {
+      const props = f.properties || {};
+      const label = String(props.class_label || '').trim();
+      if (!label) return null;
+      return {
+        class_id: Number(props.class_id ?? 0),
+        class_label: label,
+        area_hectare: Number(props.area_hectare ?? 0),
+        tile_url: classTiles[label] || null,
+      };
+    })
+    .filter((x): x is LstClassAreaItem => x != null)
+    .sort((a, b) => a.class_id - b.class_id);
+
+  return {
+    tile_url: tileUrl,
+    district: data.plot_id || district,
+    start_date: data.start_date || data.features?.[0]?.properties?.start_date,
+    end_date: data.end_date || data.features?.[0]?.properties?.end_date,
+    class_combined_tile: data.lst_class_combined_tile || null,
+    class_tiles: classTiles,
+    classwise,
+  };
 }
 
 // Fetch Land Surface Temperature
@@ -2809,20 +2887,7 @@ export const fetchLandSurfaceTemperature = async (
     }
 
     const data: LandSurfaceTemperatureResponse = await response.json();
-    
-    // Extract tile_url from features array
-    const tileUrl = data.features?.[0]?.properties?.tile_url;
-    
-    if (!tileUrl) {
-      throw new Error('No tile_url found in response');
-    }
-    
-    return {
-      tile_url: tileUrl,
-      district: district,
-      start_date: startDate,
-      end_date: endDate
-    };
+    return normalizeLstResponse(data, district);
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Unable to connect to ${getBaseUrl()}/land-surface-temperature`);

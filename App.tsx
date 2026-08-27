@@ -79,6 +79,8 @@ import {
   fetchBuildingBuiltup,
   BUILDING_BUILTUP_TILE_KEY,
   type BuildingBuiltupResponse,
+  type LstClassAreaItem,
+  type ProcessedLandSurfaceTemperatureResponse,
   GrowthAnalysisResponse,
   type DashboardIndicesStoreResponse,
   type DashboardIndicesFrequency,
@@ -444,6 +446,8 @@ const App: React.FC = () => {
   // State for Land Surface Temperature
   const [lstTileUrl, setLstTileUrl] = useState<string | null>(null);
   const [lstLoading, setLstLoading] = useState<boolean>(false);
+  const [lstClasswise, setLstClasswise] = useState<LstClassAreaItem[]>([]);
+  const [selectedLstClassLabel, setSelectedLstClassLabel] = useState<string | null>(null);
   
   
   // State for GeoJSON plots (e.g. from boundary load; currently unused)
@@ -805,17 +809,88 @@ const App: React.FC = () => {
   const clearLstTileLayer = () => {
     lstClosedByUserRef.current = true;
     setLstTileUrl(null);
+    setLstClasswise([]);
+    setSelectedLstClassLabel(null);
     setAllPlotsTileUrls((prev) => {
       const n = { ...prev };
       delete n['land-surface-temperature'];
+      Object.keys(n).forEach((k) => {
+        if (k.startsWith('lst-class:')) delete n[k];
+      });
       return n;
     });
     if (splitScreenMode) {
       setRightAllPlotsTileUrls((prev) => {
         const n = { ...prev };
         delete n['land-surface-temperature'];
+        Object.keys(n).forEach((k) => {
+          if (k.startsWith('lst-class:')) delete n[k];
+        });
         return n;
       });
+    }
+  };
+
+  const applyLstResponse = (
+    response: ProcessedLandSurfaceTemperatureResponse,
+    side: 'left' | 'right' = 'left'
+  ) => {
+    setLstTileUrl(response.tile_url);
+    setLstClasswise(response.classwise || []);
+    setSelectedLstClassLabel(null);
+    const tileKey = 'land-surface-temperature';
+    if (side === 'right' && splitScreenMode) {
+      setRightAllPlotsTileUrls((prev) => {
+        const n = { ...prev };
+        Object.keys(n).forEach((k) => {
+          if (k.startsWith('lst-class:')) delete n[k];
+        });
+        n[tileKey] = response.tile_url;
+        return n;
+      });
+      setRightShowTileLayers(true);
+    } else {
+      setAllPlotsTileUrls((prev) => {
+        const n = { ...prev };
+        Object.keys(n).forEach((k) => {
+          if (k.startsWith('lst-class:')) delete n[k];
+        });
+        n[tileKey] = response.tile_url;
+        return n;
+      });
+      setShowTileLayers(true);
+    }
+  };
+
+  const selectLstClass = (item: LstClassAreaItem) => {
+    const label = item.class_label;
+    const classTile = item.tile_url || null;
+    if (selectedLstClassLabel === label) {
+      setSelectedLstClassLabel(null);
+      if (lstTileUrl) {
+        setAllPlotsTileUrls((prev) => {
+          const n = { ...prev };
+          Object.keys(n).forEach((k) => {
+            if (k.startsWith('lst-class:')) delete n[k];
+          });
+          n['land-surface-temperature'] = lstTileUrl;
+          return n;
+        });
+      }
+      return;
+    }
+    setSelectedLstClassLabel(label);
+    if (classTile) {
+      setAllPlotsTileUrls((prev) => {
+        const n = { ...prev };
+        Object.keys(n).forEach((k) => {
+          if (k.startsWith('lst-class:')) delete n[k];
+        });
+        n[`lst-class:${label}`] = classTile;
+        if (lstTileUrl) n['land-surface-temperature'] = lstTileUrl;
+        return n;
+      });
+      setShowTileLayers(true);
     }
   };
 
@@ -6765,7 +6840,7 @@ const App: React.FC = () => {
           setShowAnalysisTrendsPage(false);
           setFullscreenAnalysisTrendCard(null);
           setShowGraphFrequencyDropdown(true);
-          setSidebarVisible(false);
+          setSidebarVisible(true);
         }}
         weatherData={weatherDailyData}
         weatherLoading={weatherDailyLoading}
@@ -6887,18 +6962,14 @@ const App: React.FC = () => {
                             setError(null);
                             const response = await fetchLandSurfaceTemperature(selectedDistrict);
                             if (lstClosedByUserRef.current) return;
-                            if (response.tile_url) {
-                              setLstTileUrl(response.tile_url);
-                              setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                              setShowTileLayers(true);
-                            } else {
-                              throw new Error('No tile_url in response');
-                            }
+                            applyLstResponse(response, 'left');
                           } catch (err) {
                             if (lstClosedByUserRef.current) return;
                             const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                             setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                             setLstTileUrl(null);
+                            setLstClasswise([]);
+                            setSelectedLstClassLabel(null);
                           } finally {
                             setLstLoading(false);
                           }
@@ -6919,39 +6990,37 @@ const App: React.FC = () => {
                   CONFIGURATION
                 </div>
 
-          {/* Prediction month — top, before district */}
-          {!showGraphPage && !showAnalysisTrendsPage && (
-            <div className="space-y-1 mb-3">
-              <label
-                className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
-              >
-                Prediction month
-              </label>
-              <input
-                type="month"
-                value={predictAreaMonthInput}
-                onChange={(e) => setPredictAreaMonthInput(e.target.value)}
-                className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
-                  isDarkMode
-                    ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
-                    : 'bg-white border border-emerald-100 text-slate-800'
-                }`}
-              />
-              <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
-                Select a month to load predict-area data (
-                <code className="text-[10px]">month=YYYY-MM</code>).
-                {predictAreaDataMonth && (
-                  <>
-                    {' '}
-                    Showing:{' '}
-                    <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
-                      {formatPredictAreaMonthLabel(predictAreaDataMonth)}
-                    </span>
-                  </>
-                )}
-              </p>
-            </div>
-          )}
+          {/* Prediction month — date panel (dashboard + bar graph sidebar) */}
+          <div className="space-y-1 mb-3">
+            <label
+              className={`block text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}
+            >
+              Prediction month
+            </label>
+            <input
+              type="month"
+              value={predictAreaMonthInput}
+              onChange={(e) => setPredictAreaMonthInput(e.target.value)}
+              className={`w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                isDarkMode
+                  ? 'bg-gray-700 border border-gray-600 text-white [color-scheme:dark]'
+                  : 'bg-white border border-emerald-100 text-slate-800'
+              }`}
+            />
+            <p className={`text-[11px] leading-snug ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
+              Select a month to load predict-area data (
+              <code className="text-[10px]">month=YYYY-MM</code>).
+              {predictAreaDataMonth && (
+                <>
+                  {' '}
+                  Showing:{' '}
+                  <span className={`font-medium ${isDarkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                    {formatPredictAreaMonthLabel(predictAreaDataMonth)}
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
 
           {/* District Dropdown — tabs are on login splash only */}
           <div>
@@ -7067,8 +7136,8 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Layers dropdown — Crop layer, Owner name, Display boundary, Build layers */}
-          {getSelectedDistrict('left') && (
+          {/* Layers dropdown — map view only (hidden on Dashboard) */}
+          {!isDashboardView && getSelectedDistrict('left') && (
             <div>
               <label className={`block text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>
                 Layers
@@ -8641,18 +8710,14 @@ const App: React.FC = () => {
                       setError(null);
                       const response = await fetchLandSurfaceTemperature(selectedDistrict);
                       if (lstClosedByUserRef.current) return;
-                      if (response.tile_url) {
-                        setLstTileUrl(response.tile_url);
-                        setAllPlotsTileUrls((prev) => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                        setShowTileLayers(true);
-                      } else {
-                        throw new Error('No tile_url in response');
-                      }
+                      applyLstResponse(response, 'left');
                     } catch (err) {
                       if (lstClosedByUserRef.current) return;
                       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                       setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                       setLstTileUrl(null);
+                      setLstClasswise([]);
+                      setSelectedLstClassLabel(null);
                     } finally {
                       setLstLoading(false);
                     }
@@ -8716,6 +8781,34 @@ const App: React.FC = () => {
                 textColorOnBackground={textColorOnBackground}
               />
             )}
+          {/* LST class labels + area (ha) */}
+          {!isMapFullscreen && lstTileUrl && lstClasswise.length > 0 && (
+            <div className="absolute top-28 left-1/2 z-[1000] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 px-2 md:top-24">
+              {lstClasswise.map((item) => {
+                const active = selectedLstClassLabel === item.class_label;
+                return (
+                  <button
+                    key={`${item.class_id}-${item.class_label}`}
+                    type="button"
+                    onClick={() => selectLstClass(item)}
+                    className={`rounded-xl border px-3 py-2 text-left shadow-md transition-colors ${
+                      active
+                        ? 'border-orange-400 bg-orange-500 text-white'
+                        : isDarkMode
+                          ? 'border-gray-600 bg-black/70 text-gray-100 hover:bg-black/85'
+                          : 'border-emerald-100 bg-white/95 text-slate-800 hover:bg-white'
+                    }`}
+                    title={item.tile_url ? `Show ${item.class_label} tile` : item.class_label}
+                  >
+                    <div className="text-xs font-semibold leading-tight">{item.class_label}</div>
+                    <div className={`text-[11px] font-medium ${active ? 'text-white/90' : isDarkMode ? 'text-orange-300' : 'text-orange-700'}`}>
+                      {Number(item.area_hectare || 0).toFixed(2)} ha
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {/* Top Navigation Tabs - split screen only (normal mode uses header center) */}
           {splitScreenMode && (
           <div className={`absolute top-[4.5rem] left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 md:gap-4 px-2 md:px-0 ${splitScreenMode ? 'max-w-[calc(50vw-120px)]' : 'w-auto'}`}>
@@ -8794,18 +8887,14 @@ const App: React.FC = () => {
                     const response = await fetchLandSurfaceTemperature(selectedDistrict);
                     
                     if (lstClosedByUserRef.current) return;
-                    if (response.tile_url) {
-                      setLstTileUrl(response.tile_url);
-                      setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                      setShowTileLayers(true);
-                    } else {
-                      throw new Error('No tile_url in response');
-                    }
+                    applyLstResponse(response, 'left');
                   } catch (err) {
                     if (lstClosedByUserRef.current) return;
                     const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                     setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                     setLstTileUrl(null);
+                    setLstClasswise([]);
+                    setSelectedLstClassLabel(null);
                   } finally {
                     setLstLoading(false);
                   }
@@ -10594,23 +10683,14 @@ const App: React.FC = () => {
                       const response = await fetchLandSurfaceTemperature(currentDistrict);
                       
                       if (lstClosedByUserRef.current) return;
-                      if (response.tile_url) {
-                        setLstTileUrl(response.tile_url);
-                        if (splitScreenMode) {
-                          setRightAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                          setRightShowTileLayers(true);
-                        } else {
-                          setAllPlotsTileUrls(prev => ({ ...prev, 'land-surface-temperature': response.tile_url }));
-                          setShowTileLayers(true);
-                        }
-                      } else {
-                        throw new Error('No tile_url in response');
-                      }
+                      applyLstResponse(response, splitScreenMode ? 'right' : 'left');
                     } catch (err) {
                       if (lstClosedByUserRef.current) return;
                       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
                       setError(`Failed to load Land Surface Temperature: ${errorMessage}`);
                       setLstTileUrl(null);
+                      setLstClasswise([]);
+                      setSelectedLstClassLabel(null);
                     } finally {
                       setLstLoading(false);
                     }
